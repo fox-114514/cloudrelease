@@ -160,6 +160,58 @@ const ADMIN_HTML = String.raw`<!doctype html>
         min-height: 26px;
         padding: 0 6px;
       }
+      .image-card { position: relative; }
+      .image-card.is-select-mode { cursor: pointer; }
+      .image-card.is-selected {
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
+      }
+      .image-card-checkbox {
+        position: absolute;
+        top: 6px;
+        left: 6px;
+        width: 24px;
+        height: 24px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.95);
+        border: 1px solid var(--line);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 2;
+        font-weight: 700;
+        font-size: 14px;
+        color: transparent;
+        user-select: none;
+      }
+      .image-card.is-selected .image-card-checkbox {
+        background: var(--accent);
+        color: white;
+        border-color: var(--accent);
+      }
+      .image-card-selected-hint {
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .image-card.is-selected .image-card-selected-hint {
+        color: var(--accent);
+        font-weight: 700;
+      }
+      .image-selection-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        flex-wrap: wrap;
+        gap: 12px;
+        padding: 10px 14px;
+        margin-bottom: 12px;
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+      .image-selection-bar > span {
+        font-weight: 700;
+      }
       .image-empty {
         grid-column: 1 / -1;
         padding: 24px;
@@ -401,8 +453,17 @@ const ADMIN_HTML = String.raw`<!doctype html>
                   <label>&nbsp;</label>
                   <div class="actions">
                     <button class="secondary" id="refreshImagesBtn">刷新</button>
+                    <button id="toggleSelectModeBtn">多选</button>
                   </div>
                 </div>
+              </div>
+            </div>
+            <div id="imageSelectionBar" class="image-selection-bar hidden">
+              <span id="imageSelectedCount">已选 0</span>
+              <div class="actions">
+                <button class="secondary" id="imageSelectAllBtn" type="button">全选本页</button>
+                <button class="danger" id="imageDeleteSelectedBtn" type="button" disabled>删除所选 (0)</button>
+                <button class="secondary" id="imageCancelSelectBtn" type="button">取消</button>
               </div>
             </div>
             <div id="imageGrid" class="image-grid"></div>
@@ -426,7 +487,9 @@ const ADMIN_HTML = String.raw`<!doctype html>
         imageCursor: null,
         imageFilter: "all",
         imageLoaded: false,
-        previewBlobUrls: {}
+        previewBlobUrls: {},
+        selectMode: false,
+        selectedImageIds: new Set(),
       };
 
       const $ = (id) => document.getElementById(id);
@@ -513,6 +576,8 @@ const ADMIN_HTML = String.raw`<!doctype html>
         state.images = [];
         state.imageCursor = null;
         state.imageLoaded = false;
+        state.selectMode = false;
+        state.selectedImageIds.clear();
         Object.keys(state.previewBlobUrls).forEach((id) => {
           URL.revokeObjectURL(state.previewBlobUrls[id]);
           delete state.previewBlobUrls[id];
@@ -757,6 +822,173 @@ const ADMIN_HTML = String.raw`<!doctype html>
       });
 
       // -------- Image library --------
+      function buildCardHtml(img) {
+        const uploader = (img.uploadedBy && (img.uploadedBy.deviceName || img.uploadedBy.userDisplayName)) || "未知";
+        const expiredTag = img.isExpired ? '<span class="pill bad">已过期</span>' : '<span class="pill ok">有效</span>';
+        const isSelected = state.selectedImageIds.has(img.id);
+        const selectClass = state.selectMode ? ' is-select-mode' : '';
+        const selectedClass = isSelected ? ' is-selected' : '';
+        const checkboxHtml = state.selectMode
+          ? '<div class="image-card-checkbox" data-action="image-select">' + (isSelected ? '✓' : '') + '</div>'
+          : '';
+        const previewAction = state.selectMode ? 'image-select' : 'image-preview';
+        const actionsHtml = state.selectMode
+          ? '<div class="image-card-actions"><span class="image-card-selected-hint">' + (isSelected ? '已选中' : '点击选中') + '</span></div>'
+          : '<div class="image-card-actions">' +
+              '<button class="secondary" data-action="image-preview" type="button">预览</button>' +
+              '<button class="danger" data-action="image-delete" type="button">删除</button>' +
+            '</div>';
+        return (
+          '<div class="image-card' + (img.isExpired ? ' is-expired' : '') + selectClass + selectedClass + '" data-image-id="' + escapeHtml(img.id) + '">' +
+            checkboxHtml +
+            '<div class="image-card-preview" data-action="' + previewAction + '">' +
+              '<span>加载中…</span>' +
+            '</div>' +
+            '<div class="image-card-meta">' +
+              '<div class="image-card-name">' + escapeHtml(uploader) + ' ' + expiredTag + '</div>' +
+              '<div class="image-card-sub">' + fmt(img.createdAt) + ' · ' + formatBytes(img.fileSize) + '</div>' +
+              '<div class="image-card-sub">' + escapeHtml(img.mimeType) + (img.width && img.height ? ' · ' + img.width + '×' + img.height : '') + '</div>' +
+              actionsHtml +
+            '</div>' +
+          '</div>'
+        );
+      }
+
+      function renderImages() {
+        const grid = $("imageGrid");
+        if (!state.images.length) {
+          grid.innerHTML = '<div class="image-empty">暂无图片</div>';
+          $("imageLoadMore").classList.add("hidden");
+          updateSelectionBar();
+          return;
+        }
+        grid.innerHTML = state.images.map(buildCardHtml).join("");
+        $("imageLoadMore").classList.toggle("hidden", !state.imageCursor);
+        // Lazy-load preview thumbnails; cached ones update DOM in place.
+        state.images.forEach((img) => { loadImagePreview(img.id); });
+        updateSelectionBar();
+      }
+
+      function findCardPreview(imageId) {
+        return document.querySelector(
+          '.image-card[data-image-id="' + CSS.escape(imageId) + '"] .image-card-preview'
+        );
+      }
+
+      function findCard(imageId) {
+        return document.querySelector('.image-card[data-image-id="' + CSS.escape(imageId) + '"]');
+      }
+
+      async function loadImagePreview(imageId) {
+        const card = findCardPreview(imageId);
+        const cachedUrl = state.previewBlobUrls[imageId];
+        if (cachedUrl) {
+          // Restore DOM from cache without re-fetching.
+          if (card && !card.querySelector("img")) {
+            card.innerHTML = '<img src="' + cachedUrl + '" alt="预览" />';
+          }
+          return cachedUrl;
+        }
+        if (!card) return null;
+        try {
+          const response = await fetch(
+            "/api/v1/images/" + encodeURIComponent(imageId) + "/download",
+            { headers: { Authorization: "Bearer " + state.token } }
+          );
+          if (!response.ok) {
+            if (card.isConnected) card.innerHTML = '<span>预览失败</span>';
+            return null;
+          }
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          state.previewBlobUrls[imageId] = url;
+          if (card.isConnected) {
+            card.innerHTML = '<img src="' + url + '" alt="预览" />';
+          }
+          return url;
+        } catch (err) {
+          if (card.isConnected) card.innerHTML = '<span>预览失败</span>';
+          return null;
+        }
+      }
+
+      function removeCardFromDom(imageId) {
+        const card = findCard(imageId);
+        if (card) card.remove();
+      }
+
+      function revokePreview(imageId) {
+        if (state.previewBlobUrls[imageId]) {
+          URL.revokeObjectURL(state.previewBlobUrls[imageId]);
+          delete state.previewBlobUrls[imageId];
+        }
+      }
+
+      function showEmptyIfNeeded() {
+        if (state.images.length === 0) {
+          $("imageGrid").innerHTML = '<div class="image-empty">暂无图片</div>';
+          $("imageLoadMore").classList.add("hidden");
+        }
+      }
+
+      function isAllOnPageSelected() {
+        if (!state.images.length) return false;
+        return state.images.every((img) => state.selectedImageIds.has(img.id));
+      }
+
+      function updateSelectionBar() {
+        const bar = $("imageSelectionBar");
+        if (!state.selectMode) {
+          bar.classList.add("hidden");
+          return;
+        }
+        bar.classList.remove("hidden");
+        $("imageSelectedCount").textContent = "已选 " + state.selectedImageIds.size;
+        const allSelected = isAllOnPageSelected();
+        $("imageSelectAllBtn").textContent = allSelected ? "取消全选" : "全选本页";
+        const count = state.selectedImageIds.size;
+        $("imageDeleteSelectedBtn").disabled = count === 0;
+        $("imageDeleteSelectedBtn").textContent = "删除所选 (" + count + ")";
+      }
+
+      function toggleSelectMode() {
+        state.selectMode = !state.selectMode;
+        if (!state.selectMode) {
+          state.selectedImageIds.clear();
+        }
+        const btn = $("toggleSelectModeBtn");
+        btn.textContent = state.selectMode ? "退出多选" : "多选";
+        btn.classList.toggle("secondary", state.selectMode);
+        renderImages();
+      }
+
+      function toggleCardSelection(imageId) {
+        if (state.selectedImageIds.has(imageId)) {
+          state.selectedImageIds.delete(imageId);
+        } else {
+          state.selectedImageIds.add(imageId);
+        }
+        const card = findCard(imageId);
+        if (card) {
+          const isSelected = state.selectedImageIds.has(imageId);
+          card.classList.toggle("is-selected", isSelected);
+          const checkbox = card.querySelector(".image-card-checkbox");
+          if (checkbox) checkbox.textContent = isSelected ? "✓" : "";
+          const hint = card.querySelector(".image-card-selected-hint");
+          if (hint) hint.textContent = isSelected ? "已选中" : "点击选中";
+        }
+        updateSelectionBar();
+      }
+
+      function toggleSelectAllOnPage() {
+        if (isAllOnPageSelected()) {
+          state.images.forEach((img) => state.selectedImageIds.delete(img.id));
+        } else {
+          state.images.forEach((img) => state.selectedImageIds.add(img.id));
+        }
+        renderImages();
+      }
+
       async function loadImages(reset = true) {
         if (!state.token) return;
         showMessage("", "ok");
@@ -770,12 +1002,10 @@ const ADMIN_HTML = String.raw`<!doctype html>
           const data = await api("/images?" + params.toString());
           const incoming = data.images || [];
           if (reset) {
-            // Drop blob URLs for cards that are no longer in view.
             const keep = new Set(incoming.map((img) => img.id));
             Object.keys(state.previewBlobUrls).forEach((id) => {
               if (!keep.has(id)) {
-                URL.revokeObjectURL(state.previewBlobUrls[id]);
-                delete state.previewBlobUrls[id];
+                revokePreview(id);
               }
             });
             state.images = incoming;
@@ -787,60 +1017,6 @@ const ADMIN_HTML = String.raw`<!doctype html>
           renderImages();
         } catch (err) {
           showMessage(err.message || String(err), "error");
-        }
-      }
-
-      function renderImages() {
-        const grid = $("imageGrid");
-        if (!state.images.length) {
-          grid.innerHTML = '<div class="image-empty">暂无图片</div>';
-          $("imageLoadMore").classList.add("hidden");
-          return;
-        }
-        grid.innerHTML = state.images.map((img) => {
-          const uploader = img.uploadedBy && (img.uploadedBy.deviceName || img.uploadedBy.userDisplayName) || "未知";
-          const expiredTag = img.isExpired ? '<span class="pill bad">已过期</span>' : '<span class="pill ok">有效</span>';
-          return (
-            '<div class="image-card' + (img.isExpired ? ' is-expired' : '') + '" data-image-id="' + escapeHtml(img.id) + '">' +
-              '<div class="image-card-preview" data-action="image-preview">' +
-                '<span>加载中…</span>' +
-              '</div>' +
-              '<div class="image-card-meta">' +
-                '<div class="image-card-name">' + escapeHtml(uploader) + ' ' + expiredTag + '</div>' +
-                '<div class="image-card-sub">' + fmt(img.createdAt) + ' · ' + formatBytes(img.fileSize) + '</div>' +
-                '<div class="image-card-sub">' + escapeHtml(img.mimeType) + (img.width && img.height ? ' · ' + img.width + '×' + img.height : '') + '</div>' +
-                '<div class="image-card-actions">' +
-                  '<button class="secondary" data-action="image-preview" type="button">预览</button>' +
-                  '<button class="danger" data-action="image-delete" type="button">删除</button>' +
-                '</div>' +
-              '</div>' +
-            '</div>'
-          );
-        }).join("");
-        $("imageLoadMore").classList.toggle("hidden", !state.imageCursor);
-        // Lazy-load preview thumbnails.
-        state.images.forEach((img) => { loadImagePreview(img.id); });
-      }
-
-      async function loadImagePreview(imageId) {
-        if (state.previewBlobUrls[imageId]) return state.previewBlobUrls[imageId];
-        try {
-          const response = await fetch("/api/v1/images/" + encodeURIComponent(imageId) + "/download", {
-            headers: { Authorization: "Bearer " + state.token },
-          });
-          if (!response.ok) {
-            const card = document.querySelector('.image-card[data-image-id="' + CSS.escape(imageId) + '"] .image-card-preview');
-            if (card) card.innerHTML = '<span>预览失败</span>';
-            return null;
-          }
-          const blob = await response.blob();
-          const url = URL.createObjectURL(blob);
-          state.previewBlobUrls[imageId] = url;
-          const card = document.querySelector('.image-card[data-image-id="' + CSS.escape(imageId) + '"] .image-card-preview');
-          if (card) card.innerHTML = '<img src="' + url + '" alt="预览" />';
-          return url;
-        } catch (err) {
-          return null;
         }
       }
 
@@ -887,16 +1063,53 @@ const ADMIN_HTML = String.raw`<!doctype html>
         try {
           await api("/images/" + encodeURIComponent(imageId), { method: "DELETE" });
           showMessage("图片已删除", "ok");
-          if (state.previewBlobUrls[imageId]) {
-            URL.revokeObjectURL(state.previewBlobUrls[imageId]);
-            delete state.previewBlobUrls[imageId];
-          }
           state.images = state.images.filter((x) => x.id !== imageId);
-          renderImages();
+          state.selectedImageIds.delete(imageId);
+          revokePreview(imageId);
+          removeCardFromDom(imageId);
+          showEmptyIfNeeded();
+          updateSelectionBar();
           closeImagePreview();
         } catch (err) {
           showMessage(err.message || String(err), "error");
         }
+      }
+
+      async function deleteSelectedImages() {
+        const ids = Array.from(state.selectedImageIds);
+        if (!ids.length) return;
+        if (!confirm("确认删除所选 " + ids.length + " 张图片？操作不可撤销。")) return;
+        showMessage("", "ok");
+        const results = await Promise.allSettled(
+          ids.map((id) => api("/images/" + encodeURIComponent(id), { method: "DELETE" }))
+        );
+        const succeeded = [];
+        const failed = [];
+        results.forEach((r, i) => {
+          if (r.status === "fulfilled") {
+            succeeded.push(ids[i]);
+          } else {
+            failed.push({ id: ids[i], reason: r.reason && (r.reason.message || String(r.reason)) });
+          }
+        });
+        const succeededSet = new Set(succeeded);
+        state.images = state.images.filter((img) => !succeededSet.has(img.id));
+        succeeded.forEach((id) => {
+          state.selectedImageIds.delete(id);
+          revokePreview(id);
+          removeCardFromDom(id);
+        });
+        failed.forEach((entry) => state.selectedImageIds.delete(entry.id));
+        showEmptyIfNeeded();
+        updateSelectionBar();
+        let msg;
+        if (failed.length === 0) {
+          msg = "已删除 " + succeeded.length + " 张图片";
+        } else {
+          msg = "已删除 " + succeeded.length + " 张，失败 " + failed.length + " 张";
+          console.error("Batch delete failures:", failed);
+        }
+        showMessage(msg, failed.length === 0 ? "ok" : "warn");
       }
 
       $("imageGrid").addEventListener("click", (event) => {
@@ -904,6 +1117,10 @@ const ADMIN_HTML = String.raw`<!doctype html>
         if (!card) return;
         const id = card.dataset.imageId;
         if (!id) return;
+        if (state.selectMode) {
+          toggleCardSelection(id);
+          return;
+        }
         const actionEl = event.target.closest("[data-action]");
         const action = actionEl && actionEl.dataset.action;
         if (action === "image-delete") {
@@ -915,17 +1132,27 @@ const ADMIN_HTML = String.raw`<!doctype html>
 
       $("refreshImagesBtn").addEventListener("click", () => {
         state.imageCursor = null;
+        state.selectedImageIds.clear();
         loadImages(true);
       });
+
+      $("toggleSelectModeBtn").addEventListener("click", toggleSelectMode);
 
       $("imageFilter").addEventListener("change", (event) => {
         state.imageFilter = event.target.value;
         state.imageCursor = null;
+        state.selectedImageIds.clear();
         loadImages(true);
       });
 
       $("imageLoadMoreBtn").addEventListener("click", () => {
         if (state.imageCursor) loadImages(false);
+      });
+
+      $("imageSelectAllBtn").addEventListener("click", toggleSelectAllOnPage);
+      $("imageDeleteSelectedBtn").addEventListener("click", deleteSelectedImages);
+      $("imageCancelSelectBtn").addEventListener("click", () => {
+        if (state.selectMode) toggleSelectMode();
       });
 
       $("imageModalClose").addEventListener("click", closeImagePreview);

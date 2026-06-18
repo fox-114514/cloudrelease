@@ -334,4 +334,205 @@ describe("GET /api/v1/images/:imageId/download", () => {
 
     expect(downloadRes.statusCode).toBe(404);
   });
+
+  it("allows owner user token to download any image in the space", async () => {
+    const { app, userToken, uploadDeviceToken } = await setupUploaderAndReceiver();
+    const upload = await uploadTestImage(app, uploadDeviceToken);
+    expect(upload.res.statusCode).toBe(201);
+
+    const downloadRes = await app.inject({
+      method: "GET",
+      url: `/api/v1/images/${upload.body.data.imageId}/download`,
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+
+    expect(downloadRes.statusCode).toBe(200);
+  });
+});
+
+describe("GET /api/v1/images (admin list)", () => {
+  it("lists uploaded images for owner user token", async () => {
+    const { app, userToken, uploadDeviceToken } = await setupUploaderAndReceiver();
+    const upload = await uploadTestImage(app, uploadDeviceToken);
+    expect(upload.res.statusCode).toBe(201);
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/images",
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.success).toBe(true);
+    expect(body.data.images).toHaveLength(1);
+    expect(body.data.images[0].id).toBe(upload.body.data.imageId);
+    expect(body.data.images[0].uploadedBy.deviceName).toBe("Uploader");
+    expect(body.data.images[0].uploadedBy.userDisplayName).toBe("Owner");
+    expect(body.data.images[0].isExpired).toBe(false);
+  });
+
+  it("forbids a non-admin device token from listing images", async () => {
+    const { app, uploadDeviceToken } = await setupUploaderAndReceiver();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/images",
+      headers: { authorization: `Bearer ${uploadDeviceToken}` },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("forbids unauthenticated requests", async () => {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/images",
+    });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it("filters expired images when filter=expired", async () => {
+    const { app, userToken, uploadDeviceToken } = await setupUploaderAndReceiver();
+    const upload = await uploadTestImage(app, uploadDeviceToken);
+    expect(upload.res.statusCode).toBe(201);
+
+    // Force the image to be expired.
+    await prisma.image.update({
+      where: { id: upload.body.data.imageId },
+      data: { expiresAt: new Date(Date.now() - 60_000) },
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/images?filter=expired",
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.data.images).toHaveLength(1);
+    expect(body.data.images[0].isExpired).toBe(true);
+  });
+
+  it("paginates using the before cursor", async () => {
+    const { app, userToken, uploadDeviceToken } = await setupUploaderAndReceiver();
+    // Upload 3 distinct images.
+    for (let i = 0; i < 3; i += 1) {
+      const { buffer, sha256 } = await createTestImage({ color: `#${(i * 80).toString(16).padStart(2, "0")}00ff` });
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/v1/images",
+        headers: {
+          authorization: `Bearer ${uploadDeviceToken}`,
+          "content-type": `multipart/form-data; boundary=${BOUNDARY}`,
+        },
+        payload: buildMultipartBody(
+          [
+            { name: "sha256", value: sha256 },
+            { name: "sourceKind", value: "screenshot" },
+          ],
+          { fieldName: "file", filename: `t-${i}.png`, contentType: "image/png", buffer },
+          BOUNDARY
+        ),
+      });
+      expect(res.statusCode).toBe(201);
+    }
+
+    const first = await app.inject({
+      method: "GET",
+      url: "/api/v1/images?limit=2",
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+    const firstBody = JSON.parse(first.payload);
+    expect(firstBody.data.images).toHaveLength(2);
+    expect(firstBody.data.nextCursor).not.toBeNull();
+
+    const second = await app.inject({
+      method: "GET",
+      url: `/api/v1/images?limit=2&before=${encodeURIComponent(firstBody.data.nextCursor)}`,
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+    const secondBody = JSON.parse(second.payload);
+    expect(secondBody.data.images).toHaveLength(1);
+    expect(secondBody.data.nextCursor).toBeNull();
+
+    // No overlap between pages.
+    const ids = new Set([
+      ...firstBody.data.images.map((img) => img.id),
+      ...secondBody.data.images.map((img) => img.id),
+    ]);
+    expect(ids.size).toBe(3);
+  });
+});
+
+describe("DELETE /api/v1/images/:imageId", () => {
+  it("lets owner user delete an image and cascade-expires pending deliveries", async () => {
+    const { app, userToken, uploadDeviceToken, receiveDeviceId } = await setupUploaderAndReceiver();
+    const upload = await uploadTestImage(app, uploadDeviceToken);
+    expect(upload.res.statusCode).toBe(201);
+
+    const deleteRes = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/images/${upload.body.data.imageId}`,
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+
+    expect(deleteRes.statusCode).toBe(200);
+    const body = JSON.parse(deleteRes.payload);
+    expect(body.success).toBe(true);
+    expect(body.data.imageId).toBe(upload.body.data.imageId);
+
+    const stored = await prisma.image.findUnique({ where: { id: upload.body.data.imageId } });
+    expect(stored?.deletedAt).not.toBeNull();
+
+    const deliveries = await prisma.delivery.findMany({
+      where: { imageId: upload.body.data.imageId, targetDeviceId: receiveDeviceId },
+    });
+    for (const delivery of deliveries) {
+      expect(delivery.status).toBe("expired");
+    }
+  });
+
+  it("forbids a non-admin device from deleting images", async () => {
+    const { app, uploadDeviceToken } = await setupUploaderAndReceiver();
+    const upload = await uploadTestImage(app, uploadDeviceToken);
+    expect(upload.res.statusCode).toBe(201);
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/images/${upload.body.data.imageId}`,
+      headers: { authorization: `Bearer ${uploadDeviceToken}` },
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("returns 404 when the image belongs to another owner space", async () => {
+    const { app, userToken, uploadDeviceToken } = await setupUploaderAndReceiver();
+    const upload = await uploadTestImage(app, uploadDeviceToken);
+    expect(upload.res.statusCode).toBe(201);
+
+    const otherLogin = `owner-${randomUUID()}`;
+    await createOwner(otherLogin, "password");
+    const otherToken = await login(app, otherLogin, "password");
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/images/${upload.body.data.imageId}`,
+      headers: { authorization: `Bearer ${otherToken}` },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("returns 404 for a missing image id", async () => {
+    const app = await buildApp();
+    const loginName = `owner-${randomUUID()}`;
+    await createOwner(loginName, "password");
+    const token = await login(app, loginName, "password");
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/images/${randomUUID()}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(404);
+  });
 });

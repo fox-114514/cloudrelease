@@ -515,12 +515,13 @@ Content-Type：`multipart/form-data`
 
 用途：下载图片二进制。
 
-鉴权：设备 token。
+鉴权：设备 token、owner 用户 token，或 `canManageSpace` 设备 token。
 
 授权条件：
 
 - 当前设备存在该图片的投递，且投递状态是 `pending`、`notified` 或 `downloaded`；或
-- 当前设备有 `canManualDownload = true`。
+- 当前设备有 `canManualDownload = true`；或
+- 调用方是 owner 用户，或具备 `canManageSpace` 的设备（管理身份可访问空间内任意图片）。
 
 响应：
 
@@ -533,6 +534,88 @@ Content-Type：`multipart/form-data`
 - 下载后自行计算 sha256，与事件或 pending 元数据比较。
 - sha256 不一致时不要 ACK `downloaded`，应 ACK `failed` 或本地重试后再 ACK。
 - 下载失败不应崩溃，应保留投递状态等待重试。
+- 管理后台通过该接口配合 `Authorization: Bearer <user-jwt>` 实现图片预览。
+
+### `GET /api/v1/images`（管理列表）
+
+用途：列出当前 owner 空间内的图片，用于管理后台图片库。
+
+鉴权：owner 用户 token，或 `canManageSpace` 设备 token。
+
+请求参数（query）：
+
+- `limit`：单页条数，默认 `50`，最大 `100`。
+- `before`：以 ISO 8601 时间分页，返回 `createdAt < before` 的记录。
+- `filter`：可选 `all` / `active` / `expired` / `today` / `week` / `month`。
+
+成功响应：
+
+```json
+{
+  "success": true,
+  "data": {
+    "images": [
+      {
+        "id": "uuid",
+        "mimeType": "image/png",
+        "fileSize": 102400,
+        "width": 1920,
+        "height": 1080,
+        "sha256": "64-hex",
+        "sourceKind": "screenshot",
+        "sourceDisplayName": "Screenshots",
+        "uploadedBy": {
+          "userId": "uuid",
+          "userDisplayName": "Owner",
+          "deviceId": "uuid",
+          "deviceName": "OnePlus Pad"
+        },
+        "createdAt": "2026-06-18T01:00:00.000Z",
+        "expiresAt": "2026-07-18T01:00:00.000Z",
+        "isExpired": false
+      }
+    ],
+    "nextCursor": "2026-06-17T22:00:00.000Z"
+  }
+}
+```
+
+`nextCursor` 为 `null` 表示没有更多记录。
+
+注意：
+
+- 默认 `filter=all` 包含已 `deletedAt` 与已过期的记录；如需排除请用 `filter=active`。
+- 服务端按 `createdAt DESC` 返回。
+
+### `DELETE /api/v1/images/{imageId}`（管理删除）
+
+用途：删除一张图片及磁盘文件。
+
+鉴权：owner 用户 token，或 `canManageSpace` 设备 token。
+
+行为：
+
+- 把 `images.deletedAt` 标记为当前时间。
+- 把该图片所有 `pending` / `notified` 投递置为 `expired`（不再向目标设备投递）。
+- 尝试 unlink 磁盘上的存储文件；失败仅记录日志，不影响接口成功。
+- 写入 `audit_logs` 记录 `image.deleted`。
+
+成功响应：
+
+```json
+{
+  "success": true,
+  "data": {
+    "imageId": "uuid",
+    "deletedAt": "2026-06-18T01:00:00.000Z"
+  }
+}
+```
+
+错误情况：
+
+- `404`：图片不存在或属于其他 owner 空间，或已被删除。
+- `403`：非管理身份。
 
 ## 12. 投递 ACK
 

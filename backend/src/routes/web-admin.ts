@@ -98,6 +98,143 @@ const ADMIN_HTML = String.raw`<!doctype html>
       .login-panel { max-width: 720px; margin: 48px auto; }
       .hidden { display: none !important; }
       .audit-meta { max-width: 360px; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+      .image-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+        gap: 12px;
+      }
+      .image-card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .image-card.is-expired { opacity: 0.65; }
+      .image-card-preview {
+        width: 100%;
+        aspect-ratio: 1;
+        background: var(--panel-2);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        cursor: pointer;
+        color: var(--muted);
+        font-size: 11px;
+      }
+      .image-card-preview img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        display: block;
+      }
+      .image-card-meta {
+        padding: 10px;
+        font-size: 12px;
+      }
+      .image-card-name {
+        font-weight: 700;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .image-card-sub {
+        color: var(--muted);
+        font-size: 11px;
+        margin-top: 4px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .image-card-actions {
+        display: flex;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      .image-card-actions button {
+        flex: 1;
+        font-size: 11px;
+        min-height: 26px;
+        padding: 0 6px;
+      }
+      .image-empty {
+        grid-column: 1 / -1;
+        padding: 24px;
+        text-align: center;
+        color: var(--muted);
+      }
+      .image-loadmore {
+        text-align: center;
+        padding: 16px;
+      }
+      .modal {
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: rgba(0, 0, 0, 0.7);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        padding: 24px;
+      }
+      .modal-content {
+        background: var(--panel);
+        color: var(--text);
+        border-radius: 8px;
+        padding: 20px;
+        max-width: min(960px, 90vw);
+        max-height: 90vh;
+        overflow: auto;
+        position: relative;
+        box-shadow: 0 24px 64px rgba(0, 0, 0, 0.4);
+      }
+      .modal-close {
+        position: absolute;
+        top: 6px;
+        right: 10px;
+        background: transparent;
+        border: 0;
+        font-size: 26px;
+        cursor: pointer;
+        color: var(--muted);
+        min-height: 0;
+        padding: 4px 8px;
+      }
+      .modal-close:hover { color: var(--text); }
+      .modal img {
+        max-width: 100%;
+        max-height: 60vh;
+        display: block;
+        margin: 0 auto;
+      }
+      .image-modal-meta {
+        margin-top: 14px;
+        font-size: 13px;
+      }
+      .image-modal-meta dl {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 4px 14px;
+      }
+      .image-modal-meta dt {
+        color: var(--muted);
+        font-weight: 650;
+      }
+      .image-modal-meta dd {
+        margin: 0;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 12px;
+        word-break: break-all;
+      }
+      .image-modal-actions {
+        margin-top: 16px;
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+      }
       @media (max-width: 980px) {
         body { min-width: 0; }
         .shell { grid-template-columns: 1fr; }
@@ -119,6 +256,7 @@ const ADMIN_HTML = String.raw`<!doctype html>
           <button data-view="devices">设备</button>
           <button data-view="users">用户</button>
           <button data-view="groups">分组</button>
+          <button data-view="images">图片</button>
           <button data-view="audit">审计</button>
         </nav>
       </aside>
@@ -132,6 +270,17 @@ const ADMIN_HTML = String.raw`<!doctype html>
           </div>
         </div>
         <div id="message" class="message hidden"></div>
+
+        <div id="imageModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="图片预览">
+          <div class="modal-content">
+            <button class="modal-close" id="imageModalClose" type="button" aria-label="关闭">×</button>
+            <img id="imageModalImg" alt="预览" />
+            <div id="imageModalMeta" class="image-modal-meta"></div>
+            <div class="actions">
+              <button class="danger" id="imageModalDelete" type="button">删除图片</button>
+            </div>
+          </div>
+        </div>
 
         <section id="loginPanel" class="login-panel">
           <div class="card">
@@ -232,6 +381,35 @@ const ADMIN_HTML = String.raw`<!doctype html>
             </div>
             <div class="table-wrap"><table><thead><tr><th>时间</th><th>动作</th><th>目标</th><th>操作者</th><th>元数据</th></tr></thead><tbody id="auditRows"></tbody></table></div>
           </section>
+
+          <section id="view-images" class="view">
+            <div class="card">
+              <h3>图片库</h3>
+              <div class="form-grid two">
+                <div class="field">
+                  <label>筛选</label>
+                  <select id="imageFilter">
+                    <option value="all">全部</option>
+                    <option value="active">有效</option>
+                    <option value="expired">已过期</option>
+                    <option value="today">今天</option>
+                    <option value="week">最近 7 天</option>
+                    <option value="month">最近 30 天</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>&nbsp;</label>
+                  <div class="actions">
+                    <button class="secondary" id="refreshImagesBtn">刷新</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div id="imageGrid" class="image-grid"></div>
+            <div id="imageLoadMore" class="image-loadmore hidden">
+              <button class="secondary" id="imageLoadMoreBtn">加载更多</button>
+            </div>
+          </section>
         </section>
       </section>
     </main>
@@ -243,11 +421,16 @@ const ADMIN_HTML = String.raw`<!doctype html>
         users: [],
         devices: [],
         groups: [],
-        logs: []
+        logs: [],
+        images: [],
+        imageCursor: null,
+        imageFilter: "all",
+        imageLoaded: false,
+        previewBlobUrls: {}
       };
 
       const $ = (id) => document.getElementById(id);
-      const titleMap = { dashboard: "概览", devices: "设备", users: "用户", groups: "分组", audit: "审计" };
+      const titleMap = { dashboard: "概览", devices: "设备", users: "用户", groups: "分组", images: "图片库", audit: "审计" };
       const permissionLabels = {
         canAutoUpload: "自动上传",
         canManualUpload: "手动上传",
@@ -327,6 +510,13 @@ const ADMIN_HTML = String.raw`<!doctype html>
         state.devices = [];
         state.groups = [];
         state.logs = [];
+        state.images = [];
+        state.imageCursor = null;
+        state.imageLoaded = false;
+        Object.keys(state.previewBlobUrls).forEach((id) => {
+          URL.revokeObjectURL(state.previewBlobUrls[id]);
+          delete state.previewBlobUrls[id];
+        });
         localStorage.removeItem("studyshot_admin_token");
         localStorage.removeItem("studyshot_admin_user");
         setSession();
@@ -425,6 +615,13 @@ const ADMIN_HTML = String.raw`<!doctype html>
         return '<div class="table-wrap"><table><thead><tr><th>时间</th><th>动作</th><th>目标</th><th>操作者</th><th>元数据</th></tr></thead><tbody>' + logs.map((log) => auditRow(log)).join("") + '</tbody></table></div>';
       }
 
+      function formatBytes(n) {
+        if (!n || n < 0) return "-";
+        if (n < 1024) return n + " B";
+        if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+        return (n / 1024 / 1024).toFixed(1) + " MB";
+      }
+
       function auditRow(log) {
         return '<tr>' +
           '<td>' + fmt(log.createdAt) + '</td>' +
@@ -481,6 +678,10 @@ const ADMIN_HTML = String.raw`<!doctype html>
         button.classList.add("active");
         $("view-" + button.dataset.view).classList.add("active");
         $("viewTitle").textContent = titleMap[button.dataset.view] || button.dataset.view;
+        if (button.dataset.view === "images" && !state.imageLoaded) {
+          state.imageLoaded = true;
+          loadImages(true);
+        }
       });
 
       document.body.addEventListener("change", async (event) => {
@@ -555,6 +756,187 @@ const ADMIN_HTML = String.raw`<!doctype html>
         if (event.key === "Enter") login().catch((err) => showMessage(err.message || String(err), "error"));
       });
 
+      // -------- Image library --------
+      async function loadImages(reset = true) {
+        if (!state.token) return;
+        showMessage("", "ok");
+        try {
+          const params = new URLSearchParams();
+          params.set("limit", "50");
+          params.set("filter", state.imageFilter);
+          if (!reset && state.imageCursor) {
+            params.set("before", state.imageCursor);
+          }
+          const data = await api("/images?" + params.toString());
+          const incoming = data.images || [];
+          if (reset) {
+            // Drop blob URLs for cards that are no longer in view.
+            const keep = new Set(incoming.map((img) => img.id));
+            Object.keys(state.previewBlobUrls).forEach((id) => {
+              if (!keep.has(id)) {
+                URL.revokeObjectURL(state.previewBlobUrls[id]);
+                delete state.previewBlobUrls[id];
+              }
+            });
+            state.images = incoming;
+          } else {
+            const existing = new Set(state.images.map((img) => img.id));
+            state.images = state.images.concat(incoming.filter((img) => !existing.has(img.id)));
+          }
+          state.imageCursor = data.nextCursor || null;
+          renderImages();
+        } catch (err) {
+          showMessage(err.message || String(err), "error");
+        }
+      }
+
+      function renderImages() {
+        const grid = $("imageGrid");
+        if (!state.images.length) {
+          grid.innerHTML = '<div class="image-empty">暂无图片</div>';
+          $("imageLoadMore").classList.add("hidden");
+          return;
+        }
+        grid.innerHTML = state.images.map((img) => {
+          const uploader = img.uploadedBy && (img.uploadedBy.deviceName || img.uploadedBy.userDisplayName) || "未知";
+          const expiredTag = img.isExpired ? '<span class="pill bad">已过期</span>' : '<span class="pill ok">有效</span>';
+          return (
+            '<div class="image-card' + (img.isExpired ? ' is-expired' : '') + '" data-image-id="' + escapeHtml(img.id) + '">' +
+              '<div class="image-card-preview" data-action="image-preview">' +
+                '<span>加载中…</span>' +
+              '</div>' +
+              '<div class="image-card-meta">' +
+                '<div class="image-card-name">' + escapeHtml(uploader) + ' ' + expiredTag + '</div>' +
+                '<div class="image-card-sub">' + fmt(img.createdAt) + ' · ' + formatBytes(img.fileSize) + '</div>' +
+                '<div class="image-card-sub">' + escapeHtml(img.mimeType) + (img.width && img.height ? ' · ' + img.width + '×' + img.height : '') + '</div>' +
+                '<div class="image-card-actions">' +
+                  '<button class="secondary" data-action="image-preview" type="button">预览</button>' +
+                  '<button class="danger" data-action="image-delete" type="button">删除</button>' +
+                '</div>' +
+              '</div>' +
+            '</div>'
+          );
+        }).join("");
+        $("imageLoadMore").classList.toggle("hidden", !state.imageCursor);
+        // Lazy-load preview thumbnails.
+        state.images.forEach((img) => { loadImagePreview(img.id); });
+      }
+
+      async function loadImagePreview(imageId) {
+        if (state.previewBlobUrls[imageId]) return state.previewBlobUrls[imageId];
+        try {
+          const response = await fetch("/api/v1/images/" + encodeURIComponent(imageId) + "/download", {
+            headers: { Authorization: "Bearer " + state.token },
+          });
+          if (!response.ok) {
+            const card = document.querySelector('.image-card[data-image-id="' + CSS.escape(imageId) + '"] .image-card-preview');
+            if (card) card.innerHTML = '<span>预览失败</span>';
+            return null;
+          }
+          const blob = await response.blob();
+          const url = URL.createObjectURL(blob);
+          state.previewBlobUrls[imageId] = url;
+          const card = document.querySelector('.image-card[data-image-id="' + CSS.escape(imageId) + '"] .image-card-preview');
+          if (card) card.innerHTML = '<img src="' + url + '" alt="预览" />';
+          return url;
+        } catch (err) {
+          return null;
+        }
+      }
+
+      async function openImagePreview(imageId) {
+        const img = state.images.find((x) => x.id === imageId);
+        if (!img) return;
+        showMessage("", "ok");
+        let url = state.previewBlobUrls[imageId];
+        if (!url) {
+          url = await loadImagePreview(imageId);
+        }
+        if (!url) {
+          showMessage("预览加载失败", "error");
+          return;
+        }
+        $("imageModalImg").src = url;
+        $("imageModalImg").alt = (img.uploadedBy && img.uploadedBy.deviceName) || "预览";
+        const uploader = img.uploadedBy || {};
+        $("imageModalMeta").innerHTML =
+          '<dl>' +
+            '<dt>ID</dt><dd>' + escapeHtml(img.id) + '</dd>' +
+            '<dt>类型</dt><dd>' + escapeHtml(img.mimeType) + '</dd>' +
+            '<dt>尺寸</dt><dd>' + (img.width && img.height ? img.width + ' × ' + img.height : '-') + '</dd>' +
+            '<dt>大小</dt><dd>' + formatBytes(img.fileSize) + '</dd>' +
+            '<dt>来源</dt><dd>' + escapeHtml(img.sourceKind) + (img.sourceDisplayName ? ' · ' + escapeHtml(img.sourceDisplayName) : '') + '</dd>' +
+            '<dt>上传者</dt><dd>' + escapeHtml(uploader.userDisplayName || '-') + ' (' + escapeHtml(uploader.deviceName || '-') + ')</dd>' +
+            '<dt>sha256</dt><dd>' + escapeHtml(img.sha256) + '</dd>' +
+            '<dt>创建</dt><dd>' + fmt(img.createdAt) + '</dd>' +
+            '<dt>过期</dt><dd>' + fmt(img.expiresAt) + '</dd>' +
+          '</dl>';
+        $("imageModalDelete").dataset.imageId = imageId;
+        $("imageModal").classList.remove("hidden");
+      }
+
+      function closeImagePreview() {
+        $("imageModal").classList.add("hidden");
+        $("imageModalImg").src = "";
+        delete $("imageModalDelete").dataset.imageId;
+      }
+
+      async function deleteImage(imageId) {
+        if (!confirm("确认删除该图片？相关未完成的接收将被标记为过期，操作不可撤销。")) return;
+        showMessage("", "ok");
+        try {
+          await api("/images/" + encodeURIComponent(imageId), { method: "DELETE" });
+          showMessage("图片已删除", "ok");
+          if (state.previewBlobUrls[imageId]) {
+            URL.revokeObjectURL(state.previewBlobUrls[imageId]);
+            delete state.previewBlobUrls[imageId];
+          }
+          state.images = state.images.filter((x) => x.id !== imageId);
+          renderImages();
+          closeImagePreview();
+        } catch (err) {
+          showMessage(err.message || String(err), "error");
+        }
+      }
+
+      $("imageGrid").addEventListener("click", (event) => {
+        const card = event.target.closest(".image-card");
+        if (!card) return;
+        const id = card.dataset.imageId;
+        if (!id) return;
+        const actionEl = event.target.closest("[data-action]");
+        const action = actionEl && actionEl.dataset.action;
+        if (action === "image-delete") {
+          deleteImage(id);
+        } else {
+          openImagePreview(id);
+        }
+      });
+
+      $("refreshImagesBtn").addEventListener("click", () => {
+        state.imageCursor = null;
+        loadImages(true);
+      });
+
+      $("imageFilter").addEventListener("change", (event) => {
+        state.imageFilter = event.target.value;
+        state.imageCursor = null;
+        loadImages(true);
+      });
+
+      $("imageLoadMoreBtn").addEventListener("click", () => {
+        if (state.imageCursor) loadImages(false);
+      });
+
+      $("imageModalClose").addEventListener("click", closeImagePreview);
+      $("imageModalDelete").addEventListener("click", (event) => {
+        const id = event.currentTarget.dataset.imageId;
+        if (id) deleteImage(id);
+      });
+      $("imageModal").addEventListener("click", (event) => {
+        if (event.target === $("imageModal")) closeImagePreview();
+      });
+
       setSession();
       if (state.token) refreshAll().catch((err) => {
         showMessage(err.message || String(err), "error");
@@ -569,7 +951,7 @@ export async function webAdminRoutes(app: FastifyInstance): Promise<void> {
     reply.header("Content-Type", "text/html; charset=utf-8");
     reply.header(
       "Content-Security-Policy",
-      "default-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:"
+      "default-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data: blob:"
     );
     return reply.send(ADMIN_HTML);
   };

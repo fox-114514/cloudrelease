@@ -148,6 +148,8 @@
 - 撤销设备。
 - 管理用户、用户组和审计日志。
 - 为任意同空间用户创建设备绑定码。
+- 浏览 / 删除空间内的图片库（`GET /api/v1/images`、`DELETE /api/v1/images/{id}`，以及通过 `GET /download` 预览）。
+- 通过 `/images/{id}/download` 下载空间内任意未过期图片用于预览。
 
 典型开启对象：
 

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { bindDevice, loadConfig, saveConfig, unbind } from "../config.js";
 import { startWatcher } from "../watcher.js";
 import { WsReceiveClient } from "../ws-client.js";
-import { normalizeBaseUrl } from "../utils.js";
+import { ensureAllowedDir, isAllowedDir, normalizeBaseUrl } from "../utils.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -82,11 +82,35 @@ export async function startWebServer(port = 0): Promise<{ url: string; close: ()
     return reply.send(config);
   });
 
-  app.post("/api/config", async (req: FastifyRequest<{ Body: Partial<import("../config.js").AppConfig> }>, reply) => {
+  app.post("/api/config", async (req: FastifyRequest<{
+    Body: Partial<import("../config.js").AppConfig> & { allowUnsafePath?: boolean }
+  }>, reply) => {
     const config = await loadConfig();
-    const body = req.body;
-    if (body.watchDir !== undefined) config.watchDir = body.watchDir;
-    if (body.downloadDir !== undefined) config.downloadDir = body.downloadDir;
+    const body = req.body ?? {};
+    const allowUnsafe = body.allowUnsafePath === true;
+
+    try {
+      if (body.watchDir !== undefined) {
+        const resolved = await ensureAllowedDir(body.watchDir, allowUnsafe);
+        if (!allowUnsafe && isAllowedDir(resolved).ok === false) {
+          // ensureAllowedDir already threw — defensive.
+        }
+        if (allowUnsafe && !isAllowedDir(resolved).ok) {
+          broadcastLog(`警告：watchDir 设置为非安全路径 ${resolved}`, "warn");
+        }
+        config.watchDir = resolved;
+      }
+      if (body.downloadDir !== undefined) {
+        const resolved = await ensureAllowedDir(body.downloadDir, allowUnsafe);
+        if (allowUnsafe && !isAllowedDir(resolved).ok) {
+          broadcastLog(`警告：downloadDir 设置为非安全路径 ${resolved}`, "warn");
+        }
+        config.downloadDir = resolved;
+      }
+    } catch (err) {
+      return reply.status(400).send({ success: false, error: { message: (err as Error).message } });
+    }
+
     if (body.autoUpload !== undefined) config.autoUpload = body.autoUpload;
     if (body.autoReceive !== undefined) config.autoReceive = body.autoReceive;
     await saveConfig(config);

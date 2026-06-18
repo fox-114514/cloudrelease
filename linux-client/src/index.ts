@@ -9,7 +9,7 @@ import { bindDevice, loadConfig, saveConfig, unbind } from "./config.js";
 import { startWatcher } from "./watcher.js";
 import { uploadSingle } from "./uploader.js";
 import { WsReceiveClient } from "./ws-client.js";
-import { defaultDownloadDir, ensureDir, normalizeBaseUrl } from "./utils.js";
+import { defaultDownloadDir, ensureAllowedDir, ensureDir, isAllowedDir, normalizeBaseUrl } from "./utils.js";
 
 const program = new Command();
 
@@ -98,6 +98,7 @@ program
   .command("receive")
   .description("Connect WebSocket and auto-download incoming images")
   .option("-d, --download-dir <dir>", "Directory to save received images")
+  .option("--allow-unsafe-path", "Allow non-home/non-tmp paths (logs a warning)", false)
   .action(async (options) => {
     const config = await loadConfig();
     if (!config.device) {
@@ -105,7 +106,16 @@ program
       process.exit(1);
     }
     if (options.downloadDir) {
-      config.downloadDir = path.resolve(options.downloadDir);
+      try {
+        config.downloadDir = await ensureAllowedDir(options.downloadDir, options.allowUnsafePath === true);
+      } catch (err) {
+        console.error((err as Error).message);
+        console.error("Pass --allow-unsafe-path to override (logs a warning).");
+        process.exit(1);
+      }
+      if (options.allowUnsafePath && !isAllowedDir(config.downloadDir).ok) {
+        console.warn(`[receive] 警告：下载到非安全路径 ${config.downloadDir}`);
+      }
       await saveConfig(config);
     }
     const downloadDir = config.downloadDir || defaultDownloadDir();
@@ -136,13 +146,24 @@ program
   .command("watch")
   .description("Watch a directory and auto-upload new images")
   .argument("<dir>", "Directory to watch")
-  .action(async (dir) => {
+  .option("--allow-unsafe-path", "Allow non-home/non-tmp paths (logs a warning)", false)
+  .action(async (dir, options) => {
     const config = await loadConfig();
     if (!config.device) {
       console.error("Not bound. Run bind first.");
       process.exit(1);
     }
-    const watchDir = path.resolve(dir);
+    let watchDir: string;
+    try {
+      watchDir = await ensureAllowedDir(dir, options.allowUnsafePath === true);
+    } catch (err) {
+      console.error((err as Error).message);
+      console.error("Pass --allow-unsafe-path to override (logs a warning).");
+      process.exit(1);
+    }
+    if (options.allowUnsafePath && !isAllowedDir(watchDir).ok) {
+      console.warn(`[watch] 警告：监听非安全路径 ${watchDir}（--allow-unsafe-path）`);
+    }
     try {
       await fs.access(watchDir);
     } catch {

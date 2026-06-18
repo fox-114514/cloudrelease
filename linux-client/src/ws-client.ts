@@ -15,13 +15,17 @@ export interface WsClientOptions {
   device: DeviceConfig;
   config: AppConfig;
   onStatus?: (status: string) => void;
-  onDownload?: (filePath: string) => void;
+  onDownload?: (filePath: string, imageId: string) => void;
   onError?: (message: string) => void;
 }
+
+const PING_INTERVAL_MS = 25_000;
+const DOWNLOAD_MAX_ATTEMPTS = 3;
 
 export class WsReceiveClient {
   private socket?: WebSocket;
   private reconnectTimer?: NodeJS.Timeout;
+  private heartbeatTimer?: NodeJS.Timeout;
   private reconnectDelayMs = 1000;
   private destroyed = false;
   private processing = new Set<string>();
@@ -38,11 +42,15 @@ export class WsReceiveClient {
 
   stop(): void {
     this.destroyed = true;
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = undefined;
+    this.clearReconnect();
+    this.stopHeartbeat();
+    if (this.socket) {
+      try {
+        this.socket.close(1000, "Client stopped");
+      } catch {
+        // ignore
+      }
     }
-    this.socket?.close();
     this.socket = undefined;
   }
 
@@ -60,6 +68,7 @@ export class WsReceiveClient {
       this.reconnectDelayMs = 1000;
       this.log("connected", "WebSocket connected");
       this.socket?.send(JSON.stringify({ type: "hello" }));
+      this.startHeartbeat();
       this.fetchPending();
     });
 
@@ -71,6 +80,7 @@ export class WsReceiveClient {
     this.socket.on("close", (code, reason) => {
       const reasonText = reason.toString() || "unknown";
       this.log("disconnected", `WebSocket closed: ${code} ${reasonText}`);
+      this.stopHeartbeat();
       this.socket = undefined;
       if (this.shouldReconnect(code)) {
         this.scheduleReconnect();
@@ -81,7 +91,23 @@ export class WsReceiveClient {
 
     this.socket.on("error", (err) => {
       this.log("error", `WebSocket error: ${err.message}`);
+      // The close event will fire right after; let it handle reconnect scheduling.
     });
+  }
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    this.heartbeatTimer = setInterval(() => {
+      if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+      this.socket.send(JSON.stringify({ type: "ping" }));
+    }, PING_INTERVAL_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
   }
 
   private handleMessage(text: string): void {
@@ -100,28 +126,44 @@ export class WsReceiveClient {
   }
 
   private handleImageCreated(msg: Record<string, unknown>): void {
+    const delivery = this.parseDelivery(msg);
+    if (!delivery) return;
+
+    if (this.processing.has(delivery.deliveryId)) return;
+    this.processing.add(delivery.deliveryId);
+
+    this.downloadWithRetries(delivery).finally(() => {
+      this.processing.delete(delivery.deliveryId);
+    });
+  }
+
+  private parseDelivery(msg: Record<string, unknown>): DeliveryLike | null {
     const deliveryId = msg.deliveryId as string | undefined;
     const image = (msg.image ?? {}) as Record<string, unknown>;
     const imageId = image.id as string | undefined;
-    const mimeType = (image.mimeType as string) || "image/jpeg";
-    if (!deliveryId || !imageId) return;
-
-    if (this.processing.has(deliveryId)) return;
-    this.processing.add(deliveryId);
-
-    this.downloadAndAck(deliveryId, imageId, mimeType).finally(() => {
-      this.processing.delete(deliveryId);
-    });
+    if (!deliveryId || !imageId) return null;
+    return {
+      deliveryId,
+      imageId,
+      mimeType: (image.mimeType as string) || "image/jpeg",
+      createdAt: (msg.createdAt as string) || new Date().toISOString(),
+    };
   }
 
   private async fetchPending(): Promise<void> {
     try {
       const { deliveries } = await this.api.getPendingDeliveries();
-      for (const delivery of deliveries) {
-        if (this.processing.has(delivery.id)) continue;
-        this.processing.add(delivery.id);
-        this.downloadAndAck(delivery.id, delivery.image.id, delivery.image.mimeType).finally(() => {
-          this.processing.delete(delivery.id);
+      for (const raw of deliveries) {
+        const delivery: DeliveryLike = {
+          deliveryId: raw.id,
+          imageId: raw.image.id,
+          mimeType: raw.image.mimeType,
+          createdAt: raw.createdAt,
+        };
+        if (this.processing.has(delivery.deliveryId)) continue;
+        this.processing.add(delivery.deliveryId);
+        this.downloadWithRetries(delivery).finally(() => {
+          this.processing.delete(delivery.deliveryId);
         });
       }
     } catch (err) {
@@ -129,46 +171,72 @@ export class WsReceiveClient {
     }
   }
 
-  private async downloadAndAck(
-    deliveryId: string,
-    imageId: string,
-    mimeType: string
-  ): Promise<void> {
-    try {
-      const downloadDir = this.options.config.downloadDir || path.join(process.cwd(), "downloads");
-      await ensureDir(downloadDir);
-
-      const sourceName = sanitizeFilePart(this.options.device.deviceName);
-      const fileName = `${formatTimestamp(new Date().toISOString())}_${sourceName}_${imageId.slice(
-        0,
-        8
-      )}${extensionForMime(mimeType)}`;
-      const filePath = path.join(downloadDir, fileName);
-
-      const stream = await this.api.downloadImage(imageId);
-      const file = await fs.open(filePath, "w");
+  private async downloadWithRetries(delivery: DeliveryLike): Promise<void> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= DOWNLOAD_MAX_ATTEMPTS; attempt += 1) {
       try {
-        const reader = stream.getReader();
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          await file.write(value);
+        await this.downloadOnce(delivery);
+        return;
+      } catch (err) {
+        lastError = err;
+        this.log("error", `Download attempt ${attempt}/${DOWNLOAD_MAX_ATTEMPTS} failed: ${(err as Error).message}`);
+        if (attempt < DOWNLOAD_MAX_ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, attempt * 800));
         }
-      } finally {
-        await file.close();
-      }
-
-      await this.api.ackDelivery(deliveryId, "downloaded");
-      this.log("download", `Saved ${filePath}`);
-      this.options.onDownload?.(filePath);
-    } catch (err) {
-      this.log("error", `Download failed: ${(err as Error).message}`);
-      try {
-        await this.api.ackDelivery(deliveryId, "failed");
-      } catch {
-        // ignore
       }
     }
+    const message = lastError instanceof Error ? lastError.message : String(lastError);
+    this.log("error", `Download failed permanently for ${delivery.deliveryId}: ${message}`);
+    try {
+      await this.api.ackDelivery(delivery.deliveryId, "failed");
+    } catch {
+      // ignore
+    }
+  }
+
+  private async downloadOnce(delivery: DeliveryLike): Promise<void> {
+    const downloadDir = this.options.config.downloadDir || path.join(process.cwd(), "downloads");
+    await ensureDir(downloadDir);
+
+    const sourceName = sanitizeFilePart(this.options.device.deviceName);
+    const fileName = `${formatTimestamp(delivery.createdAt)}_${sourceName}_${delivery.imageId.slice(
+      0,
+      8,
+    )}${extensionForMime(delivery.mimeType)}`;
+    const filePath = await this.uniquePath(path.join(downloadDir, fileName));
+
+    const stream = await this.api.downloadImage(delivery.imageId);
+    const handle = await fs.open(filePath, "w", 0o600);
+    try {
+      const reader = stream.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        await handle.write(value);
+      }
+    } finally {
+      await handle.close();
+    }
+
+    await this.api.ackDelivery(delivery.deliveryId, "downloaded");
+    this.log("download", `Saved ${filePath}`);
+    this.options.onDownload?.(filePath, delivery.imageId);
+  }
+
+  private async uniquePath(basePath: string): Promise<string> {
+    const parsed = path.parse(basePath);
+    for (let index = 0; index < 1000; index += 1) {
+      const candidate =
+        index === 0
+          ? basePath
+          : path.join(parsed.dir, `${parsed.name}-${String(index + 1).padStart(2, "0")}${parsed.ext}`);
+      try {
+        await fs.access(candidate);
+      } catch {
+        return candidate;
+      }
+    }
+    throw new Error("Unable to allocate a unique file name");
   }
 
   private shouldReconnect(closeCode: number): boolean {
@@ -189,9 +257,23 @@ export class WsReceiveClient {
     }, jitter);
   }
 
+  private clearReconnect(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+  }
+
   private log(tag: string, message: string): void {
     const line = `[${new Date().toISOString()}] [${tag}] ${message}`;
     console.log(line);
     this.options.onStatus?.(line);
   }
+}
+
+interface DeliveryLike {
+  deliveryId: string;
+  imageId: string;
+  mimeType: string;
+  createdAt: string;
 }

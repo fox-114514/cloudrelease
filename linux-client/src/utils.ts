@@ -115,6 +115,35 @@ export async function ensureDir(dir: string): Promise<void> {
   await fs.mkdir(dir, { recursive: true });
 }
 
+/**
+ * Reject paths outside user home / /tmp to prevent accidental exfiltration
+ * of sensitive directories (e.g. ~/.ssh, ~/.aws) into the auto-upload
+ * pipeline. Callers can pass `allowUnsafe=true` to bypass with a warning.
+ */
+export function isAllowedDir(rawDir: string): { ok: boolean; reason?: string } {
+  const resolved = path.resolve(rawDir);
+  const home = os.homedir();
+  const tmp = "/tmp";
+  if (resolved === home || resolved.startsWith(home + path.sep)) return { ok: true };
+  if (resolved === tmp || resolved.startsWith(tmp + path.sep)) return { ok: true };
+  return {
+    ok: false,
+    reason: `路径必须在用户家目录 (${home}) 或 /tmp 下，避免误上传敏感数据`,
+  };
+}
+
+export async function ensureAllowedDir(rawDir: string, allowUnsafe: boolean): Promise<string> {
+  const resolved = path.resolve(rawDir);
+  if (!allowUnsafe) {
+    const verdict = isAllowedDir(resolved);
+    if (!verdict.ok) {
+      throw new Error(verdict.reason);
+    }
+  }
+  await ensureDir(resolved);
+  return resolved;
+}
+
 export function configDir(): string {
   const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
   return path.join(base, "studyshot-relay");

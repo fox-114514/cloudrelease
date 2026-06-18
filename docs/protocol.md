@@ -584,7 +584,7 @@ Content-Type：`multipart/form-data`
 
 注意：
 
-- 默认 `filter=all` 包含已 `deletedAt` 与已过期的记录；如需排除请用 `filter=active`。
+- 所有 `filter` 都默认排除已删除（`deletedAt` 不为空）的图片。已删除的图片无法预览（`GET /download` 也会拒绝它们），再删除也会 404。如果需要查看删除历史，请查询 `audit-logs`（`action = "image.deleted"`）。
 - 服务端按 `createdAt DESC` 返回。
 
 ### `DELETE /api/v1/images/{imageId}`（管理删除）

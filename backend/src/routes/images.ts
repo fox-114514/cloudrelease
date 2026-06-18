@@ -253,32 +253,31 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
     const ownerUserId = request.user?.ownerUserId ?? request.device!.ownerUserId;
     const now = new Date();
 
+    // All filters exclude soft-deleted images by default. Deleted images cannot
+    // be previewed (GET /download filters them out) and re-deleting them would
+    // always 404, so showing them in the library is just noise. Inspect
+    // audit_logs if you need deletion history.
     const where: {
       ownerUserId: string;
-      deletedAt?: null;
+      deletedAt: null;
       expiresAt?: { gt: Date } | { lte: Date };
       createdAt?: { gte?: Date; lt?: Date };
-    } = { ownerUserId };
+    } = { ownerUserId, deletedAt: null };
 
     const createdAtFilter: { gte?: Date; lt?: Date } = {};
 
     if (query.filter === "active") {
-      where.deletedAt = null;
       where.expiresAt = { gt: now };
     } else if (query.filter === "expired") {
-      where.deletedAt = null;
       where.expiresAt = { lte: now };
     } else if (query.filter === "today") {
-      where.deletedAt = null;
       createdAtFilter.gte = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     } else if (query.filter === "week") {
-      where.deletedAt = null;
       createdAtFilter.gte = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
     } else if (query.filter === "month") {
-      where.deletedAt = null;
       createdAtFilter.gte = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     }
-    // "all": no filter on deletedAt, expiresAt, or createdAt range.
+    // "all": every non-deleted image regardless of expiry or age.
 
     if (query.before) {
       createdAtFilter.lt = new Date(query.before);

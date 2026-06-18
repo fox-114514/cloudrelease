@@ -1008,6 +1008,10 @@ const ADMIN_HTML = String.raw`<!doctype html>
                 revokePreview(id);
               }
             });
+            // Drop selected IDs that are no longer visible (e.g., deleted in another tab).
+            state.selectedImageIds.forEach((id) => {
+              if (!keep.has(id)) state.selectedImageIds.delete(id);
+            });
             state.images = incoming;
           } else {
             const existing = new Set(state.images.map((img) => img.id));
@@ -1018,6 +1022,21 @@ const ADMIN_HTML = String.raw`<!doctype html>
         } catch (err) {
           showMessage(err.message || String(err), "error");
         }
+      }
+
+      function syncSelectionVisual() {
+        document.querySelectorAll(".image-card").forEach((card) => {
+          const id = card.dataset.imageId;
+          if (!id) return;
+          const shouldBeSelected = state.selectedImageIds.has(id);
+          const isSelected = card.classList.contains("is-selected");
+          if (shouldBeSelected === isSelected) return;
+          card.classList.toggle("is-selected", shouldBeSelected);
+          const checkbox = card.querySelector(".image-card-checkbox");
+          if (checkbox) checkbox.textContent = shouldBeSelected ? "✓" : "";
+          const hint = card.querySelector(".image-card-selected-hint");
+          if (hint) hint.textContent = shouldBeSelected ? "已选中" : "点击选中";
+        });
       }
 
       async function openImagePreview(imageId) {
@@ -1100,6 +1119,9 @@ const ADMIN_HTML = String.raw`<!doctype html>
           removeCardFromDom(id);
         });
         failed.forEach((entry) => state.selectedImageIds.delete(entry.id));
+        // Reconcile DOM visual state with selectedImageIds so cards whose
+        // selection was just cleared no longer show as selected.
+        syncSelectionVisual();
         showEmptyIfNeeded();
         updateSelectionBar();
         let msg;

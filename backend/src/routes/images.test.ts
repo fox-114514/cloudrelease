@@ -463,6 +463,54 @@ describe("GET /api/v1/images (admin list)", () => {
     ]);
     expect(ids.size).toBe(3);
   });
+
+  it("excludes soft-deleted images from the default filter=all list", async () => {
+    const { app, userToken, uploadDeviceToken } = await setupUploaderAndReceiver();
+    const a = await uploadTestImage(app, uploadDeviceToken);
+    expect(a.res.statusCode).toBe(201);
+
+    const b = await uploadTestImage(app, uploadDeviceToken);
+    expect(b.res.statusCode).toBe(201);
+
+    // Soft-delete a.
+    const del = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/images/${a.body.data.imageId}`,
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+    expect(del.statusCode).toBe(200);
+
+    // filter=all should now return only the surviving image.
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/v1/images",
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+    expect(list.statusCode).toBe(200);
+    const body = JSON.parse(list.payload);
+    expect(body.data.images).toHaveLength(1);
+    expect(body.data.images[0].id).toBe(b.body.data.imageId);
+  });
+
+  it("excludes soft-deleted images from filter=expired", async () => {
+    const { app, userToken, uploadDeviceToken } = await setupUploaderAndReceiver();
+    const a = await uploadTestImage(app, uploadDeviceToken);
+    expect(a.res.statusCode).toBe(201);
+
+    await app.inject({
+      method: "DELETE",
+      url: `/api/v1/images/${a.body.data.imageId}`,
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/v1/images?filter=expired",
+      headers: { authorization: `Bearer ${userToken}` },
+    });
+    const body = JSON.parse(list.payload);
+    expect(body.data.images).toHaveLength(0);
+  });
 });
 
 describe("DELETE /api/v1/images/:imageId", () => {

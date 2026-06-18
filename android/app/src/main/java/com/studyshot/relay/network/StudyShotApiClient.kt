@@ -1,0 +1,361 @@
+package com.studyshot.relay.network
+
+import android.content.ContentResolver
+import android.net.Uri
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+
+class ApiException(
+    val statusCode: Int,
+    val apiCode: String,
+    override val message: String,
+) : IOException(message)
+
+class StudyShotApiClient(
+    private val client: OkHttpClient = defaultClient(),
+) {
+    fun rawClient(): OkHttpClient = client
+
+    suspend fun registerDevice(
+        serverBaseUrl: String,
+        request: RegisterDeviceRequest,
+    ): RegisterDeviceResponse {
+        val json = JSONObject()
+            .put("bindCode", request.bindCode)
+            .put("deviceName", request.deviceName)
+            .put("platform", request.platform)
+            .put("osVersion", request.osVersion)
+            .put("appVersion", request.appVersion)
+            .toString()
+
+        val httpRequest = Request.Builder()
+            .url(apiUrl(serverBaseUrl, "/api/v1/devices/register"))
+            .post(json.toRequestBody(JSON))
+            .build()
+
+        val data = executeJson(httpRequest)
+        return RegisterDeviceResponse(
+            deviceId = data.getString("deviceId"),
+            deviceToken = data.getString("deviceToken"),
+            permissions = parsePermissions(data.getJSONObject("permissions")),
+        )
+    }
+
+    suspend fun login(
+        serverBaseUrl: String,
+        login: String,
+        password: String,
+    ): LoginResponse {
+        val json = JSONObject()
+            .put("login", login)
+            .put("password", password)
+            .toString()
+
+        val httpRequest = Request.Builder()
+            .url(apiUrl(serverBaseUrl, "/api/v1/auth/login"))
+            .post(json.toRequestBody(JSON))
+            .build()
+
+        val data = executeJson(httpRequest)
+        val user = data.getJSONObject("user")
+        return LoginResponse(
+            accessToken = data.getString("accessToken"),
+            user = UserInfo(
+                id = user.getString("id"),
+                ownerUserId = user.getString("ownerUserId"),
+                role = user.getString("role"),
+                displayName = user.optString("displayName").takeIf { it.isNotBlank() },
+                emailOrLogin = user.optString("emailOrLogin").takeIf { it.isNotBlank() },
+            ),
+        )
+    }
+
+    suspend fun createBindCode(
+        serverBaseUrl: String,
+        accessToken: String,
+        deviceNameHint: String?,
+    ): CreateBindCodeResponse {
+        val json = JSONObject()
+            .put("purpose", "bind_device")
+            .put("expiresInSeconds", 600)
+        if (!deviceNameHint.isNullOrBlank()) {
+            json.put("deviceNameHint", deviceNameHint)
+        }
+
+        val httpRequest = Request.Builder()
+            .url(apiUrl(serverBaseUrl, "/api/v1/bind-codes"))
+            .header("Authorization", "Bearer $accessToken")
+            .post(json.toString().toRequestBody(JSON))
+            .build()
+
+        val data = executeJson(httpRequest)
+        return CreateBindCodeResponse(
+            bindCode = data.getString("bindCode"),
+            expiresAt = data.getString("expiresAt"),
+        )
+    }
+
+    suspend fun listDevices(
+        serverBaseUrl: String,
+        accessToken: String,
+    ): List<ManagedDevice> {
+        val httpRequest = Request.Builder()
+            .url(apiUrl(serverBaseUrl, "/api/v1/devices"))
+            .header("Authorization", "Bearer $accessToken")
+            .get()
+            .build()
+
+        val data = executeJson(httpRequest)
+        val devicesJson = data.optJSONArray("devices") ?: org.json.JSONArray()
+        return buildList {
+            for (index in 0 until devicesJson.length()) {
+                val json = devicesJson.getJSONObject(index)
+                add(
+                    ManagedDevice(
+                        id = json.getString("id"),
+                        userId = json.getString("userId"),
+                        userDisplayName = json.optString("userDisplayName").takeIf { it.isNotBlank() },
+                        name = json.getString("name"),
+                        platform = json.getString("platform"),
+                        revokedAt = json.optString("revokedAt").takeIf { it.isNotBlank() },
+                        permissions = parsePermissions(json.getJSONObject("permissions")),
+                    )
+                )
+            }
+        }
+    }
+
+    suspend fun updateDevicePermission(
+        serverBaseUrl: String,
+        accessToken: String,
+        deviceId: String,
+        key: String,
+        value: Boolean,
+    ) {
+        val json = JSONObject().put(key, value)
+        val httpRequest = Request.Builder()
+            .url(apiUrl(serverBaseUrl, "/api/v1/devices/$deviceId/permissions"))
+            .header("Authorization", "Bearer $accessToken")
+            .patch(json.toString().toRequestBody(JSON))
+            .build()
+
+        executeJson(httpRequest)
+    }
+
+    suspend fun revokeDevice(
+        serverBaseUrl: String,
+        accessToken: String,
+        deviceId: String,
+    ) {
+        val httpRequest = Request.Builder()
+            .url(apiUrl(serverBaseUrl, "/api/v1/devices/$deviceId/revoke"))
+            .header("Authorization", "Bearer $accessToken")
+            .post(ByteArray(0).toRequestBody())
+            .build()
+
+        executeJson(httpRequest)
+    }
+
+    suspend fun uploadImage(
+        serverBaseUrl: String,
+        deviceToken: String,
+        resolver: ContentResolver,
+        uri: Uri,
+        sha256: String,
+        mimeType: String,
+        sourceKind: String,
+        sourceDisplayName: String?,
+        sourceMediaIdHash: String?,
+    ): UploadImageResponse {
+        val bytes = resolver.openInputStream(uri)?.use { it.readBytes() }
+            ?: throw IOException("Unable to open image stream")
+
+        val builder = MultipartBody.Builder().setType(MultipartBody.FORM)
+            .addFormDataPart("sha256", sha256)
+            .addFormDataPart("sourceKind", sourceKind)
+            .addFormDataPart("file", "studyshot-upload", bytes.toRequestBody(mimeType.toMediaType()))
+
+        if (!sourceDisplayName.isNullOrBlank()) {
+            builder.addFormDataPart("sourceDisplayName", sourceDisplayName)
+        }
+        if (!sourceMediaIdHash.isNullOrBlank()) {
+            builder.addFormDataPart("sourceMediaIdHash", sourceMediaIdHash)
+        }
+
+        val httpRequest = Request.Builder()
+            .url(apiUrl(serverBaseUrl, "/api/v1/images"))
+            .header("Authorization", "Bearer $deviceToken")
+            .post(builder.build())
+            .build()
+
+        val data = executeJson(httpRequest)
+        return UploadImageResponse(
+            imageId = data.getString("imageId"),
+            deduplicated = data.optBoolean("deduplicated", false),
+            createdDeliveriesCount = data.optInt("createdDeliveriesCount", 0),
+            expiresAt = data.getString("expiresAt"),
+        )
+    }
+
+    suspend fun getPendingDeliveries(
+        serverBaseUrl: String,
+        deviceToken: String,
+    ): PendingDeliveriesResponse {
+        val httpRequest = Request.Builder()
+            .url(apiUrl(serverBaseUrl, "/api/v1/deliveries/pending"))
+            .header("Authorization", "Bearer $deviceToken")
+            .get()
+            .build()
+
+        val data = executeJson(httpRequest)
+        val deliveriesJson = data.optJSONArray("deliveries") ?: org.json.JSONArray()
+        val deliveries = buildList {
+            for (index in 0 until deliveriesJson.length()) {
+                add(parseDelivery(deliveriesJson.getJSONObject(index)))
+            }
+        }
+        return PendingDeliveriesResponse(deliveries)
+    }
+
+    suspend fun downloadImage(
+        serverBaseUrl: String,
+        deviceToken: String,
+        imageId: String,
+    ): DownloadedImage {
+        val httpRequest = Request.Builder()
+            .url(apiUrl(serverBaseUrl, "/api/v1/images/$imageId/download"))
+            .header("Authorization", "Bearer $deviceToken")
+            .get()
+            .build()
+
+        client.newCall(httpRequest).execute().use { response ->
+            if (!response.isSuccessful) {
+                val bodyText = response.body?.string().orEmpty()
+                val envelope = if (bodyText.isBlank()) JSONObject() else JSONObject(bodyText)
+                val error = envelope.optJSONObject("error")
+                throw ApiException(
+                    response.code,
+                    error?.optString("code") ?: "HTTP_${response.code}",
+                    error?.optString("message") ?: response.message,
+                )
+            }
+            return DownloadedImage(
+                bytes = response.body?.bytes() ?: throw IOException("Empty image response"),
+                mimeType = response.header("Content-Type")?.substringBefore(';') ?: "application/octet-stream",
+            )
+        }
+    }
+
+    suspend fun ackDelivery(
+        serverBaseUrl: String,
+        deviceToken: String,
+        deliveryId: String,
+        status: String,
+        errorMessage: String? = null,
+        localPathHint: String? = null,
+    ) {
+        val json = JSONObject()
+            .put("status", status)
+        if (!errorMessage.isNullOrBlank()) {
+            json.put("errorMessage", errorMessage)
+        }
+        if (!localPathHint.isNullOrBlank()) {
+            json.put("localPathHint", localPathHint)
+        }
+
+        val httpRequest = Request.Builder()
+            .url(apiUrl(serverBaseUrl, "/api/v1/deliveries/$deliveryId/ack"))
+            .header("Authorization", "Bearer $deviceToken")
+            .post(json.toString().toRequestBody(JSON))
+            .build()
+
+        executeJson(httpRequest)
+    }
+
+    private fun executeJson(request: Request): JSONObject {
+        client.newCall(request).execute().use { response ->
+            val bodyText = response.body?.string().orEmpty()
+            val envelope = if (bodyText.isBlank()) JSONObject() else JSONObject(bodyText)
+            if (!response.isSuccessful || envelope.optBoolean("success") != true) {
+                val error = envelope.optJSONObject("error")
+                throw ApiException(
+                    response.code,
+                    error?.optString("code") ?: "HTTP_${response.code}",
+                    error?.optString("message") ?: response.message,
+                )
+            }
+            return envelope.getJSONObject("data")
+        }
+    }
+
+    private fun parsePermissions(json: JSONObject): DevicePermissions {
+        return DevicePermissions(
+            canAutoUpload = json.optBoolean("canAutoUpload", false),
+            canManualUpload = json.optBoolean("canManualUpload", false),
+            canAutoReceive = json.optBoolean("canAutoReceive", false),
+            canManualDownload = json.optBoolean("canManualDownload", false),
+            canManageSpace = json.optBoolean("canManageSpace", false),
+            canCreateInvite = json.optBoolean("canCreateInvite", false),
+            autoUploadScope = json.optString("autoUploadScope", "screenshot_only"),
+            autoReceiveScope = json.optString("autoReceiveScope", "disabled"),
+        )
+    }
+
+    fun parseDelivery(json: JSONObject): DeliveryPayload {
+        val image = json.getJSONObject("image")
+        val source = json.getJSONObject("source")
+        return DeliveryPayload(
+            deliveryId = json.getString("deliveryId"),
+            image = ImageMeta(
+                id = image.getString("id"),
+                mimeType = image.getString("mimeType"),
+                fileSize = image.optLong("fileSize"),
+                width = image.optNullableInt("width"),
+                height = image.optNullableInt("height"),
+                sha256 = image.getString("sha256"),
+            ),
+            source = DeliverySource(
+                uploadUserId = source.getString("uploadUserId"),
+                uploadDeviceId = source.getString("uploadDeviceId"),
+                uploadDeviceName = source.optString("uploadDeviceName").takeIf { it.isNotBlank() },
+            ),
+            createdAt = json.getString("createdAt"),
+            expiresAt = json.getString("expiresAt"),
+        )
+    }
+
+    private fun JSONObject.optNullableInt(name: String): Int? {
+        return if (isNull(name)) null else optInt(name)
+    }
+
+    companion object {
+        private val JSON = "application/json; charset=utf-8".toMediaType()
+
+        fun defaultClient(): OkHttpClient {
+            return OkHttpClient.Builder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .writeTimeout(60, TimeUnit.SECONDS)
+                .build()
+        }
+
+        fun apiUrl(serverBaseUrl: String, path: String): String {
+            return serverBaseUrl.trimEnd('/') + path
+        }
+
+        fun wsUrl(serverBaseUrl: String): String {
+            val normalized = serverBaseUrl.trimEnd('/')
+            return when {
+                normalized.startsWith("https://") -> normalized.replaceFirst("https://", "wss://") + "/api/v1/ws"
+                normalized.startsWith("http://") -> normalized.replaceFirst("http://", "ws://") + "/api/v1/ws"
+                else -> "wss://$normalized/api/v1/ws"
+            }
+        }
+    }
+}

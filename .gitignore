@@ -1,0 +1,88 @@
+# Dependencies
+node_modules/
+*/node_modules/
+.gradle/
+.pnp
+.pnp.js
+
+# Build outputs
+backend/dist/
+desktop/dist/
+desktop/out/
+desktop/release/
+android/app/build/
+android/build/
+android/.gradle/
+android/captures/
+android/outputs/
+*.apk
+*.aab
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# Environment variables
+.env
+.env.*
+.env.local
+.env.*.local
+!**/.env.example
+!**/.env.production.example
+
+# Secrets
+*.pem
+*.key
+*.crt
+*.p12
+*.jks
+keystore.properties
+
+# Database
+data/
+!android/app/src/main/java/**/data/
+!android/app/src/main/java/**/data/**
+*.db
+*.sqlite
+*.sqlite3
+
+# Storage uploads
+storage/
+uploads/
+test-storage/
+backend/storage/
+backend/test-storage/
+
+# Local user-mode PostgreSQL used by Codex/dev setup
+.local-pg/
+.local-pg-data/
+.local-pg.log
+postgresql-*.deb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.csproj
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Temp
+tmp/
+temp/
+*.tmp

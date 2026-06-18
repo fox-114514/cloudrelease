@@ -1,0 +1,14 @@
+{
+  email {$ACME_EMAIL}
+}
+
+{$STUDYSHOT_DOMAIN} {
+  encode zstd gzip
+
+  request_body {
+    max_size 32MB
+  }
+
+  reverse_proxy backend:3000
+}
+

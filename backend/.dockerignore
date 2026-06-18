@@ -1,0 +1,17 @@
+node_modules
+dist
+coverage
+test-storage
+storage
+.env
+.env.*
+!.env.example
+!.env.production.example
+npm-debug.log*
+*.log
+*.db
+*.sqlite
+*.sqlite3
+Dockerfile
+docker-compose*.yml
+

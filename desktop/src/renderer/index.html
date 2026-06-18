@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;"
+    />
+    <title>StudyShot Relay</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <h1>StudyShot Relay</h1>
+          <p id="deviceSummary">未绑定</p>
+        </div>
+        <div class="status-pill" id="connectionStatus">未连接</div>
+      </header>
+
+      <section class="layout">
+        <aside class="side-panel">
+          <nav class="tabs" aria-label="主导航">
+            <button class="tab active" data-tab="status">状态</button>
+            <button class="tab" data-tab="settings">设置</button>
+            <button class="tab" data-tab="history">记录</button>
+            <button class="tab" data-tab="admin">管理</button>
+          </nav>
+        </aside>
+
+        <section class="content-panel">
+          <section class="view active" id="view-status">
+            <div class="section-heading">
+              <h2>连接</h2>
+              <div class="actions">
+                <button id="connectButton">连接</button>
+                <button id="disconnectButton" class="secondary">断开</button>
+              </div>
+            </div>
+
+            <div class="metrics">
+              <div class="metric">
+                <span>服务器</span>
+                <strong id="serverValue">-</strong>
+              </div>
+              <div class="metric">
+                <span>设备</span>
+                <strong id="deviceValue">-</strong>
+              </div>
+              <div class="metric">
+                <span>上次连接</span>
+                <strong id="lastConnectedValue">-</strong>
+              </div>
+              <div class="metric">
+                <span>最近接收</span>
+                <strong id="lastDownloadValue">-</strong>
+              </div>
+            </div>
+
+            <div class="error-line" id="errorLine" hidden></div>
+
+            <div class="section-heading compact">
+              <h2>主用户登录</h2>
+            </div>
+            <form id="ownerLoginForm" class="form-grid">
+              <label>
+                <span>服务器地址</span>
+                <input id="ownerServerInput" name="server" placeholder="https://studyshot.example.com" />
+              </label>
+              <label>
+                <span>登录名</span>
+                <input id="ownerLoginInput" name="login" autocomplete="username" />
+              </label>
+              <label>
+                <span>密码</span>
+                <input id="ownerPasswordInput" name="password" type="password" autocomplete="current-password" />
+              </label>
+              <div class="form-actions">
+                <button type="submit">生成绑定码</button>
+              </div>
+            </form>
+
+            <div class="section-heading compact">
+              <h2>设备绑定</h2>
+            </div>
+            <form id="bindForm" class="form-grid">
+              <label>
+                <span>服务器地址</span>
+                <input id="bindServerInput" name="server" placeholder="https://studyshot.example.com" />
+              </label>
+              <label>
+                <span>绑定码</span>
+                <input id="bindCodeInput" name="bindCode" autocomplete="one-time-code" />
+              </label>
+              <label>
+                <span>设备名</span>
+                <input id="bindDeviceNameInput" name="deviceName" />
+              </label>
+              <div class="form-actions">
+                <button type="submit">绑定设备</button>
+              </div>
+            </form>
+          </section>
+
+          <section class="view" id="view-settings">
+            <div class="section-heading">
+              <h2>接收设置</h2>
+              <button id="saveSettingsButton">保存</button>
+            </div>
+
+            <form id="settingsForm" class="form-grid">
+              <label>
+                <span>服务器地址</span>
+                <input id="serverInput" name="server" />
+              </label>
+              <label>
+                <span>设备名</span>
+                <input id="deviceNameInput" name="deviceName" />
+              </label>
+              <label class="wide">
+                <span>下载目录</span>
+                <div class="inline-input">
+                  <input id="downloadDirInput" name="downloadDir" />
+                  <button type="button" id="chooseDirButton" class="secondary">选择</button>
+                  <button type="button" id="openDirButton" class="secondary">打开</button>
+                </div>
+              </label>
+              <label class="toggle">
+                <input id="autoReceiveInput" type="checkbox" />
+                <span>自动接收</span>
+              </label>
+              <label class="toggle">
+                <input id="copyInput" type="checkbox" />
+                <span>复制到剪贴板</span>
+              </label>
+              <label class="toggle">
+                <input id="notificationInput" type="checkbox" />
+                <span>系统通知</span>
+              </label>
+              <label class="toggle">
+                <input id="startAtLoginInput" type="checkbox" />
+                <span>开机自启</span>
+              </label>
+            </form>
+            <div class="warning-line" id="tokenWarning" hidden></div>
+          </section>
+
+          <section class="view" id="view-history">
+            <div class="section-heading">
+              <h2>图片记录</h2>
+              <div class="actions">
+                <button id="manualUploadButton">手动上传</button>
+                <button id="fetchPendingButton" class="secondary">补收</button>
+              </div>
+            </div>
+            <div class="upload-result" id="manualUploadResult" hidden></div>
+            <div class="history-list" id="historyList"></div>
+          </section>
+
+          <section class="view" id="view-admin">
+            <div class="section-heading">
+              <h2>设备管理</h2>
+              <div class="actions">
+                <button id="refreshDevicesButton" class="secondary">刷新</button>
+                <button id="adminLogoutButton" class="secondary">退出管理</button>
+              </div>
+            </div>
+
+            <form id="adminLoginForm" class="form-grid">
+              <label>
+                <span>服务器地址</span>
+                <input id="adminServerInput" name="server" placeholder="https://studyshot.example.com" />
+              </label>
+              <label>
+                <span>登录名</span>
+                <input id="adminLoginInput" name="login" autocomplete="username" />
+              </label>
+              <label>
+                <span>密码</span>
+                <input id="adminPasswordInput" name="password" type="password" autocomplete="current-password" />
+              </label>
+              <div class="form-actions">
+                <button type="submit">登录管理</button>
+              </div>
+            </form>
+
+            <div class="device-list" id="adminDeviceList"></div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>

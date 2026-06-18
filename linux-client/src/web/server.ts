@@ -85,16 +85,14 @@ export async function startWebServer(port = 0): Promise<{ url: string; close: ()
   app.post("/api/config", async (req: FastifyRequest<{
     Body: Partial<import("../config.js").AppConfig> & { allowUnsafePath?: boolean }
   }>, reply) => {
-    const config = await loadConfig();
+    const oldConfig = await loadConfig();
+    const config = { ...oldConfig };
     const body = req.body ?? {};
     const allowUnsafe = body.allowUnsafePath === true;
 
     try {
       if (body.watchDir !== undefined) {
         const resolved = await ensureAllowedDir(body.watchDir, allowUnsafe);
-        if (!allowUnsafe && isAllowedDir(resolved).ok === false) {
-          // ensureAllowedDir already threw — defensive.
-        }
         if (allowUnsafe && !isAllowedDir(resolved).ok) {
           broadcastLog(`警告：watchDir 设置为非安全路径 ${resolved}`, "warn");
         }
@@ -113,7 +111,31 @@ export async function startWebServer(port = 0): Promise<{ url: string; close: ()
 
     if (body.autoUpload !== undefined) config.autoUpload = body.autoUpload;
     if (body.autoReceive !== undefined) config.autoReceive = body.autoReceive;
+
+    const dirChanged =
+      (body.watchDir !== undefined && config.watchDir !== oldConfig.watchDir) ||
+      (body.downloadDir !== undefined && config.downloadDir !== oldConfig.downloadDir);
+    const autoUploadChanged =
+      body.autoUpload !== undefined && config.autoUpload !== oldConfig.autoUpload;
+
     await saveConfig(config);
+
+    // If watchDir changed and auto upload is on, restart the watcher so
+    // it picks up the new path. Similarly toggle watcher when autoUpload flips.
+    if (dirChanged && body.watchDir !== undefined && config.autoUpload) {
+      await stopWatch().catch(() => undefined);
+      await startWatch().catch((err) =>
+        broadcastLog(`重启监听失败：${(err as Error).message}`, "error"),
+      );
+    } else if (autoUploadChanged) {
+      if (config.autoUpload) {
+        await startWatch().catch((err) =>
+          broadcastLog(`启动监听失败：${(err as Error).message}`, "error"),
+        );
+      } else {
+        await stopWatch().catch(() => undefined);
+      }
+    }
     return reply.send({ success: true });
   });
 

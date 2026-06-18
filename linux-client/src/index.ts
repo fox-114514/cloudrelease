@@ -11,6 +11,19 @@ import { uploadSingle } from "./uploader.js";
 import { WsReceiveClient } from "./ws-client.js";
 import { defaultDownloadDir, ensureAllowedDir, ensureDir, isAllowedDir, normalizeBaseUrl } from "./utils.js";
 
+/** Run `cleanup` on SIGINT/SIGTERM and exit with code 0. */
+function installShutdown(cleanup: () => Promise<void> | void): void {
+  let triggered = false;
+  const handler = (signal: string) => {
+    if (triggered) return;
+    triggered = true;
+    console.log(`\nReceived ${signal}, shutting down...`);
+    Promise.resolve(cleanup()).finally(() => process.exit(0));
+  };
+  process.on("SIGINT", () => handler("SIGINT"));
+  process.on("SIGTERM", () => handler("SIGTERM"));
+}
+
 const program = new Command();
 
 program.name("studyshot-relay").description("StudyShot Relay Linux CLI").version("0.1.0");
@@ -131,14 +144,8 @@ program
 
     client.start();
 
-    process.on("SIGINT", () => {
-      console.log("\nStopping...");
+    installShutdown(() => {
       client.stop();
-      process.exit(0);
-    });
-    process.on("SIGTERM", () => {
-      client.stop();
-      process.exit(0);
     });
   });
 
@@ -182,14 +189,8 @@ program
       onError: console.error,
     });
 
-    process.on("SIGINT", async () => {
-      console.log("\nStopping watcher...");
+    installShutdown(async () => {
       await watcher.close();
-      process.exit(0);
-    });
-    process.on("SIGTERM", async () => {
-      await watcher.close();
-      process.exit(0);
     });
   });
 
@@ -209,13 +210,9 @@ program
       console.log(`Web UI: ${server.url}`);
       openBrowser(server.url);
 
-      const stop = async () => {
-        console.log("\nShutting down...");
+      installShutdown(async () => {
         await server.close();
-        process.exit(0);
-      };
-      process.on("SIGINT", stop);
-      process.on("SIGTERM", stop);
+      });
     } catch (err) {
       console.error(`Launch failed: ${(err as Error).message}`);
       process.exit(1);
@@ -258,15 +255,10 @@ program
     });
     client.start();
 
-    const stop = async () => {
-      console.log("\nStopping...");
+    installShutdown(async () => {
       client.stop();
       await watcher?.close();
-      process.exit(0);
-    };
-
-    process.on("SIGINT", stop);
-    process.on("SIGTERM", stop);
+    });
   });
 
 program.parse();

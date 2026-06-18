@@ -6,6 +6,18 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ICON_DIR="${HOME}/.local/share/icons"
 APPS_DIR="${HOME}/.local/share/applications"
 
+if [[ ! -f "$PROJECT_DIR/dist/index.js" ]]; then
+  echo "ERROR: $PROJECT_DIR/dist/index.js 不存在，请先在 $PROJECT_DIR 执行:" >&2
+  echo "  npm install" >&2
+  echo "  npm run build" >&2
+  exit 1
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "ERROR: 未检测到 node，请先安装 Node.js >= 18" >&2
+  exit 1
+fi
+
 mkdir -p "$ICON_DIR" "$APPS_DIR"
 
 cp "$SCRIPT_DIR/icon.svg" "$ICON_DIR/studyshot-relay.svg"

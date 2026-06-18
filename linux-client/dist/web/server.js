@@ -62,7 +62,7 @@ async function stopWatch() {
 export async function startWebServer(port = 0) {
     const app = fastify({ logger: false });
     await app.register(fastifyStatic, {
-        root: path.join(__dirname, "web"),
+        root: __dirname,
         prefix: "/",
     });
     app.get("/api/config", async (_req, reply) => {
@@ -146,7 +146,7 @@ export async function startWebServer(port = 0) {
     });
     app.setNotFoundHandler(async (req, reply) => {
         if (req.method === "GET" && !req.url.startsWith("/api/")) {
-            const indexPath = path.join(__dirname, "web", "index.html");
+            const indexPath = path.join(__dirname, "index.html");
             const html = await fs.readFile(indexPath, "utf-8");
             return reply.type("text/html").send(html);
         }

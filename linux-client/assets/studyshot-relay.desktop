@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=StudyShot Relay
+Comment=StudyShot Relay Linux Client
+Exec={{EXEC}}
+Icon={{ICON}}
+Type=Application
+Terminal=false
+Categories=Network;Utility;
+StartupNotify=true

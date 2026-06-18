@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StudyShot Relay - Linux Client</title>
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+  <style>
+    :root {
+      --bg: #0f172a;
+      --panel: #1e293b;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-2: #818cf8;
+      --danger: #f87171;
+      --success: #34d399;
+      --warning: #fbbf24;
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 16px 24px;
+      background: var(--panel);
+      border-bottom: 1px solid #334155;
+    }
+    header img { width: 36px; height: 36px; }
+    header h1 { margin: 0; font-size: 1.25rem; }
+    .status-pill {
+      margin-left: auto;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 0.85rem;
+      background: #334155;
+    }
+    .status-pill.connected { background: rgba(52, 211, 153, 0.15); color: var(--success); }
+    .status-pill.disconnected { background: rgba(248, 113, 113, 0.15); color: var(--danger); }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 24px;
+    }
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: var(--panel);
+      border-radius: var(--radius);
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .card h2 {
+      margin: 0 0 16px 0;
+      font-size: 1rem;
+      color: var(--accent);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    label {
+      display: block;
+      margin-bottom: 12px;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+    input[type="text"], input[type="password"], input[type="url"], select {
+      width: 100%;
+      padding: 10px 12px;
+      margin-top: 6px;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      background: #0f172a;
+      color: var(--text);
+      font-size: 0.95rem;
+    }
+    input:focus, select:focus { outline: none; border-color: var(--accent); }
+    .row {
+      display: flex;
+      gap: 12px;
+      align-items: flex-end;
+    }
+    .row > * { flex: 1; }
+    .checkbox {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      color: var(--text);
+    }
+    .checkbox input { width: auto; margin: 0; }
+    button {
+      padding: 10px 16px;
+      border: none;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #0f172a;
+      font-weight: 600;
+      cursor: pointer;
+      font-size: 0.9rem;
+    }
+    button:hover { opacity: 0.9; }
+    button.secondary { background: var(--accent-2); color: white; }
+    button.danger { background: var(--danger); color: white; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
+    .log {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.8rem;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 12px;
+      height: 300px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .log .time { color: var(--muted); }
+    .log .tag { color: var(--accent); font-weight: bold; }
+    .log .error { color: var(--danger); }
+    .log .success { color: var(--success); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { text-align: left; padding: 10px; border-bottom: 1px solid #334155; }
+    th { color: var(--muted); font-weight: 500; }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .empty { color: var(--muted); text-align: center; padding: 24px; }
+    .message {
+      padding: 10px 14px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      display: none;
+    }
+    .message.show { display: block; }
+    .message.error { background: rgba(248, 113, 113, 0.15); color: var(--danger); }
+    .message.success { background: rgba(52, 211, 153, 0.15); color: var(--success); }
+    .tabs { display: flex; gap: 8px; margin-bottom: 20px; }
+    .tab {
+      padding: 10px 18px;
+      border-radius: 8px;
+      background: var(--panel);
+      cursor: pointer;
+      border: 1px solid transparent;
+    }
+    .tab.active { border-color: var(--accent); color: var(--accent); }
+    .panel { display: none; }
+    .panel.active { display: block; }
+  </style>
+</head>
+<body>
+  <header>
+    <img src="/icon.svg" alt="StudyShot">
+    <h1>StudyShot Relay <span style="color:var(--muted);font-size:0.85rem;font-weight:normal;">Linux Client</span></h1>
+    <div id="connStatus" class="status-pill disconnected">未连接</div>
+  </header>
+
+  <div class="container">
+    <div class="tabs">
+      <div class="tab active" data-tab="dashboard">仪表盘</div>
+      <div class="tab" data-tab="config">本地配置</div>
+      <div class="tab" data-tab="server">服务器管理</div>
+      <div class="tab" data-tab="logs">日志</div>
+    </div>
+
+    <div id="message" class="message"></div>
+
+    <div id="dashboard" class="panel active">
+      <div class="grid">
+        <div>
+          <div class="card">
+            <h2>设备信息</h2>
+            <div id="deviceInfo">
+              <p class="empty">尚未绑定设备</p>
+            </div>
+          </div>
+          <div class="card">
+            <h2>快捷操作</h2>
+            <div class="actions">
+              <button id="btnStartReceive">启动接收</button>
+              <button id="btnStopReceive" class="danger">停止接收</button>
+              <button id="btnStartWatch">启动监听</button>
+              <button id="btnStopWatch" class="danger">停止监听</button>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="card">
+            <h2>最近投递</h2>
+            <div id="recentDeliveries"><p class="empty">暂无数据</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="config" class="panel">
+      <div class="grid">
+        <div>
+          <div class="card">
+            <h2>绑定设备</h2>
+            <label>
+              服务器地址
+              <input type="url" id="cfgServer" placeholder="http://64.90.30.102:3000">
+            </label>
+            <label>
+              绑定码
+              <input type="text" id="cfgCode" placeholder="从服务器管理后台获取">
+            </label>
+            <label>
+              设备名称
+              <input type="text" id="cfgName" placeholder="LinuxPC">
+            </label>
+            <div class="actions">
+              <button id="btnBind">绑定</button>
+              <button id="btnUnbind" class="danger">解绑</button>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="card">
+            <h2>监听与接收</h2>
+            <label>
+              监听目录（自动上传）
+              <input type="text" id="cfgWatchDir" placeholder="/home/user/Pictures/Screenshots">
+            </label>
+            <label>
+              接收目录（自动下载）
+              <input type="text" id="cfgDownloadDir" placeholder="/home/user/StudyShotDownloads">
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" id="cfgAutoUpload"> 启用自动上传
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" id="cfgAutoReceive"> 启用自动接收
+            </label>
+            <div class="actions">
+              <button id="btnSaveConfig">保存配置</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="server" class="panel">
+      <div class="grid">
+        <div>
+          <div class="card">
+            <h2>登录主账号</h2>
+            <label>
+              用户名
+              <input type="text" id="adminLogin" placeholder="owner">
+            </label>
+            <label>
+              密码
+              <input type="password" id="adminPassword">
+            </label>
+            <div class="actions">
+              <button id="btnAdminLogin">登录</button>
+              <button id="btnAdminLogout" class="danger">退出</button>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div class="card">
+            <h2>服务器管理后台</h2>
+            <p style="color:var(--muted)">打开服务器原生的 Web 管理后台，查看/管理图片、设备、用户、审计日志。</p>
+            <div class="actions">
+              <button id="btnOpenAdmin" class="secondary">打开 /admin</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="logs" class="panel">
+      <div class="card">
+        <h2>实时日志</h2>
+        <div id="logPanel" class="log"></div>
+        <div class="actions">
+          <button id="btnClearLog" class="secondary">清空</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    let adminJwt = localStorage.getItem('ssr_admin_jwt') || '';
+    let eventSource;
+
+    function showMessage(text, type) {
+      const el = $('message');
+      el.textContent = text;
+      el.className = `message show ${type}`;
+      setTimeout(() => el.classList.remove('show'), 4000);
+    }
+
+    function logLine(text, cls) {
+      const panel = $('logPanel');
+      const div = document.createElement('div');
+      const time = new Date().toLocaleTimeString();
+      div.innerHTML = `<span class="time">[${time}]</span> <span class="${cls || ''}">${escapeHtml(text)}</span>`;
+      panel.appendChild(div);
+      panel.scrollTop = panel.scrollHeight;
+    }
+
+    function escapeHtml(s) {
+      return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    }
+
+    async function api(method, path, body) {
+      const opts = { method, headers: {} };
+      if (body) {
+        opts.headers['Content-Type'] = 'application/json';
+        opts.body = JSON.stringify(body);
+      }
+      const res = await fetch(path, opts);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error?.message || res.statusText);
+      return data;
+    }
+
+    async function loadConfig() {
+      const cfg = await api('GET', '/api/config');
+      $('cfgServer').value = cfg.device?.serverBaseUrl || '';
+      $('cfgName').value = cfg.device?.deviceName || '';
+      $('cfgWatchDir').value = cfg.watchDir || '';
+      $('cfgDownloadDir').value = cfg.downloadDir || '';
+      $('cfgAutoUpload').checked = cfg.autoUpload;
+      $('cfgAutoReceive').checked = cfg.autoReceive;
+      renderDeviceInfo(cfg);
+    }
+
+    function renderDeviceInfo(cfg) {
+      const el = $('deviceInfo');
+      if (!cfg.device) {
+        el.innerHTML = '<p class="empty">尚未绑定设备</p>';
+        return;
+      }
+      el.innerHTML = `
+        <p><strong>服务器：</strong>${escapeHtml(cfg.device.serverBaseUrl)}</p>
+        <p><strong>设备 ID：</strong>${cfg.device.deviceId}</p>
+        <p><strong>设备名：</strong>${escapeHtml(cfg.device.deviceName)}</p>
+        <p><strong>监听目录：</strong>${escapeHtml(cfg.watchDir || '未设置')}</p>
+        <p><strong>接收目录：</strong>${escapeHtml(cfg.downloadDir || '默认')}</p>
+      `;
+    }
+
+    async function bindDevice() {
+      try {
+        const body = {
+          serverBaseUrl: $('cfgServer').value,
+          bindCode: $('cfgCode').value,
+          deviceName: $('cfgName').value
+        };
+        await api('POST', '/api/bind', body);
+        showMessage('绑定成功', 'success');
+        await loadConfig();
+      } catch (err) {
+        showMessage('绑定失败：' + err.message, 'error');
+      }
+    }
+
+    async function unbind() {
+      if (!confirm('确定解绑吗？')) return;
+      try {
+        await api('POST', '/api/unbind');
+        showMessage('已解绑', 'success');
+        await loadConfig();
+      } catch (err) {
+        showMessage('解绑失败：' + err.message, 'error');
+      }
+    }
+
+    async function saveConfig() {
+      try {
+        const body = {
+          watchDir: $('cfgWatchDir').value,
+          downloadDir: $('cfgDownloadDir').value,
+          autoUpload: $('cfgAutoUpload').checked,
+          autoReceive: $('cfgAutoReceive').checked
+        };
+        await api('POST', '/api/config', body);
+        showMessage('配置已保存', 'success');
+        await loadConfig();
+      } catch (err) {
+        showMessage('保存失败：' + err.message, 'error');
+      }
+    }
+
+    async function adminLogin() {
+      try {
+        const cfg = await api('GET', '/api/config');
+        if (!cfg.device) throw new Error('请先绑定设备');
+        const res = await fetch('/api/proxy/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            login: $('adminLogin').value,
+            password: $('adminPassword').value
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || !data.success) throw new Error(data.error?.message || '登录失败');
+        adminJwt = data.data.accessToken;
+        localStorage.setItem('ssr_admin_jwt', adminJwt);
+        showMessage('登录成功', 'success');
+      } catch (err) {
+        showMessage(err.message, 'error');
+      }
+    }
+
+    function openAdmin() {
+      api('GET', '/api/config').then(cfg => {
+        if (cfg.device) {
+          window.open(cfg.device.serverBaseUrl + '/admin', '_blank');
+        }
+      });
+    }
+
+    function connectLogStream() {
+      if (eventSource) eventSource.close();
+      eventSource = new EventSource('/api/logs');
+      eventSource.onmessage = e => {
+        try {
+          const { text, type } = JSON.parse(e.data);
+          logLine(text, type);
+        } catch {
+          logLine(e.data);
+        }
+      };
+      eventSource.onerror = () => {
+        $('connStatus').textContent = '未连接';
+        $('connStatus').className = 'status-pill disconnected';
+      };
+      eventSource.onopen = () => {
+        $('connStatus').textContent = '已连接';
+        $('connStatus').className = 'status-pill connected';
+      };
+    }
+
+    // Tabs
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+        tab.classList.add('active');
+        $(tab.dataset.tab).classList.add('active');
+      });
+    });
+
+    $('btnBind').addEventListener('click', bindDevice);
+    $('btnUnbind').addEventListener('click', unbind);
+    $('btnSaveConfig').addEventListener('click', saveConfig);
+    $('btnAdminLogin').addEventListener('click', adminLogin);
+    $('btnAdminLogout').addEventListener('click', () => {
+      adminJwt = '';
+      localStorage.removeItem('ssr_admin_jwt');
+      showMessage('已退出', 'success');
+    });
+    $('btnOpenAdmin').addEventListener('click', openAdmin);
+    $('btnClearLog').addEventListener('click', () => $('logPanel').innerHTML = '');
+
+    $('btnStartReceive').addEventListener('click', () => api('POST', '/api/service/receive/start').then(() => showMessage('接收服务已启动', 'success')).catch(e => showMessage(e.message, 'error')));
+    $('btnStopReceive').addEventListener('click', () => api('POST', '/api/service/receive/stop').then(() => showMessage('接收服务已停止', 'success')).catch(e => showMessage(e.message, 'error')));
+    $('btnStartWatch').addEventListener('click', () => api('POST', '/api/service/watch/start').then(() => showMessage('监听服务已启动', 'success')).catch(e => showMessage(e.message, 'error')));
+    $('btnStopWatch').addEventListener('click', () => api('POST', '/api/service/watch/stop').then(() => showMessage('监听服务已停止', 'success')).catch(e => showMessage(e.message, 'error')));
+
+    loadConfig().then(connectLogStream);
+  </script>
+</body>
+</html>

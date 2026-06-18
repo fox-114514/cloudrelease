@@ -160,6 +160,34 @@ program
     });
 });
 program
+    .command("launch")
+    .description("Launch the web management UI and open browser")
+    .option("-p, --port <port>", "Web server port", "0")
+    .action(async (options) => {
+    try {
+        const config = await loadConfig();
+        if (!config.device) {
+            console.log("尚未绑定设备。启动后将打开配置页面。");
+        }
+        const { startWebServer, openBrowser } = await import("./web/server.js");
+        const port = parseInt(options.port, 10) || 0;
+        const server = await startWebServer(port);
+        console.log(`Web UI: ${server.url}`);
+        openBrowser(server.url);
+        const stop = async () => {
+            console.log("\nShutting down...");
+            await server.close();
+            process.exit(0);
+        };
+        process.on("SIGINT", stop);
+        process.on("SIGTERM", stop);
+    }
+    catch (err) {
+        console.error(`Launch failed: ${err.message}`);
+        process.exit(1);
+    }
+});
+program
     .command("run")
     .description("Run both receive and watch modes (if watchDir is configured)")
     .option("-d, --download-dir <dir>", "Directory to save received images")

@@ -1,6 +1,6 @@
-# StudyShot Relay Linux CLI
+# StudyShot Relay Linux Client
 
-Linux 命令行客户端，用于测试 StudyShot Relay 的自动上传、接收、绑定流程。
+Linux 客户端，支持命令行和 Web 管理界面，用于测试 StudyShot Relay 的自动上传、接收、绑定流程。
 
 ## 环境要求
 
@@ -25,11 +25,44 @@ npm link
 node dist/index.js <command>
 ```
 
+## 一键启动 Web 界面（推荐）
+
+像 KimiCode 一样，运行一条命令即可启动本地 Web 管理界面并自动打开浏览器：
+
+```bash
+studyshot-relay launch
+```
+
+启动后会自动打开浏览器访问 `http://127.0.0.1:<随机端口>`。在 Web 界面里可以：
+
+- 绑定设备
+- 设置监听目录（自动上传）
+- 设置接收目录（自动下载）
+- 启动/停止接收和监听服务
+- 登录主账号并打开服务器原生 `/admin` 管理后台
+- 查看实时日志
+
+指定端口：
+
+```bash
+studyshot-relay launch -p 8080
+```
+
+## 添加到系统应用菜单
+
+运行以下脚本，把 StudyShot Relay 安装到应用菜单，使用独立图标：
+
+```bash
+./assets/install-desktop.sh
+```
+
+安装后可以从系统应用启动器打开，图标为 StudyShot Relay 专属图标（不是系统设置图标）。
+
 ## 配置文件
 
 配置文件保存在 `~/.config/studyshot-relay/config.json`，权限 600。
 
-## 命令
+## 命令行命令
 
 ### 绑定设备
 
@@ -45,7 +78,7 @@ studyshot-relay status
 
 ### 接收图片
 
-保持 WebSocket 连接，自动下载收到的图片到 `~/StudyShotDownloads`：
+保持 WebSocket 连接，自动下载收到的图片：
 
 ```bash
 studyshot-relay receive

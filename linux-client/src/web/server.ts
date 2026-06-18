@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import fastify from "fastify";
 import fastifyStatic from "@fastify/static";
-import { exec } from "node:child_process";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -192,6 +192,15 @@ export async function startWebServer(port = 0): Promise<{ url: string; close: ()
     if (req.method === "GET" && !req.url.startsWith("/api/")) {
       const indexPath = path.join(__dirname, "index.html");
       const html = await fs.readFile(indexPath, "utf-8");
+      // Inline <style>/<script> need 'unsafe-inline'. We cannot tighten
+      // connect-src further because serverBaseUrl is user-configured; the
+      // other directives still close off plugin/object/base-tag attacks.
+      reply.header(
+        "Content-Security-Policy",
+        "default-src 'self'; connect-src *; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none';",
+      );
+      reply.header("X-Content-Type-Options", "nosniff");
+      reply.header("Referrer-Policy", "no-referrer");
       return reply.type("text/html").send(html);
     }
     return reply.status(404).send({ error: { message: "Not found" } });
@@ -212,8 +221,13 @@ export async function startWebServer(port = 0): Promise<{ url: string; close: ()
 }
 
 export function openBrowser(url: string): void {
-  const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-  exec(`${command} ${url}`, (err) => {
-    if (err) broadcastLog(`Failed to open browser: ${err.message}`, "error");
+  const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+  // spawn with arg array avoids shell parsing of the URL; cmd.exe needs
+  // /c start on Windows so the spawned process actually opens the URL.
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  const child = spawn(command, args, { stdio: "ignore", detached: true });
+  child.on("error", (err) => {
+    broadcastLog(`Failed to open browser: ${err.message}`, "error");
   });
+  child.unref();
 }

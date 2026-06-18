@@ -29,6 +29,27 @@
 
 ## 条目
 
+### 2026-06-18 21:50 — `a95769e` — 修复：已删除图片错误加载 + 批量删除后视觉不同步
+
+- **模块**: backend (images.ts) + web-admin
+- **状态**: deployed
+- **Commit**: `a95769e`
+- **改动文件**:
+  - `backend/src/routes/images.ts`
+  - `backend/src/routes/images.test.ts`
+  - `backend/src/routes/web-admin.ts`
+  - `docs/protocol.md`
+- **概述**:
+  - **bug 1（用户截图反馈）**：`GET /images` 之前 `filter=all` 会返回 `deletedAt` 不为空的图片。这些"已删除"的图片 `/download` 端点会拒绝（404），UI 显示"预览失败"，再点删除又全部 404 → "已删除 0 张，失败 12 张"，且刷新后仍在列表里，**无法根除**。
+  - **修复 1**：后端默认 `where.deletedAt = null`，所有 filter 统一排除已删除图片。
+  - **bug 2（顺带）**：批量删除全部失败时，`state.selectedImageIds` 清空了，但卡片 DOM 上的 `is-selected` class 没同步——视觉上"已选中"，但计数"已选 0"。
+  - **修复 2**：新增 `syncSelectionVisual()` 在批量删除后调用，遍历卡片 DOM 同步 class / 复选标记 / 提示文本。
+  - **bug 3（顺带）**：`loadImages(reset=true)` 现在也清理已不在新列表里的 `selectedImageIds`（比如另一标签页删除了图片）。
+  - 测试新增 2 个：`filter=all` 排除已删除、`filter=expired` 排除已删除。
+  - 文档：protocol.md §11 注释改为"所有 filter 默认排除已删除"。
+- **破坏性**: 是——客户端如果依赖"列出包括已删除图片"的旧行为会看不到已删除项。需要查看删除历史请用 audit-logs。
+- **依赖 / 后续**: 若未来需要"显示/恢复已删除图片"，应加单独的 `includeDeleted=true` 参数或新 filter，不应该靠把 deletedAt 重新塞进默认结果实现。
+
 ### 2026-06-18 21:00 — `20c3e92` — web-admin 图片库多选 + 缩略图缓存
 
 - **模块**: backend web-admin (浏览器内 SPA)

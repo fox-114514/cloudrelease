@@ -141,6 +141,20 @@ curl https://studyshot.example.com/api/v1/healthz
 }
 ```
 
+网页管理后台：
+
+```text
+https://studyshot.example.com/admin
+```
+
+纯 IP HTTP 模式对应：
+
+```text
+http://1.2.3.4:3000/admin
+```
+
+使用主用户账号登录后，可以创建绑定码、管理设备权限、创建子用户、管理用户组和查看审计日志。
+
 ## 5. 端口
 
 公网只需要开放：

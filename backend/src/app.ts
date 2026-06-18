@@ -14,6 +14,7 @@ import { bindCodeRoutes } from "./routes/bind-codes.js";
 import { deliveryRoutes } from "./routes/deliveries.js";
 import { deviceRoutes } from "./routes/devices.js";
 import { healthRoutes } from "./routes/health.js";
+import { webAdminRoutes } from "./routes/web-admin.js";
 import { imageRoutes } from "./routes/images.js";
 
 
@@ -46,6 +47,7 @@ export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
   });
   await app.register(websocket);
 
+  await app.register(webAdminRoutes);
   await app.register(healthRoutes, { prefix: "/api/v1" });
   await app.register(adminRoutes, { prefix: "/api/v1" });
   await app.register(authRoutes, { prefix: "/api/v1" });

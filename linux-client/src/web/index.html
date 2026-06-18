@@ -188,7 +188,11 @@
             </div>
           </div>
           <div class="card">
-            <h2>快捷操作</h2>
+            <h2>服务状态</h2>
+            <div style="display:flex; gap:12px; margin-bottom:12px;">
+              <span>接收：<span id="svcReceive" class="status-pill disconnected">未启动</span></span>
+              <span>监听：<span id="svcWatch" class="status-pill disconnected">未启动</span></span>
+            </div>
             <div class="actions">
               <button id="btnStartReceive">启动接收</button>
               <button id="btnStopReceive" class="danger">停止接收</button>
@@ -344,6 +348,56 @@
       renderDeviceInfo(cfg);
     }
 
+    function fmtSize(n) {
+      if (!n || n < 0) return '-';
+      if (n < 1024) return n + ' B';
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+      return (n / 1024 / 1024).toFixed(1) + ' MB';
+    }
+
+    function fmtTime(s) {
+      if (!s) return '-';
+      const d = new Date(s);
+      if (Number.isNaN(d.getTime())) return s;
+      return d.toLocaleString();
+    }
+
+    async function loadRecentDeliveries() {
+      try {
+        const data = await api('GET', '/api/recent-deliveries');
+        renderRecentDeliveries(data.deliveries || []);
+      } catch (err) {
+        // ignore — log panel will show errors
+      }
+    }
+
+    function renderRecentDeliveries(items) {
+      const panel = $('recentDeliveries');
+      if (!items.length) {
+        panel.innerHTML = '<p class="empty">暂无数据</p>';
+        return;
+      }
+      panel.innerHTML = '<table><thead><tr><th>文件</th><th>来源</th><th>大小</th><th>时间</th></tr></thead><tbody>' +
+        items.map(d => '<tr>' +
+          '<td>' + escapeHtml(d.fileName) + '</td>' +
+          '<td>' + escapeHtml(d.sourceDevice) + '</td>' +
+          '<td>' + fmtSize(d.size) + '</td>' +
+          '<td>' + fmtTime(d.savedAt) + '</td>' +
+          '</tr>').join('') + '</tbody></table>';
+    }
+
+    async function loadServiceStatus() {
+      try {
+        const data = await api('GET', '/api/service/status');
+        $('svcReceive').textContent = data.receive ? '运行中' : '未启动';
+        $('svcReceive').className = 'status-pill ' + (data.receive ? 'connected' : 'disconnected');
+        $('svcWatch').textContent = data.watch ? '运行中' : '未启动';
+        $('svcWatch').className = 'status-pill ' + (data.watch ? 'connected' : 'disconnected');
+      } catch {
+        // ignore
+      }
+    }
+
     function renderDeviceInfo(cfg) {
       const el = $('deviceInfo');
       if (!cfg.device) {
@@ -385,7 +439,8 @@
       }
     }
 
-    async function saveConfig() {
+    async function saveConfig(opts) {
+      const silent = opts && opts.silent === true;
       try {
         const body = {
           watchDir: $('cfgWatchDir').value,
@@ -394,8 +449,9 @@
           autoReceive: $('cfgAutoReceive').checked
         };
         await api('POST', '/api/config', body);
-        showMessage('配置已保存', 'success');
+        if (!silent) showMessage('配置已保存', 'success');
         await loadConfig();
+        await loadServiceStatus();
       } catch (err) {
         showMessage('保存失败：' + err.message, 'error');
       }
@@ -445,11 +501,40 @@
       eventSource.onerror = () => {
         $('connStatus').textContent = '未连接';
         $('connStatus').className = 'status-pill disconnected';
+        // Auto-reconnect after 3s to recover from transient drops.
+        if (!window._sseReconnectTimer) {
+          window._sseReconnectTimer = setTimeout(() => {
+            window._sseReconnectTimer = null;
+            connectLogStream();
+          }, 3000);
+        }
       };
       eventSource.onopen = () => {
         $('connStatus').textContent = '已连接';
         $('connStatus').className = 'status-pill connected';
       };
+    }
+
+    // Debounced auto-save: any change to a config input posts to /api/config
+    // after 500ms of inactivity. The "保存配置" button still works as a
+    // forced immediate save for users who prefer explicit actions.
+    let autoSaveTimer = null;
+    function scheduleAutoSave() {
+      if (autoSaveTimer) clearTimeout(autoSaveTimer);
+      autoSaveTimer = setTimeout(() => {
+        autoSaveTimer = null;
+        saveConfig({ silent: true });
+      }, 500);
+    }
+    function bindAutoSave() {
+      ['cfgWatchDir', 'cfgDownloadDir'].forEach(id => {
+        const el = $(id);
+        el.addEventListener('change', scheduleAutoSave);
+        el.addEventListener('blur', scheduleAutoSave);
+      });
+      ['cfgAutoUpload', 'cfgAutoReceive'].forEach(id => {
+        $(id).addEventListener('change', scheduleAutoSave);
+      });
     }
 
     // Tabs
@@ -474,12 +559,17 @@
     $('btnOpenAdmin').addEventListener('click', openAdmin);
     $('btnClearLog').addEventListener('click', () => $('logPanel').innerHTML = '');
 
-    $('btnStartReceive').addEventListener('click', () => api('POST', '/api/service/receive/start').then(() => showMessage('接收服务已启动', 'success')).catch(e => showMessage(e.message, 'error')));
-    $('btnStopReceive').addEventListener('click', () => api('POST', '/api/service/receive/stop').then(() => showMessage('接收服务已停止', 'success')).catch(e => showMessage(e.message, 'error')));
-    $('btnStartWatch').addEventListener('click', () => api('POST', '/api/service/watch/start').then(() => showMessage('监听服务已启动', 'success')).catch(e => showMessage(e.message, 'error')));
-    $('btnStopWatch').addEventListener('click', () => api('POST', '/api/service/watch/stop').then(() => showMessage('监听服务已停止', 'success')).catch(e => showMessage(e.message, 'error')));
+    $('btnStartReceive').addEventListener('click', () => api('POST', '/api/service/receive/start').then(() => { showMessage('接收服务已启动', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
+    $('btnStopReceive').addEventListener('click', () => api('POST', '/api/service/receive/stop').then(() => { showMessage('接收服务已停止', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
+    $('btnStartWatch').addEventListener('click', () => api('POST', '/api/service/watch/start').then(() => { showMessage('监听服务已启动', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
+    $('btnStopWatch').addEventListener('click', () => api('POST', '/api/service/watch/stop').then(() => { showMessage('监听服务已停止', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
 
+    bindAutoSave();
     loadConfig().then(connectLogStream);
+    loadServiceStatus();
+    loadRecentDeliveries();
+    setInterval(loadServiceStatus, 3000);
+    setInterval(loadRecentDeliveries, 5000);
   </script>
 </body>
 </html>

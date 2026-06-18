@@ -35,7 +35,21 @@ async function startReceive(): Promise<void> {
     device: config.device,
     config,
     onStatus: (line) => broadcastLog(line, "info"),
-    onDownload: (filePath) => broadcastLog(`Received ${filePath}`, "success"),
+    onDownload: async (filePath, imageId) => {
+      broadcastLog(`Received ${filePath}`, "success");
+      try {
+        const stat = await fs.stat(filePath);
+        recordRecentDelivery({
+          imageId,
+          fileName: path.basename(filePath),
+          sourceDevice: config.device?.deviceName ?? "unknown",
+          size: stat.size,
+          savedAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        broadcastLog(`记录最近投递失败：${(err as Error).message}`, "error");
+      }
+    },
     onError: (message) => broadcastLog(message, "error"),
   });
   client.start();
@@ -67,6 +81,26 @@ async function stopWatch(): Promise<void> {
   await services.watcher?.close();
   services.watcher = undefined;
   broadcastLog("Watch service stopped", "info");
+}
+
+// In-memory ring buffer of the most recent N deliveries received by this
+// Linux client. Lives in-process; resets on restart. Surfaced on the
+// dashboard tab and used by the recent-deliveries API.
+interface RecentDelivery {
+  imageId: string;
+  fileName: string;
+  sourceDevice: string;
+  size: number;
+  savedAt: string;
+}
+const MAX_RECENT_DELIVERIES = 20;
+const recentDeliveries: RecentDelivery[] = [];
+
+export function recordRecentDelivery(entry: RecentDelivery): void {
+  recentDeliveries.unshift(entry);
+  if (recentDeliveries.length > MAX_RECENT_DELIVERIES) {
+    recentDeliveries.length = MAX_RECENT_DELIVERIES;
+  }
 }
 
 export async function startWebServer(port = 0): Promise<{ url: string; close: () => Promise<void> }> {
@@ -173,6 +207,17 @@ export async function startWebServer(port = 0): Promise<{ url: string; close: ()
   app.post("/api/service/watch/stop", async (_req, reply) => {
     await stopWatch();
     return reply.send({ success: true });
+  });
+
+  app.get("/api/service/status", async (_req, reply) => {
+    return reply.send({
+      receive: Boolean(services.receiveClient),
+      watch: Boolean(services.watcher),
+    });
+  });
+
+  app.get("/api/recent-deliveries", async (_req, reply) => {
+    return reply.send({ deliveries: recentDeliveries });
   });
 
   app.post("/api/proxy/auth/login", async (req: FastifyRequest<{ Body: { login: string; password: string } }>, reply) => {

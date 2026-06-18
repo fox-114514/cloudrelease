@@ -5,11 +5,14 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.ContentValues
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Environment
 import android.os.IBinder
 import android.provider.MediaStore
+import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import com.studyshot.relay.data.DownloadRecordEntity
 import com.studyshot.relay.data.ReceivedHashEntity
 import com.studyshot.relay.network.ApiException
@@ -22,6 +25,8 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.Request
 import okhttp3.Response
@@ -31,15 +36,22 @@ import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
 import java.time.Instant
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 class RelayReceiveService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var socket: WebSocket? = null
-    private var heartbeatJob: Job? = null
-    private var reconnectJob: Job? = null
-    private var reconnectDelayMs = 1_000L
-    private var lastMessageAt = 0L
+    private val socket = AtomicReference<WebSocket?>(null)
+    private val heartbeatJob = AtomicReference<Job?>(null)
+    private val reconnectJob = AtomicReference<Job?>(null)
+    private val reconnectDelayMs = AtomicLong(1_000L)
+    private val lastMessageAt = AtomicLong(0L)
+    private val reconnectAttempts = AtomicInteger(0)
     private val processingDeliveries = mutableSetOf<String>()
+    private val connectMutex = Mutex()
+    @Volatile
+    private var destroyed = false
 
     private val app: StudyShotApp
         get() = application as StudyShotApp
@@ -59,66 +71,72 @@ class RelayReceiveService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        connect()
+        scope.launch { connect() }
         return START_STICKY
     }
 
     override fun onDestroy() {
-        reconnectJob?.cancel()
-        heartbeatJob?.cancel()
-        socket?.close(1000, "Service stopped")
-        socket = null
+        destroyed = true
+        reconnectJob.getAndSet(null)?.cancel()
+        heartbeatJob.getAndSet(null)?.cancel()
+        socket.getAndSet(null)?.close(1000, "Service stopped")
         scope.cancel()
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    private fun connect() {
+    private suspend fun connect() = connectMutex.withLock {
+        if (destroyed) return@withLock
         val settings = app.secureSettings.settings.value
         val token = app.secureSettings.getDeviceToken()
         if (!settings.autoReceiveEnabled || settings.serverBaseUrl.isBlank() || token.isNullOrBlank()) {
             stopSelf()
-            return
+            return@withLock
         }
 
-        reconnectJob?.cancel()
-        socket?.close(1000, "Reconnect")
+        reconnectJob.getAndSet(null)?.cancel()
+        socket.getAndSet(null)?.close(1000, "Reconnect")
 
         val request = Request.Builder()
             .url(StudyShotApiClient.wsUrl(settings.serverBaseUrl))
             .header("Authorization", "Bearer $token")
             .build()
 
-        lastMessageAt = System.currentTimeMillis()
-        socket = app.apiClient.rawClient().newWebSocket(request, object : WebSocketListener() {
+        lastMessageAt.set(System.currentTimeMillis())
+        val newSocket = app.apiClient.rawClient().newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                reconnectDelayMs = 1_000L
+                if (destroyed || socket.get() !== webSocket) return
+                reconnectDelayMs.set(1_000L)
+                reconnectAttempts.set(0)
                 webSocket.send("""{"type":"hello"}""")
                 startHeartbeat()
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                lastMessageAt = System.currentTimeMillis()
+                if (destroyed || socket.get() !== webSocket) return
+                lastMessageAt.set(System.currentTimeMillis())
                 handleSocketMessage(text)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                if (socket === webSocket) {
-                    socket = null
-                    heartbeatJob?.cancel()
-                    scheduleReconnect()
+                if (socket.get() === webSocket) {
+                    socket.set(null)
+                    heartbeatJob.getAndSet(null)?.cancel()
+                    if (!destroyed) scheduleReconnect()
                 }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                if (socket === webSocket) {
-                    socket = null
-                    heartbeatJob?.cancel()
-                    scheduleReconnect()
+                Log.w(TAG, "WebSocket failure", t)
+                if (socket.get() === webSocket) {
+                    socket.set(null)
+                    heartbeatJob.getAndSet(null)?.cancel()
+                    if (!destroyed) scheduleReconnect()
                 }
             }
         })
+        socket.set(newSocket)
     }
 
     private fun handleSocketMessage(raw: String) {
@@ -170,7 +188,8 @@ class RelayReceiveService : Service() {
                 lastError = err
                 if (err is ApiException && (err.statusCode == 401 || err.statusCode == 403)) {
                     recordFailed(delivery, err.message)
-                    stopSelf()
+                    // Do not stopSelf(); a single auth failure should not kill the service.
+                    // The next reconnect will also fail auth and we will eventually give up.
                     return
                 }
                 delay((attempt + 1) * 800L)
@@ -193,8 +212,14 @@ class RelayReceiveService : Service() {
 
         val target = uniqueTargetFile(delivery, downloaded.mimeType)
         withContext(Dispatchers.IO) {
-            target.parentFile?.mkdirs()
-            File(target.parentFile, ".nomedia").createNewFile()
+            val parent = target.parentFile
+            if (parent == null || !parent.exists() && !parent.mkdirs()) {
+                throw IllegalStateException("Unable to create download directory: ${target.parent}")
+            }
+            val nomedia = File(parent, ".nomedia")
+            if (!nomedia.exists()) {
+                nomedia.createNewFile()
+            }
             target.writeBytes(downloaded.bytes)
         }
 
@@ -209,6 +234,8 @@ class RelayReceiveService : Service() {
         if (settings.saveDownloadsToGallery) {
             runCatching {
                 saveImageToGallery(target.name, downloaded.mimeType, downloaded.bytes)
+            }.onFailure { err ->
+                Log.e(TAG, "Failed to save image to gallery", err)
             }
         }
         app.database.dao().upsertDownloadRecord(
@@ -296,30 +323,36 @@ class RelayReceiveService : Service() {
     }
 
     private fun startHeartbeat() {
-        heartbeatJob?.cancel()
-        heartbeatJob = scope.launch {
+        heartbeatJob.getAndSet(null)?.cancel()
+        heartbeatJob.set(scope.launch {
             while (true) {
                 delay(30_000)
-                val current = socket ?: return@launch
-                if (System.currentTimeMillis() - lastMessageAt > 90_000) {
+                if (destroyed) return@launch
+                val current = socket.get() ?: return@launch
+                if (System.currentTimeMillis() - lastMessageAt.get() > 90_000) {
                     current.close(1001, "Heartbeat timeout")
                     return@launch
                 }
                 current.send("""{"type":"ping"}""")
             }
-        }
+        })
     }
 
     private fun scheduleReconnect() {
         val settings = app.secureSettings.settings.value
-        if (!settings.autoReceiveEnabled) return
-        reconnectJob?.cancel()
-        reconnectJob = scope.launch {
-            val delayMs = reconnectDelayMs.coerceAtMost(60_000L)
-            reconnectDelayMs = (reconnectDelayMs * 2).coerceAtMost(60_000L)
-            delay(delayMs)
-            connect()
+        if (!settings.autoReceiveEnabled || destroyed) return
+        if (reconnectAttempts.incrementAndGet() > MAX_RECONNECT_ATTEMPTS) {
+            Log.w(TAG, "Giving up WebSocket reconnect after $MAX_RECONNECT_ATTEMPTS attempts")
+            stopSelf()
+            return
         }
+        reconnectJob.getAndSet(null)?.cancel()
+        reconnectJob.set(scope.launch {
+            val delayMs = reconnectDelayMs.get().coerceAtMost(60_000L)
+            reconnectDelayMs.set((reconnectDelayMs.get() * 2).coerceAtMost(60_000L))
+            delay(delayMs)
+            if (!destroyed) connect()
+        })
     }
 
     private fun uniqueTargetFile(delivery: DeliveryPayload, mimeType: String): File {
@@ -344,6 +377,13 @@ class RelayReceiveService : Service() {
     private fun showDownloadedNotification(delivery: DeliveryPayload) {
         val settings = app.secureSettings.settings.value
         if (!settings.downloadNotificationEnabled) return
+        if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(
+                this,
+                android.Manifest.permission.POST_NOTIFICATIONS,
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
         val manager = getSystemService(NotificationManager::class.java)
         val source = delivery.source.uploadDeviceName ?: delivery.source.uploadDeviceId
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
@@ -402,5 +442,7 @@ class RelayReceiveService : Service() {
     companion object {
         private const val CHANNEL_ID = "studyshot_receive"
         private const val NOTIFICATION_ID = 1002
+        private const val TAG = "RelayReceiveService"
+        private const val MAX_RECONNECT_ATTEMPTS = 20
     }
 }

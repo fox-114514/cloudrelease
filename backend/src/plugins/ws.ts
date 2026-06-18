@@ -73,7 +73,7 @@ export async function closeConnectionsForDevice(deviceId: string): Promise<void>
 }
 
 export const wsPlugin = fp(async (app: FastifyInstance) => {
-  app.get("/ws", { websocket: true }, async (socket: WebSocket.WebSocket, req: FastifyRequest) => {
+  app.get("/api/v1/ws", { websocket: true }, async (socket: WebSocket.WebSocket, req: FastifyRequest) => {
     const authHeader = req.headers.authorization;
     if (!authHeader?.startsWith("Bearer ")) {
       socket.close(1008, "Missing authorization");
@@ -136,11 +136,17 @@ export const wsPlugin = fp(async (app: FastifyInstance) => {
     });
 
     socket.on("close", () => {
-      connections.delete(device.id);
+      const current = connections.get(device.id);
+      if (current?.socket === socket) {
+        connections.delete(device.id);
+      }
     });
 
     socket.on("error", () => {
-      connections.delete(device.id);
+      const current = connections.get(device.id);
+      if (current?.socket === socket) {
+        connections.delete(device.id);
+      }
     });
   });
 

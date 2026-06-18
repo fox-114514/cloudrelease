@@ -263,7 +263,11 @@ private fun MainScreen(
                             settings = settings,
                             onBind = { server, code, name ->
                                 scope.launch {
-                                    message = bindDevice(app, server, code, name)
+                                    try {
+                                        message = bindDevice(app, server, code, name)
+                                    } catch (err: Exception) {
+                                        message = "绑定失败：${err.message ?: err.javaClass.simpleName}"
+                                    }
                                 }
                             },
                         )
@@ -662,8 +666,19 @@ private suspend fun bindDevice(
     code: String,
     name: String,
 ): String = withContext(Dispatchers.IO) {
+    val normalized = com.studyshot.relay.data.SecureSettings.normalizeBaseUrl(server)
+    if (normalized.isBlank()) {
+        throw IllegalArgumentException("服务器地址不能为空")
+    }
+    if (!normalized.startsWith("http://") && !normalized.startsWith("https://")) {
+        throw IllegalArgumentException("服务器地址必须以 http:// 或 https:// 开头")
+    }
+    if (code.isBlank()) {
+        throw IllegalArgumentException("绑定码不能为空")
+    }
+
     val response = app.apiClient.registerDevice(
-        serverBaseUrl = com.studyshot.relay.data.SecureSettings.normalizeBaseUrl(server),
+        serverBaseUrl = normalized,
         request = RegisterDeviceRequest(
             bindCode = code,
             deviceName = name.ifBlank { Build.MODEL },
@@ -672,7 +687,7 @@ private suspend fun bindDevice(
         ),
     )
     app.secureSettings.saveBinding(
-        serverBaseUrl = server,
+        serverBaseUrl = normalized,
         deviceId = response.deviceId,
         deviceToken = response.deviceToken,
         deviceName = name.ifBlank { Build.MODEL },

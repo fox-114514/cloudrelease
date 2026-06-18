@@ -23,19 +23,13 @@ data class AppSettings(
 
 class SecureSettings(context: Context) {
     private val appContext = context.applicationContext
-    private val masterKey = MasterKey.Builder(appContext)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
-
-    private val prefs = EncryptedSharedPreferences.create(
-        appContext,
-        "studyshot_secure_settings",
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
+    private val prefs = createSecurePreferences(appContext)
+    private val useEncryptedStorage = prefs is EncryptedSharedPreferences
 
     private val settingsFlow = MutableStateFlow(readSettings())
+
+    val isEncryptionAvailable: Boolean
+        get() = useEncryptedStorage
 
     val settings: StateFlow<AppSettings> = settingsFlow
 
@@ -117,6 +111,8 @@ class SecureSettings(context: Context) {
     }
 
     companion object {
+        private const val PREFS_NAME = "studyshot_secure_settings"
+        private const val PREFS_FALLBACK_NAME = "studyshot_secure_settings_fallback"
         private const val KEY_SERVER_BASE_URL = "server_base_url"
         private const val KEY_DEVICE_ID = "device_id"
         private const val KEY_DEVICE_TOKEN = "device_token"
@@ -128,6 +124,27 @@ class SecureSettings(context: Context) {
         private const val KEY_AUTO_RECEIVE_ENABLED = "auto_receive_enabled"
         private const val KEY_DOWNLOAD_NOTIFICATION_ENABLED = "download_notification_enabled"
         private const val KEY_SAVE_DOWNLOADS_TO_GALLERY = "save_downloads_to_gallery"
+
+        private fun createSecurePreferences(context: Context): android.content.SharedPreferences {
+            return try {
+                val masterKey = MasterKey.Builder(context)
+                    .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                    .build()
+                EncryptedSharedPreferences.create(
+                    context,
+                    PREFS_NAME,
+                    masterKey,
+                    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+                )
+            } catch (err: Exception) {
+                // Some devices (especially OnePlus/ColorOS, Android 10 biometric KeyStore issues,
+                // or after system updates) fail to initialize EncryptedSharedPreferences.
+                // Fall back to plain SharedPreferences so the app remains usable.
+                android.util.Log.w("SecureSettings", "EncryptedSharedPreferences failed, falling back to plain storage", err)
+                context.getSharedPreferences(PREFS_FALLBACK_NAME, Context.MODE_PRIVATE)
+            }
+        }
 
         fun normalizeBaseUrl(raw: String): String {
             val trimmed = raw.trim().trimEnd('/')

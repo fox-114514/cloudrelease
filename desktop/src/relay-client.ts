@@ -190,6 +190,26 @@ async function parseEnvelope<T>(response: Response): Promise<T> {
   return body.data as T;
 }
 
+class LruSet<T> {
+  private readonly map = new Map<T, true>();
+  constructor(private readonly maxSize: number) {}
+  add(value: T): void {
+    if (this.map.has(value)) {
+      this.map.delete(value);
+    }
+    this.map.set(value, true);
+    while (this.map.size > this.maxSize) {
+      const first = this.map.keys().next().value;
+      if (first !== undefined) {
+        this.map.delete(first);
+      }
+    }
+  }
+  has(value: T): boolean {
+    return this.map.has(value);
+  }
+}
+
 export class RelayClient {
   private socket?: WebSocket;
   private heartbeatTimer?: NodeJS.Timeout;
@@ -197,7 +217,7 @@ export class RelayClient {
   private reconnectDelayMs = 1000;
   private lastMessageAt = 0;
   private processingDeliveries = new Set<string>();
-  private completedDeliveries = new Set<string>();
+  private completedDeliveries = new LruSet<string>(5000);
   private stateListener?: StateListener;
   private connection: ConnectionState = { status: "idle" };
   private adminToken?: string;
@@ -432,14 +452,26 @@ export class RelayClient {
       });
     });
 
-    socket.on("close", (_code, reason) => {
+    socket.on("close", (code, reason) => {
       this.stopHeartbeat();
       if (this.socket === socket) {
         this.socket = undefined;
       }
-      logWarn("WebSocket closed", { reason: reason.toString() });
+      const reasonText = reason.toString() || "连接已断开";
+      logWarn("WebSocket closed", { code, reason: reasonText });
+
+      // 1008 = policy violation (auth/revoked). Stop reconnecting and require rebind.
+      if (code === 1008) {
+        this.clearReconnect();
+        this.setConnection({
+          status: "error",
+          lastError: "设备已被撤销或鉴权失败，请重新绑定",
+        });
+        return;
+      }
+
       if (this.config.autoReceive) {
-        this.scheduleReconnect(reason.toString() || "连接已断开");
+        this.scheduleReconnect(reasonText);
       } else {
         this.setConnection({ status: "stopped" });
       }
@@ -536,7 +568,8 @@ export class RelayClient {
   private async processDelivery(delivery: DeliveryPayload): Promise<void> {
     if (
       this.processingDeliveries.has(delivery.deliveryId) ||
-      this.completedDeliveries.has(delivery.deliveryId)
+      this.completedDeliveries.has(delivery.deliveryId) ||
+      this.history.find(delivery.deliveryId)?.status === "downloaded"
     ) {
       return;
     }
@@ -560,6 +593,7 @@ export class RelayClient {
       } catch (err) {
         lastError = err;
         if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+          this.disconnect();
           this.setConnection({ status: "error", lastError: err.message });
           break;
         }
@@ -750,7 +784,9 @@ export class RelayClient {
 
   private scheduleReconnect(reason: string): void {
     this.clearReconnect();
-    const delay = Math.min(this.reconnectDelayMs, 60_000);
+    const baseDelay = Math.min(this.reconnectDelayMs, 60_000);
+    // Add ±25% jitter to avoid reconnect storms, but cap at 60s.
+    const delay = Math.min(60_000, Math.floor(baseDelay * (0.75 + Math.random() * 0.5)));
     this.reconnectDelayMs = Math.min(this.reconnectDelayMs * 2, 60_000);
     this.setConnection({
       status: "reconnecting",

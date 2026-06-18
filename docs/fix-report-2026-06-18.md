@@ -275,3 +275,41 @@ cd backend
 docker compose down -v
 docker compose up -d postgres
 ```
+
+
+---
+
+## 追加修复：WebSocket 路径不匹配导致安卓无法接收
+
+追加时间：2026-06-18
+
+### 问题
+
+OPD2508 连接 WebSocket 时服务器返回 `404 Not Found`：
+
+```text
+Expected HTTP 101 response but was '404 Not Found'
+```
+
+根因：后端 `backend/src/plugins/ws.ts` 注册的路径是 `/ws`，而 Android、桌面端以及 `docs/protocol.md` 都使用 `/api/v1/ws`。
+
+### 修复
+
+将后端 WebSocket 路由从 `/ws` 改为 `/api/v1/ws`：
+
+```ts
+app.get("/api/v1/ws", { websocket: true }, ...)
+```
+
+### 已修改文件
+
+- `backend/src/plugins/ws.ts`
+
+### 验证
+
+- `npm run build` 通过。
+- 无需更新 Android APK（客户端本来就连接 `/api/v1/ws`）。
+
+### 后续部署
+
+重新部署后端后，OPD2508 的 `RelayReceiveService` 会自动重连到正确的 WebSocket 路径，连接成功后通过 `hello.ack` 触发 `fetchPending()`，下载之前未收到的图片。

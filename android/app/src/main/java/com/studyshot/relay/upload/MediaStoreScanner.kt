@@ -21,16 +21,20 @@ class MediaStoreScanner(
         val projection = buildList {
             add(MediaStore.Images.Media._ID)
             add(MediaStore.Images.Media.DISPLAY_NAME)
-            add(MediaStore.Images.Media.RELATIVE_PATH)
             add(MediaStore.Images.Media.DATE_ADDED)
+            add(MediaStore.Images.Media.MIME_TYPE)
             if (Build.VERSION.SDK_INT >= 29) {
+                add(MediaStore.Images.Media.RELATIVE_PATH)
                 add(MediaStore.Images.Media.IS_PENDING)
+            } else {
+                @Suppress("DEPRECATION")
+                add(MediaStore.Images.Media.DATA)
             }
         }.toTypedArray()
         val selection = if (Build.VERSION.SDK_INT >= 29) {
-            "${MediaStore.Images.Media.DATE_ADDED} >= ? AND ${MediaStore.Images.Media.IS_PENDING} = 0"
+            "${MediaStore.Images.Media.DATE_ADDED} >= ? AND ${MediaStore.Images.Media.IS_PENDING} = 0 AND ${MediaStore.Images.Media.MIME_TYPE} LIKE 'image/%'"
         } else {
-            "${MediaStore.Images.Media.DATE_ADDED} >= ?"
+            "${MediaStore.Images.Media.DATE_ADDED} >= ? AND ${MediaStore.Images.Media.MIME_TYPE} LIKE 'image/%'"
         }
         val args = arrayOf(sinceSeconds.toString())
         val sort = "${MediaStore.Images.Media.DATE_ADDED} DESC"
@@ -39,17 +43,24 @@ class MediaStoreScanner(
         resolver.query(collection, projection, selection, args, sort)?.use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
             val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
-            val pathCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.RELATIVE_PATH)
+            val pathCol = if (Build.VERSION.SDK_INT >= 29) {
+                cursor.getColumnIndexOrThrow(MediaStore.Images.Media.RELATIVE_PATH)
+            } else {
+                @Suppress("DEPRECATION")
+                cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATA)
+            }
+            val dateAddedCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATE_ADDED)
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idCol)
                 val name = cursor.getString(nameCol).orEmpty()
-                val relativePath = cursor.getString(pathCol).orEmpty()
-                if (!isLikelyScreenshot(relativePath, name)) continue
+                val path = cursor.getString(pathCol).orEmpty()
+                val dateAdded = cursor.getLong(dateAddedCol)
+                if (!isLikelyScreenshot(path, name)) continue
                 result += CandidateImage(
                     uri = ContentUris.withAppendedId(collection, id),
                     displayName = name,
-                    relativePath = relativePath,
-                    mediaIdHash = hashMediaId(id.toString()),
+                    relativePath = path,
+                    mediaIdHash = hashMediaId("$id:$name:$dateAdded"),
                 )
             }
         }
@@ -57,16 +68,34 @@ class MediaStoreScanner(
     }
 
     companion object {
-        fun isLikelyScreenshot(relativePath: String, displayName: String): Boolean {
-            val path = relativePath.lowercase()
-            val name = displayName.lowercase()
-            val pathMatch = path.contains("screenshots") ||
-                path.contains("screenshot") ||
-                relativePath.contains("截图") ||
-                relativePath.contains("截屏")
-            val nameMatch = name.contains("screenshot") ||
-                displayName.contains("截图") ||
-                displayName.contains("截屏")
+        private val SCREENSHOT_PATH_KEYWORDS = listOf(
+            "screenshots",
+            "screenshot",
+            "screen captures",
+            "captures",
+            "截图",
+            "截屏",
+            "screen_shots",
+            "screen_shot",
+        )
+
+        private val SCREENSHOT_NAME_PREFIXES = listOf(
+            "screenshot",
+            "截屏",
+            "截图",
+            "screen_shot",
+            "screen-shot",
+            "screencapture",
+            "screen_capture",
+        )
+
+        fun isLikelyScreenshot(path: String, displayName: String): Boolean {
+            val pathLower = path.lowercase()
+            val nameLower = displayName.lowercase()
+
+            val pathMatch = SCREENSHOT_PATH_KEYWORDS.any { pathLower.contains(it) }
+            val nameMatch = SCREENSHOT_NAME_PREFIXES.any { nameLower.startsWith(it) }
+
             return pathMatch || nameMatch
         }
 

@@ -281,7 +281,19 @@ class StudyShotApiClient(
     private fun executeJson(request: Request): JSONObject {
         client.newCall(request).execute().use { response ->
             val bodyText = response.body?.string().orEmpty()
-            val envelope = if (bodyText.isBlank()) JSONObject() else JSONObject(bodyText)
+            val envelope = when {
+                bodyText.isBlank() -> JSONObject()
+                bodyText.trimStart().startsWith("{") -> try {
+                    JSONObject(bodyText)
+                } catch (err: org.json.JSONException) {
+                    throw ApiException(
+                        response.code,
+                        "INVALID_JSON",
+                        "服务器返回了非 JSON 响应：${bodyText.take(200)}",
+                    )
+                }
+                else -> JSONObject()
+            }
             if (!response.isSuccessful || envelope.optBoolean("success") != true) {
                 val error = envelope.optJSONObject("error")
                 throw ApiException(

@@ -16,26 +16,24 @@ class UploadWorker(
     appContext: Context,
     params: WorkerParameters,
 ) : CoroutineWorker(appContext, params) {
+
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+        val taskId = inputData.getString(KEY_TASK_ID) ?: return@withContext Result.failure()
+
+        if (runAttemptCount > MAX_RETRY_ATTEMPTS) {
+            markFailed(taskId, null, null, "重试次数超过上限 ($MAX_RETRY_ATTEMPTS)")
+            return@withContext Result.failure()
+        }
+
         val database = StudyShotDatabase.get(applicationContext)
         val secureSettings = SecureSettings(applicationContext)
         val apiClient = StudyShotApiClient()
-        val taskId = inputData.getString(KEY_TASK_ID) ?: return@withContext Result.failure()
         val task = database.dao().getUploadTask(taskId) ?: return@withContext Result.failure()
         val settings = secureSettings.settings.value
         val token = secureSettings.getDeviceToken()
 
         if (settings.serverBaseUrl.isBlank() || token.isNullOrBlank()) {
-            database.dao().updateUploadTask(
-                id = taskId,
-                status = "failed",
-                sha256 = null,
-                fileSize = null,
-                serverImageId = null,
-                lastError = "Device is not bound",
-                attemptDelta = 1,
-                updatedAt = System.currentTimeMillis(),
-            )
+            markFailed(taskId, task.sha256, task.fileSize, "Device is not bound")
             return@withContext Result.failure()
         }
 
@@ -57,9 +55,26 @@ class UploadWorker(
                 return@withContext Result.success()
             }
 
-            val mimeType = applicationContext.contentResolver.detectImageMimeType(uri)
-                ?: applicationContext.contentResolver.getType(uri)
-                ?: throw IllegalArgumentException("Unsupported image type")
+            if (database.dao().hasUploadedHash(digest.sha256)) {
+                database.dao().updateUploadTask(
+                    id = taskId,
+                    status = "deduplicated",
+                    sha256 = digest.sha256,
+                    fileSize = digest.fileSize,
+                    serverImageId = null,
+                    lastError = "Image was already uploaded",
+                    attemptDelta = 0,
+                    updatedAt = System.currentTimeMillis(),
+                )
+                return@withContext Result.success()
+            }
+
+            val mimeType = resolveMimeType(uri)
+            if (mimeType == null) {
+                markFailed(taskId, digest.sha256, digest.fileSize, "Unsupported image type")
+                return@withContext Result.failure()
+            }
+
             val response = apiClient.uploadImage(
                 serverBaseUrl = settings.serverBaseUrl,
                 deviceToken = token,
@@ -91,34 +106,66 @@ class UploadWorker(
             )
             Result.success()
         } catch (err: ApiException) {
-            val terminal = err.statusCode == 400 || err.statusCode == 401 || err.statusCode == 403
-            database.dao().updateUploadTask(
-                id = taskId,
-                status = if (terminal) "failed" else "queued",
-                sha256 = null,
-                fileSize = null,
-                serverImageId = null,
-                lastError = "${err.apiCode}: ${err.message}",
-                attemptDelta = 1,
-                updatedAt = System.currentTimeMillis(),
-            )
-            if (terminal) Result.failure() else Result.retry()
+            val terminal = err.statusCode == 400 || err.statusCode == 401 || err.statusCode == 403 || err.statusCode == 404 || err.statusCode == 422
+            val retryable = !terminal && runAttemptCount < MAX_RETRY_ATTEMPTS
+            markTaskStatus(taskId, retryable, task.sha256, task.fileSize, "${err.apiCode}: ${err.message}")
+            if (retryable) Result.retry() else Result.failure()
         } catch (err: Exception) {
-            database.dao().updateUploadTask(
-                id = taskId,
-                status = "queued",
-                sha256 = null,
-                fileSize = null,
-                serverImageId = null,
-                lastError = err.message ?: err.javaClass.simpleName,
-                attemptDelta = 1,
-                updatedAt = System.currentTimeMillis(),
-            )
-            Result.retry()
+            val retryable = runAttemptCount < MAX_RETRY_ATTEMPTS
+            markTaskStatus(taskId, retryable, task.sha256, task.fileSize, err.message ?: err.javaClass.simpleName)
+            if (retryable) Result.retry() else Result.failure()
         }
+    }
+
+    private suspend fun markFailed(
+        taskId: String,
+        sha256: String?,
+        fileSize: Long?,
+        reason: String,
+    ) {
+        val database = StudyShotDatabase.get(applicationContext)
+        database.dao().updateUploadTask(
+            id = taskId,
+            status = "failed",
+            sha256 = sha256,
+            fileSize = fileSize,
+            serverImageId = null,
+            lastError = reason,
+            attemptDelta = 1,
+            updatedAt = System.currentTimeMillis(),
+        )
+    }
+
+    private suspend fun markTaskStatus(
+        taskId: String,
+        retryable: Boolean,
+        sha256: String?,
+        fileSize: Long?,
+        reason: String,
+    ) {
+        val database = StudyShotDatabase.get(applicationContext)
+        database.dao().updateUploadTask(
+            id = taskId,
+            status = if (retryable) "queued" else "failed",
+            sha256 = sha256,
+            fileSize = fileSize,
+            serverImageId = null,
+            lastError = reason,
+            attemptDelta = 1,
+            updatedAt = System.currentTimeMillis(),
+        )
+    }
+
+    private fun resolveMimeType(uri: Uri): String? {
+        val detected = applicationContext.contentResolver.detectImageMimeType(uri)
+        if (detected != null) return detected
+        val contentType = applicationContext.contentResolver.getType(uri)
+        if (contentType != null && contentType.startsWith("image/")) return contentType
+        return null
     }
 
     companion object {
         const val KEY_TASK_ID = "task_id"
+        private const val MAX_RETRY_ATTEMPTS = 5
     }
 }

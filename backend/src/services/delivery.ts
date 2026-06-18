@@ -13,12 +13,15 @@ export async function generateDeliveries(
     where: {
       ownerUserId: image.ownerUserId,
       revokedAt: null,
+      user: {
+        disabledAt: null,
+      },
       NOT: { id: image.uploadDeviceId },
       permissions: {
         canAutoReceive: true,
       },
     },
-    include: { permissions: true },
+    include: { permissions: true, user: true },
   });
 
   const deliveryIds: string[] = [];

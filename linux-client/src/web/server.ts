@@ -220,6 +220,70 @@ export async function startWebServer(port = 0): Promise<{ url: string; close: ()
     return reply.send({ deliveries: recentDeliveries });
   });
 
+  // ---- admin image library proxy ----
+  // The Linux-client Web UI does not store the admin JWT itself; the browser
+  // attaches the JWT to every request, the linux server attaches it to the
+  // upstream call to the backend, and returns the response. This keeps the
+  // JWT scoped to the browser session and avoids storing secrets here.
+  async function requireAdminJwt(req: FastifyRequest, reply: FastifyReply) {
+    const auth = req.headers.authorization;
+    if (!auth?.startsWith("Bearer ")) {
+      reply.status(401).send({ success: false, error: { message: "需要先登录管理账号" } });
+      return null;
+    }
+    return auth.slice(7);
+  }
+
+  app.get("/api/proxy/images", async (req, reply) => {
+    const jwt = await requireAdminJwt(req, reply);
+    if (!jwt) return;
+    const config = await loadConfig();
+    if (!config.device) return reply.status(400).send({ success: false, error: { message: "Not bound" } });
+    const baseUrl = normalizeBaseUrl(config.device.serverBaseUrl);
+    const url = new URL(`${baseUrl}/api/v1/images`);
+    const query = req.query as Record<string, string | undefined>;
+    for (const [k, v] of Object.entries(query)) {
+      if (typeof v === "string" && v !== "") url.searchParams.set(k, v);
+    }
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${jwt}` } });
+    const body = await response.text();
+    return reply.status(response.status).type("application/json").send(body);
+  });
+
+  app.delete("/api/proxy/images/:imageId", async (req, reply) => {
+    const jwt = await requireAdminJwt(req, reply);
+    if (!jwt) return;
+    const { imageId } = req.params as { imageId: string };
+    const config = await loadConfig();
+    if (!config.device) return reply.status(400).send({ success: false, error: { message: "Not bound" } });
+    const response = await fetch(
+      `${normalizeBaseUrl(config.device.serverBaseUrl)}/api/v1/images/${encodeURIComponent(imageId)}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${jwt}` } },
+    );
+    const body = await response.text();
+    return reply.status(response.status).type("application/json").send(body);
+  });
+
+  app.get("/api/proxy/images/:imageId/download", async (req, reply) => {
+    const jwt = await requireAdminJwt(req, reply);
+    if (!jwt) return;
+    const { imageId } = req.params as { imageId: string };
+    const config = await loadConfig();
+    if (!config.device) return reply.status(400).send({ success: false, error: { message: "Not bound" } });
+    const response = await fetch(
+      `${normalizeBaseUrl(config.device.serverBaseUrl)}/api/v1/images/${encodeURIComponent(imageId)}/download`,
+      { headers: { Authorization: `Bearer ${jwt}` } },
+    );
+    if (!response.ok) {
+      const body = await response.text();
+      return reply.status(response.status).type("application/json").send(body);
+    }
+    const contentType = response.headers.get("content-type") || "application/octet-stream";
+    reply.header("Content-Type", contentType);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    return reply.send(buffer);
+  });
+
   app.post("/api/proxy/auth/login", async (req: FastifyRequest<{ Body: { login: string; password: string } }>, reply) => {
     const config = await loadConfig();
     if (!config.device) return reply.status(400).send({ error: { message: "Not bound" } });

@@ -7,6 +7,9 @@ ENV_FILE="$BACKEND_DIR/.env.production"
 
 DOMAIN="${STUDYSHOT_DOMAIN:-}"
 ACME_EMAIL="${ACME_EMAIL:-}"
+DEPLOY_MODE="${DEPLOY_MODE:-https}"
+PUBLIC_IP="${PUBLIC_IP:-}"
+HTTP_PORT="${HTTP_PORT:-3000}"
 OWNER_LOGIN="${INITIAL_OWNER_LOGIN:-owner}"
 OWNER_PASSWORD="${INITIAL_OWNER_PASSWORD:-}"
 POSTGRES_USER="${POSTGRES_USER:-studyshot}"
@@ -22,10 +25,13 @@ usage() {
   cat <<'USAGE'
 Usage:
   scripts/deploy-backend.sh --domain studyshot.example.com --email admin@example.com
+  scripts/deploy-backend.sh --ip-http 1.2.3.4
 
 Options:
   --domain <domain>             Public domain for HTTPS/WSS, e.g. studyshot.example.com
   --email <email>               ACME email for Caddy certificate registration
+  --ip-http <public-ip>         Deploy HTTP-only backend at http://<public-ip>:3000
+  --http-port <port>            Public HTTP port for --ip-http, default: 3000
   --owner-login <login>         Initial owner login, default: owner
   --owner-password <password>   Initial owner password. If omitted, a random password is generated.
   --postgres-password <value>   PostgreSQL password. If omitted, a random hex password is generated.
@@ -38,6 +44,9 @@ Options:
 
 If backend/.env.production already exists, the script keeps it and deploys directly
 unless --force-env is provided.
+
+Warning: --ip-http is not encrypted. Use it only for temporary tests or behind
+Tailscale / ZeroTier / WireGuard / another trusted private network.
 USAGE
 }
 
@@ -62,6 +71,15 @@ while [[ $# -gt 0 ]]; do
       ;;
     --email)
       ACME_EMAIL="${2:-}"
+      shift 2
+      ;;
+    --ip-http)
+      DEPLOY_MODE="ip-http"
+      PUBLIC_IP="${2:-}"
+      shift 2
+      ;;
+    --http-port)
+      HTTP_PORT="${2:-}"
       shift 2
       ;;
     --owner-login)
@@ -124,8 +142,13 @@ fi
 GENERATED_OWNER_PASSWORD=""
 
 if [[ ! -f "$ENV_FILE" || "$FORCE_ENV" -eq 1 ]]; then
-  [[ -n "$DOMAIN" ]] || fail "--domain is required when generating .env.production"
-  [[ -n "$ACME_EMAIL" ]] || fail "--email is required when generating .env.production"
+  if [[ "$DEPLOY_MODE" == "ip-http" ]]; then
+    [[ -n "$PUBLIC_IP" ]] || fail "--ip-http requires a public IP"
+  else
+    DEPLOY_MODE="https"
+    [[ -n "$DOMAIN" ]] || fail "--domain is required when generating .env.production"
+    [[ -n "$ACME_EMAIL" ]] || fail "--email is required when generating .env.production"
+  fi
 
   if [[ -z "$POSTGRES_PASSWORD" ]]; then
     POSTGRES_PASSWORD="$(random_hex 24)"
@@ -140,11 +163,18 @@ if [[ ! -f "$ENV_FILE" || "$FORCE_ENV" -eq 1 ]]; then
 
   [[ "${#OWNER_PASSWORD}" -ge 8 ]] || fail "owner password must be at least 8 characters"
 
+  if [[ "$DEPLOY_MODE" == "ip-http" ]]; then
+    PUBLIC_BASE_URL="http://${PUBLIC_IP}:${HTTP_PORT}"
+  else
+    PUBLIC_BASE_URL="https://${DOMAIN}"
+  fi
+
   cat >"$ENV_FILE" <<ENV
+DEPLOY_MODE=${DEPLOY_MODE}
 NODE_ENV=production
 HOST=0.0.0.0
 PORT=3000
-PUBLIC_BASE_URL=https://${DOMAIN}
+PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
 
 POSTGRES_USER=${POSTGRES_USER}
 POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
@@ -162,6 +192,8 @@ CORS_ALLOWED_ORIGINS=
 
 STUDYSHOT_DOMAIN=${DOMAIN}
 ACME_EMAIL=${ACME_EMAIL}
+PUBLIC_IP=${PUBLIC_IP}
+HTTP_PORT=${HTTP_PORT}
 ENV
   chmod 600 "$ENV_FILE"
   echo "Created $ENV_FILE"
@@ -169,16 +201,34 @@ else
   echo "Using existing $ENV_FILE"
 fi
 
+env_value() {
+  local key="$1"
+  grep -E "^${key}=" "$ENV_FILE" | head -n 1 | cut -d= -f2- || true
+}
+
+DEPLOY_MODE_FROM_ENV="$(env_value DEPLOY_MODE)"
+if [[ -z "$DEPLOY_MODE_FROM_ENV" ]]; then
+  DEPLOY_MODE_FROM_ENV="https"
+fi
+
+if [[ "$DEPLOY_MODE_FROM_ENV" == "ip-http" ]]; then
+  COMPOSE_FILE="docker-compose.ip-http.yml"
+  HEALTH_URL="$(env_value PUBLIC_BASE_URL)/api/v1/healthz"
+else
+  COMPOSE_FILE="docker-compose.prod.yml"
+  HEALTH_DOMAIN="${DOMAIN:-$(env_value STUDYSHOT_DOMAIN)}"
+  HEALTH_URL="https://${HEALTH_DOMAIN}/api/v1/healthz"
+fi
+
 cd "$BACKEND_DIR"
-"${COMPOSE[@]}" --env-file .env.production -f docker-compose.prod.yml up -d --build
+"${COMPOSE[@]}" --env-file .env.production -f "$COMPOSE_FILE" up -d --build
 
 if [[ "$SKIP_HEALTH" -eq 0 ]]; then
   if command -v curl >/dev/null 2>&1; then
-    HEALTH_DOMAIN="${DOMAIN:-$(grep '^STUDYSHOT_DOMAIN=' "$ENV_FILE" | cut -d= -f2-)}"
     HEALTH_OK=0
     set +e
     for _ in $(seq 1 30); do
-      curl -fsS "https://${HEALTH_DOMAIN}/api/v1/healthz" >/dev/null 2>&1
+      curl -fsS "$HEALTH_URL" >/dev/null 2>&1
       if [[ $? -eq 0 ]]; then
         HEALTH_OK=1
         break
@@ -187,7 +237,7 @@ if [[ "$SKIP_HEALTH" -eq 0 ]]; then
     done
     set -e
     if [[ "$HEALTH_OK" -ne 1 ]]; then
-      fail "Health check failed: https://${HEALTH_DOMAIN}/api/v1/healthz"
+      fail "Health check failed: $HEALTH_URL"
     fi
     echo "Health check passed"
   else

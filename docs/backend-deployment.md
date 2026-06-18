@@ -87,6 +87,20 @@ openssl rand -base64 48
 
 脚本会生成 `backend/.env.production`，并执行生产 Docker Compose 启动流程。已有 `.env.production` 时，脚本会直接复用该文件；如需重写，添加 `--force-env`。
 
+如果没有域名，可以临时使用纯 IP HTTP 模式：
+
+```bash
+./scripts/deploy-backend.sh --ip-http 1.2.3.4
+```
+
+此模式会使用 `backend/docker-compose.ip-http.yml`，不启动 Caddy，不申请 HTTPS 证书，而是把后端直接映射到公网：
+
+```text
+http://1.2.3.4:3000
+```
+
+注意：纯 IP HTTP 不加密，公网长期使用会暴露 token 和图片内容。更稳妥的做法是仅用于临时测试，或者配合 Tailscale / ZeroTier / WireGuard 等私有网络使用。
+
 也可以在 `backend/` 目录手动执行：
 
 在 `backend/` 目录执行：

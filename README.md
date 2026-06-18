@@ -44,3 +44,17 @@
 ```
 
 脚本会在服务器本地生成 `backend/.env.production`，构建并启动 PostgreSQL、后端和 Caddy。首次运行如果没有指定 `--owner-password`，脚本会生成主用户密码并只在终端显示一次。
+
+没有域名时可以临时用纯 IP HTTP 部署：
+
+```bash
+./scripts/deploy-backend.sh --ip-http 1.2.3.4
+```
+
+客户端服务器地址填写：
+
+```text
+http://1.2.3.4:3000
+```
+
+纯 IP HTTP 不加密，只建议临时测试，或配合 Tailscale / ZeroTier / WireGuard 等私有网络使用。

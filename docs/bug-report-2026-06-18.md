@@ -319,6 +319,17 @@
 - **问题描述**：`hashMediaId(id.toString())` 只对 MediaStore 的 `_ID` 做 hash，该 ID 在媒体库扫描/重启后可能复用，服务端可能看到重复或冲突的 `sourceMediaIdHash`。
 - **修改建议**：组合 `_ID + DISPLAY_NAME + DATE_ADDED` 做 hash，或直接依赖 sha256。
 
+### A40. 截图到上传队列延迟近 10 秒
+- **优先级**：高
+- **状态**：fixed
+- **文件/行号**：`android/app/src/main/java/com/studyshot/relay/ScreenshotObserverService.kt:69-90`、`android/app/src/main/java/com/studyshot/relay/upload/UploadRepository.kt:77-92`
+- **问题描述**：`scanRecent()` 在 ContentObserver 触发后硬等 900ms 才扫描一次。部分 OEM 截图 App 写入图片时会长时间保持 `IS_PENDING=1`，单次扫描容易错过，只能依赖下次 Observer 触发；加上 WorkManager 默认调度会再叠加数秒，导致截图后约 10 秒才进入上传队列。
+- **修改建议**：
+  1. 将单次 900ms 扫描改为 100ms/400ms/900ms/1800ms 多次扫描，捕获写入完成的截图。
+  2. ContentObserver 忽略 `selfChange`，避免本 App 保存图片触发自己。
+  3. 自动上传任务启用 `setExpedited`（API 31+），减少 WorkManager 调度延迟。
+  4. 增加详细日志，方便观察每次扫描耗时和入队时间。
+
 ---
 
 ## 二、后端

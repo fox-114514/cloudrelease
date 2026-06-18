@@ -2,6 +2,7 @@ package com.studyshot.relay.upload
 
 import android.content.Context
 import android.net.Uri
+import android.os.Build
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.Data
@@ -9,6 +10,7 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.OutOfQuotaPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.studyshot.relay.data.StudyShotDatabase
@@ -70,20 +72,24 @@ class UploadRepository(
                 updatedAt = now,
             )
         )
-        enqueueWorker(taskId, wifiOnly)
+        enqueueWorker(taskId, wifiOnly, expedited = true)
         return taskId
     }
 
-    private fun enqueueWorker(taskId: String, wifiOnly: Boolean) {
+    private fun enqueueWorker(taskId: String, wifiOnly: Boolean, expedited: Boolean = false) {
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(if (wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
             .build()
-        val request = OneTimeWorkRequestBuilder<UploadWorker>()
+        val requestBuilder = OneTimeWorkRequestBuilder<UploadWorker>()
             .setInputData(Data.Builder().putString(UploadWorker.KEY_TASK_ID, taskId).build())
             .setConstraints(constraints)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
-            .build()
 
+        if (expedited && Build.VERSION.SDK_INT >= 31) {
+            requestBuilder.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
+        }
+
+        val request = requestBuilder.build()
         WorkManager.getInstance(context).enqueueUniqueWork(
             "upload:$taskId",
             ExistingWorkPolicy.KEEP,

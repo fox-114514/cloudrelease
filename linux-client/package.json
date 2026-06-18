@@ -1,0 +1,29 @@
+{
+  "name": "studyshot-relay-linux",
+  "version": "0.1.0",
+  "description": "StudyShot Relay Linux CLI client for testing auto upload/receive",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "studyshot-relay": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "commander": "^12.1.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.4.5"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

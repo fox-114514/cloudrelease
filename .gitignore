@@ -10,6 +10,8 @@ backend/dist/
 desktop/dist/
 desktop/out/
 desktop/release/
+linux-client/release/
+releases/
 android/app/build/
 android/build/
 android/.gradle/
@@ -41,7 +43,9 @@ lerna-debug.log*
 *.crt
 *.p12
 *.jks
+*.keystore
 keystore.properties
+android/app/keystore/
 
 # Database
 data/
@@ -86,3 +90,10 @@ coverage/
 tmp/
 temp/
 *.tmp
+
+# Android
+android/local.properties
+
+# Internal docs (AI agent handoff, bug reports, audit reports, local dev notes).
+# Not for the public remote — keep them in this working copy only.
+docs-internal/

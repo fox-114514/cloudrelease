@@ -3,16 +3,18 @@
   "version": "0.1.0",
   "description": "StudyShot Relay desktop receiver",
   "main": "dist/main.js",
-  "author": "",
+  "author": "StudyShot <relay@studyshot.local>",
+  "homepage": "https://github.com/fox-114514/cloudrelease",
   "license": "UNLICENSED",
   "scripts": {
     "build": "tsc && node scripts/copy-renderer.mjs",
+    "build:icons": "node scripts/build-icons.mjs",
     "typecheck": "tsc --noEmit",
     "start": "npm run build && electron .",
     "dev": "npm run build && electron .",
     "package:dir": "npm run build && electron-builder --dir",
-    "package:linux": "npm run build && electron-builder --linux AppImage deb",
-    "package:win": "npm run build && electron-builder --win nsis portable"
+    "package:linux": "npm run build:icons && npm run build && electron-builder --linux AppImage deb",
+    "package:win": "npm run build:icons && npm run build && electron-builder --win nsis portable"
   },
   "dependencies": {
     "ws": "^8.18.0"
@@ -22,16 +24,19 @@
     "@types/ws": "^8.5.13",
     "electron": "^42.4.1",
     "electron-builder": "^26.15.3",
+    "sharp": "^0.35.1",
     "typescript": "^5.7.0"
   },
   "build": {
     "appId": "com.studyshot.relay.desktop",
     "productName": "StudyShot Relay",
+    "icon": "build/icon.png",
     "directories": {
       "output": "release"
     },
     "files": [
       "dist/**/*",
+      "build/icon.*",
       "package.json"
     ],
     "linux": {
@@ -39,11 +44,14 @@
         "AppImage",
         "deb"
       ],
-      "category": "Utility"
+      "category": "Utility",
+      "maintainer": "StudyShot <relay@studyshot.local>",
+      "vendor": "StudyShot",
+      "synopsis": "StudyShot Relay desktop receiver",
+      "description": "Receive and manage screenshots across devices."
     },
     "win": {
       "target": [
-        "nsis",
         "portable"
       ]
     }

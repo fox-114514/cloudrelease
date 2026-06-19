@@ -12,10 +12,20 @@ class ApiError extends Error {
 }
 async function parseEnvelope(response) {
     const text = await response.text();
-    const body = text
-        ? JSON.parse(text)
-        : { success: true };
-    if (!response.ok || !body.success) {
+    if (!text) {
+        if (!response.ok) {
+            throw new ApiError(response.status, `HTTP_${response.status}`, response.statusText);
+        }
+        return undefined;
+    }
+    let body;
+    try {
+        body = JSON.parse(text);
+    }
+    catch {
+        throw new ApiError(response.status, "INVALID_JSON", `Server returned non-JSON response: ${text.slice(0, 200)}`);
+    }
+    if (!response.ok || body.success !== true) {
         throw new ApiError(response.status, body.error?.code ?? `HTTP_${response.status}`, body.error?.message ?? response.statusText);
     }
     return body.data;

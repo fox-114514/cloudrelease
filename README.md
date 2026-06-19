@@ -1,76 +1,122 @@
-# StudyShot Relay（学习截图快传）
+# StudyShot Relay
 
-一个私有、低延迟的跨设备图片快传系统。
+> 平板写笔记,截一张图,几秒后电脑的剪贴板里就是这张图。然后你在 GPT、Claude、任何编辑器里 `Ctrl+V` 粘贴,继续干活。
 
-## 目标
+自己搭的私有中转,不上云、不依赖微信和厂商账号,只做一件事:把截图从安卓设备推到其他设备,延迟压到几秒内。
 
-用户在安卓平板上写作业、手写笔记并截图后，图片自动上传到用户自己的服务器；授权的电脑或手机自动接收并下载，电脑端最好自动写入剪贴板。用户只需要在其他页面（例如 GPT 页面）按 `Ctrl+V` 粘贴图片即可。
+## 需求
 
-这不是网盘、不是完整相册同步、不是聊天软件、也不是 GPT API 客户端。
+我自己的场景:平板手写笔记,电脑用 GPT 辅助。"截图 → 传图 → 贴到 GPT" 这条链路,试过几个办法都不顺手:
 
-## 组成
+- **平板分屏** — 发热、笔迹延迟,书写体验崩。
+- **微信文件助手** — 6 步切换,每步都要离开当前页面。
+- **厂商中转站**(ColorOS / MIUI / HarmonyOS) — 同步几十秒到一分钟,跨品牌直接用不了。
 
-- `backend/`：Node.js + TypeScript + Fastify 后端服务。
-- `desktop/`：Electron + TypeScript 桌面客户端，支持 Windows / Ubuntu。
-- `android/`：Kotlin + Jetpack Compose 安卓 App。
-- `docs/`：规格文档与开发任务清单。
+StudyShot Relay 想把这件事压成两步:**截图 → 等几秒 → Ctrl+V**。
 
-## 核心约束
+为了让这玩意儿不变成"什么都能传"的全家桶,几个底线:
 
-- 默认只自动上传截图，不默认监听整个相册。
-- 权限必须落实到设备级。
-- 上传设备不会收到自己上传的图片。
-- 安卓下载目录不会再次触发自动上传。
-- WebSocket 是实时通知主链路，pending deliveries 是补偿链路。
-- 所有图片下载必须鉴权，不生成公开 URL。
+- 只自动上传截图,不动相册
+- 权限到设备,不到用户
+- 上传设备不会收到自己传的图(避免循环)
+- 下载目录不进截图监听(避免循环)
+- 图片 URL 全部鉴权,没有公开链接
+- WebSocket 实时推送,断网时靠 pending 投递补
 
-## 文档
+## 技术栈
 
-- [完整方案规格](docs/study-shot-relay-spec.md)
-- [开发任务清单](docs/study-shot-relay-agent-tasklist.md)
-- [客户端/后端协议](docs/protocol.md)
-- [权限模型](docs/permissions.md)
-- [Android 后台上传设计](docs/android-background.md)
-- [后端部署](docs/backend-deployment.md)
-- [本地 PostgreSQL 配置](docs/local-postgresql-setup.md)
-- [桌面客户端说明](desktop/README.md)
+| 模块 | 选型 |
+| --- | --- |
+| 后端 | Node.js + TypeScript + Fastify + Prisma + PostgreSQL |
+| 实时通道 | WebSocket(`@fastify/websocket` + `ws`) |
+| Android | Kotlin + Jetpack Compose + OkHttp + WorkManager + Room |
+| 桌面(Windows / Linux) | Electron + TypeScript |
+| Linux CLI / Web UI | Node.js + TypeScript + Fastify + chokidar |
+| 部署 | Docker Compose + Caddy(自动 HTTPS) |
 
-## 一键部署后端
+## 功能
 
-在服务器上安装 Docker 和 Docker Compose 后，克隆仓库并执行：
+**核心**
+
+- 设备绑定:owner 在网页后台生成一次性绑定码,新设备凭码注册
+- 实时推送:图片上传后,授权设备通过 WebSocket 在几秒内收到通知
+- 离线补偿:设备离线期间的投递,重连后由 `pending deliveries` 接口补齐
+- 多用户多设备:owner / child 用户,同一用户下多设备可同时在线
+- 设备级权限:每个设备独立控制"自动上传 / 自动接收 / 管理空间"等能力,后端强校验
+- 审计日志:登录、绑定、撤销、权限变更、删除等关键操作全部留痕
+
+**Android**
+
+- 监听 `MediaStore` 截图目录,新增即上传
+- 实时学习模式可启前台服务,保活应对国产 ROM 后台限制
+- WorkManager 退避重试,进程被杀不丢任务
+- 4 Tab UI(主页 / 记录 / 设置 / 帮助),带 6 个帮助子页
+- 支持系统分享菜单手动上传任意图片
+- 设备 token 用 Jetpack Security 加密存在本地
+
+**桌面(Windows / Ubuntu)**
+
+- 自动下载到指定目录
+- 可选自动写入剪贴板,任意窗口 `Ctrl+V` 即可粘贴
+- 托盘常驻,支持暂停 / 恢复
+- 开机自启、桌面通知、最近接收记录
+- 可在本机直接以 owner 登录,管理设备和权限
+
+**Linux 客户端**
+
+- 一条命令 `studyshot-relay launch` 拉起 Web 管理界面,自动开浏览器
+- CLI 完整子命令:`bind` / `unbind` / `receive` / `watch` / `upload` / `run` / `status`
+- 目录监控自动上传 / 长连接自动下载
+- 提供 `assets/install-desktop.sh` 一键装到系统应用菜单,带专属图标
+
+**网页管理后台**
+
+访问 `https://你的域名/admin`:
+
+- 设备列表、改名、改权限、撤销
+- 子用户、用户组管理
+- 图片库:缩略图网格、预览、批量多选删除、按时间筛选(全部 / 有效 / 过期 / 今天 / 本周 / 本月)
+
+## 一键部署
+
+需要一台 Linux 服务器,装好 Docker + Docker Compose。域名 + HTTPS 模式由 Caddy 自动申请证书。
+
+**域名 + HTTPS(推荐)**
 
 ```bash
+git clone https://github.com/fox-114514/cloudrelease.git
+cd cloudrelease
 ./scripts/deploy-backend.sh --domain studyshot.example.com --email admin@example.com
 ```
 
-脚本会在服务器本地生成 `backend/.env.production`，构建并启动 PostgreSQL、后端和 Caddy。首次运行如果没有指定 `--owner-password`，脚本会生成主用户密码并只在终端显示一次。
+首次跑会生成主用户(`owner`)的随机密码,**只在终端显示一次**,记下来。
 
-没有域名时可以临时用纯 IP HTTP 部署：
+部署完的验证流程:
+
+1. 浏览器打开 `https://studyshot.example.com/admin`,用 `owner` 登录
+2. 生成一个设备绑定码
+3. 客户端填服务器地址 `https://studyshot.example.com`、输入绑定码完成注册
+4. 回到后台给该设备勾上"自动接收"
+5. 在授权设备上截一张图,看接收端几秒内是否到
+
+**纯 IP + HTTP(临时)**
+
+没域名时这样,建议配合 Tailscale / ZeroTier / WireGuard 等私有网络用,**不加密**:
 
 ```bash
 ./scripts/deploy-backend.sh --ip-http 1.2.3.4
 ```
 
-客户端服务器地址填写：
+客户端服务器地址填 `http://1.2.3.4:3000`。
 
-```text
-http://1.2.3.4:3000
-```
+数据库备份、迁移、升级等运维细节见 [docs/backend-deployment.md](docs/backend-deployment.md)。
 
-纯 IP HTTP 不加密，只建议临时测试，或配合 Tailscale / ZeroTier / WireGuard 等私有网络使用。
+## 文档
 
-## 网页管理后台
-
-部署完成后可以用浏览器打开：
-
-```text
-https://你的域名/admin
-```
-
-纯 IP HTTP 模式打开：
-
-```text
-http://你的服务器IP:3000/admin
-```
-
-使用主用户登录后，可以创建绑定码、管理设备权限、创建子用户、管理分组并查看审计日志。
+- [项目完整规格](docs/study-shot-relay-spec.md) — 目标、场景、约束、详细设计
+- [客户端 / 后端协议](docs/protocol.md) — HTTP API、WebSocket 消息、错误码
+- [权限模型](docs/permissions.md) — 用户 / 设备 / 能力项的边界
+- [Android 后台上传设计](docs/android-background.md)
+- [后端部署](docs/backend-deployment.md)
+- [桌面客户端](desktop/README.md)
+- [Linux 客户端](linux-client/README.md)

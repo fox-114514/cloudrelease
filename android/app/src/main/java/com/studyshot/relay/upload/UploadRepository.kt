@@ -49,6 +49,7 @@ class UploadRepository(
 
     suspend fun enqueueAutoUpload(
         uri: Uri,
+        sourceKind: String,
         sourceDisplayName: String?,
         sourceMediaIdHash: String?,
         wifiOnly: Boolean,
@@ -59,7 +60,7 @@ class UploadRepository(
             UploadTaskEntity(
                 id = taskId,
                 uri = uri.toString(),
-                sourceKind = "screenshot",
+                sourceKind = sourceKind,
                 sourceDisplayName = sourceDisplayName,
                 sourceMediaIdHash = sourceMediaIdHash,
                 sha256 = null,

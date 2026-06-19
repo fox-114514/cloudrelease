@@ -92,6 +92,33 @@ data class ManagedDevice(
     val permissions: DevicePermissions,
 )
 
+data class LibraryImageUploadedBy(
+    val userId: String,
+    val userDisplayName: String,
+    val deviceId: String,
+    val deviceName: String,
+)
+
+data class LibraryImage(
+    val id: String,
+    val mimeType: String,
+    val fileSize: Long,
+    val width: Int?,
+    val height: Int?,
+    val sha256: String,
+    val sourceKind: String,
+    val sourceDisplayName: String?,
+    val uploadedBy: LibraryImageUploadedBy,
+    val createdAt: String,
+    val expiresAt: String,
+    val isExpired: Boolean,
+)
+
+data class ImageLibraryPage(
+    val images: List<LibraryImage>,
+    val nextCursor: String?,
+)
+
 data class ApiError(
     val code: String,
     val message: String,

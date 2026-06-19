@@ -82,7 +82,7 @@ class ScreenshotObserverService : Service() {
         val app = application as StudyShotApp
         val settings = app.secureSettings.settings.value
         if (!settings.autoUploadEnabled || !settings.realtimeModeEnabled) return
-        if (settings.autoUploadScope != "screenshot_only") return
+        if (settings.autoUploadScope !in setOf("screenshot_only", "selected_album")) return
 
         // Cancel any in-flight follow-up scans from a previous trigger to avoid storms.
         scanJob.getAndSet(null)?.cancel()
@@ -103,12 +103,17 @@ class ScreenshotObserverService : Service() {
                 if (!isActive) return@launch
 
                 val scanner = MediaStoreScanner(contentResolver)
-                val candidates = scanner.queryRecentImages(since)
+                val candidates = scanner.queryRecentImages(
+                    sinceSeconds = since,
+                    autoUploadScope = settings.autoUploadScope,
+                    selectedAlbumPaths = settings.selectedAlbumPaths,
+                )
                 Log.d(TAG, "scanRecent: +${delayMs}ms found ${candidates.size} screenshot candidate(s)")
 
                 for (candidate in candidates) {
                     app.uploadRepository.enqueueAutoUpload(
                         uri = candidate.uri,
+                        sourceKind = candidate.sourceKind,
                         sourceDisplayName = candidate.relativePath.ifBlank { candidate.displayName },
                         sourceMediaIdHash = candidate.mediaIdHash,
                         wifiOnly = settings.wifiOnly,
@@ -139,4 +144,3 @@ class ScreenshotObserverService : Service() {
         private const val TAG = "ScreenshotObserverSvc"
     }
 }
-

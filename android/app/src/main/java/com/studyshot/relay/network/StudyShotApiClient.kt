@@ -2,6 +2,7 @@ package com.studyshot.relay.network
 
 import android.content.ContentResolver
 import android.net.Uri
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -129,6 +130,76 @@ class StudyShotApiClient(
                 )
             }
         }
+    }
+
+    suspend fun listImages(
+        serverBaseUrl: String,
+        accessToken: String,
+        filter: String = "all",
+        before: String? = null,
+        limit: Int = 50,
+    ): ImageLibraryPage {
+        val urlBuilder = apiUrl(serverBaseUrl, "/api/v1/images").toHttpUrl().newBuilder()
+            .addQueryParameter("filter", filter)
+            .addQueryParameter("limit", limit.toString())
+        if (!before.isNullOrBlank()) {
+            urlBuilder.addQueryParameter("before", before)
+        }
+
+        val httpRequest = Request.Builder()
+            .url(urlBuilder.build())
+            .header("Authorization", "Bearer $accessToken")
+            .get()
+            .build()
+
+        val data = executeJson(httpRequest)
+        val imagesJson = data.optJSONArray("images") ?: org.json.JSONArray()
+        val images = buildList {
+            for (index in 0 until imagesJson.length()) {
+                val json = imagesJson.getJSONObject(index)
+                val uploadedByJson = json.getJSONObject("uploadedBy")
+                add(
+                    LibraryImage(
+                        id = json.getString("id"),
+                        mimeType = json.getString("mimeType"),
+                        fileSize = json.getLong("fileSize"),
+                        width = json.optInt("width").takeIf { !json.isNull("width") },
+                        height = json.optInt("height").takeIf { !json.isNull("height") },
+                        sha256 = json.getString("sha256"),
+                        sourceKind = json.optString("sourceKind", "unknown"),
+                        sourceDisplayName = json.optString("sourceDisplayName").takeIf { it.isNotBlank() },
+                        uploadedBy = LibraryImageUploadedBy(
+                            userId = uploadedByJson.getString("userId"),
+                            userDisplayName = uploadedByJson.getString("userDisplayName"),
+                            deviceId = uploadedByJson.getString("deviceId"),
+                            deviceName = uploadedByJson.getString("deviceName"),
+                        ),
+                        createdAt = json.getString("createdAt"),
+                        expiresAt = json.getString("expiresAt"),
+                        isExpired = json.optBoolean("isExpired", false),
+                    )
+                )
+            }
+        }
+
+        return ImageLibraryPage(
+            images = images,
+            nextCursor = data.optString("nextCursor").takeIf { it.isNotBlank() },
+        )
+    }
+
+    suspend fun deleteImage(
+        serverBaseUrl: String,
+        accessToken: String,
+        imageId: String,
+    ) {
+        val httpRequest = Request.Builder()
+            .url(apiUrl(serverBaseUrl, "/api/v1/images/$imageId"))
+            .header("Authorization", "Bearer $accessToken")
+            .delete()
+            .build()
+
+        executeJson(httpRequest)
     }
 
     suspend fun updateDevicePermission(

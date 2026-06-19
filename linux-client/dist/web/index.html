@@ -159,6 +159,86 @@
     .tab.active { border-color: var(--accent); color: var(--accent); }
     .panel { display: none; }
     .panel.active { display: block; }
+    .image-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+      gap: 12px;
+    }
+    .image-card { position: relative; }
+    .image-card.is-select-mode { cursor: pointer; }
+    .image-card.is-selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .image-card.is-expired { opacity: 0.65; }
+    .image-card-checkbox {
+      position: absolute;
+      top: 6px;
+      left: 6px;
+      width: 24px;
+      height: 24px;
+      border-radius: 4px;
+      background: rgba(15,23,42,0.85);
+      border: 1px solid #334155;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 2;
+      font-weight: 700;
+      font-size: 14px;
+      color: transparent;
+      user-select: none;
+    }
+    .image-card.is-selected .image-card-checkbox {
+      background: var(--accent);
+      color: #0f172a;
+      border-color: var(--accent);
+    }
+    .image-card-preview {
+      width: 100%;
+      aspect-ratio: 1;
+      background: #0f172a;
+      border-radius: 8px;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .image-card-preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .image-card-name { font-weight: 600; margin-top: 8px; }
+    .image-card-sub { color: var(--muted); font-size: 12px; }
+    .image-card-selected-hint { color: var(--muted); font-size: 11px; }
+    .image-card.is-selected .image-card-selected-hint { color: var(--accent); font-weight: 700; }
+    .image-empty { color: var(--muted); text-align: center; padding: 24px; grid-column: 1 / -1; }
+    .image-card-actions { display: flex; gap: 6px; margin-top: 8px; }
+    .image-card-actions button { flex: 1; padding: 6px; font-size: 12px; }
+    .modal {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.7);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 1000; padding: 24px;
+    }
+    .modal.hidden { display: none; }
+    .modal-content {
+      background: var(--panel);
+      border-radius: var(--radius);
+      padding: 20px;
+      max-width: min(960px, 90vw);
+      max-height: 90vh;
+      overflow: auto;
+      position: relative;
+    }
+    .modal-close {
+      position: absolute; top: 6px; right: 10px;
+      background: transparent; border: 0;
+      font-size: 26px; cursor: pointer; color: var(--muted);
+      min-height: 0; padding: 4px 8px;
+    }
+    .modal-close:hover { color: var(--text); }
+    .modal-content img { max-width: 100%; max-height: 60vh; display: block; margin: 0 auto; }
+    .image-modal-meta { margin-top: 14px; font-size: 13px; }
+    .image-modal-meta dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; }
+    .image-modal-meta dt { color: var(--muted); font-weight: 650; }
+    .image-modal-meta dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; }
   </style>
 </head>
 <body>
@@ -173,6 +253,7 @@
       <div class="tab active" data-tab="dashboard">仪表盘</div>
       <div class="tab" data-tab="config">本地配置</div>
       <div class="tab" data-tab="server">服务器管理</div>
+      <div class="tab" data-tab="images">图片库</div>
       <div class="tab" data-tab="logs">日志</div>
     </div>
 
@@ -188,7 +269,11 @@
             </div>
           </div>
           <div class="card">
-            <h2>快捷操作</h2>
+            <h2>服务状态</h2>
+            <div style="display:flex; gap:12px; margin-bottom:12px;">
+              <span>接收：<span id="svcReceive" class="status-pill disconnected">未启动</span></span>
+              <span>监听：<span id="svcWatch" class="status-pill disconnected">未启动</span></span>
+            </div>
             <div class="actions">
               <button id="btnStartReceive">启动接收</button>
               <button id="btnStopReceive" class="danger">停止接收</button>
@@ -294,6 +379,49 @@
         </div>
       </div>
     </div>
+
+    <div id="images" class="panel">
+      <div class="card">
+        <h2>图片库</h2>
+        <div class="row" style="margin-bottom:12px;">
+          <label>
+            筛选
+            <select id="imgFilter">
+              <option value="all">全部</option>
+              <option value="active">有效</option>
+              <option value="expired">已过期</option>
+              <option value="today">今天</option>
+              <option value="week">最近 7 天</option>
+              <option value="month">最近 30 天</option>
+            </select>
+          </label>
+          <button class="secondary" id="btnImgRefresh" type="button">刷新</button>
+        </div>
+        <div id="imgSelectionBar" class="card" style="display:none; padding:10px 14px;">
+          <div class="row" style="margin:0; align-items:center;">
+            <span id="imgSelectedCount" style="font-weight:600;">已选 0</span>
+            <button class="secondary" id="btnImgSelectAll" type="button">全选本页</button>
+            <button class="danger" id="btnImgDeleteSelected" type="button" disabled>删除所选 (0)</button>
+            <button class="secondary" id="btnImgExitSelect" type="button">退出多选</button>
+          </div>
+        </div>
+        <div id="imageGrid" class="image-grid"></div>
+        <div id="imageLoadMore" style="text-align:center; margin-top:12px; display:none;">
+          <button class="secondary" id="btnImgLoadMore" type="button">加载更多</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="imageModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="图片预览">
+      <div class="modal-content">
+        <button class="modal-close" id="imageModalClose" type="button" aria-label="关闭">×</button>
+        <img id="imageModalImg" alt="预览" />
+        <div id="imageModalMeta" class="image-modal-meta"></div>
+        <div class="actions" style="justify-content:flex-end;">
+          <button class="danger" id="imageModalDelete" type="button">删除图片</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -344,6 +472,56 @@
       renderDeviceInfo(cfg);
     }
 
+    function fmtSize(n) {
+      if (!n || n < 0) return '-';
+      if (n < 1024) return n + ' B';
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+      return (n / 1024 / 1024).toFixed(1) + ' MB';
+    }
+
+    function fmtTime(s) {
+      if (!s) return '-';
+      const d = new Date(s);
+      if (Number.isNaN(d.getTime())) return s;
+      return d.toLocaleString();
+    }
+
+    async function loadRecentDeliveries() {
+      try {
+        const data = await api('GET', '/api/recent-deliveries');
+        renderRecentDeliveries(data.deliveries || []);
+      } catch (err) {
+        // ignore — log panel will show errors
+      }
+    }
+
+    function renderRecentDeliveries(items) {
+      const panel = $('recentDeliveries');
+      if (!items.length) {
+        panel.innerHTML = '<p class="empty">暂无数据</p>';
+        return;
+      }
+      panel.innerHTML = '<table><thead><tr><th>文件</th><th>来源</th><th>大小</th><th>时间</th></tr></thead><tbody>' +
+        items.map(d => '<tr>' +
+          '<td>' + escapeHtml(d.fileName) + '</td>' +
+          '<td>' + escapeHtml(d.sourceDevice) + '</td>' +
+          '<td>' + fmtSize(d.size) + '</td>' +
+          '<td>' + fmtTime(d.savedAt) + '</td>' +
+          '</tr>').join('') + '</tbody></table>';
+    }
+
+    async function loadServiceStatus() {
+      try {
+        const data = await api('GET', '/api/service/status');
+        $('svcReceive').textContent = data.receive ? '运行中' : '未启动';
+        $('svcReceive').className = 'status-pill ' + (data.receive ? 'connected' : 'disconnected');
+        $('svcWatch').textContent = data.watch ? '运行中' : '未启动';
+        $('svcWatch').className = 'status-pill ' + (data.watch ? 'connected' : 'disconnected');
+      } catch {
+        // ignore
+      }
+    }
+
     function renderDeviceInfo(cfg) {
       const el = $('deviceInfo');
       if (!cfg.device) {
@@ -385,7 +563,8 @@
       }
     }
 
-    async function saveConfig() {
+    async function saveConfig(opts) {
+      const silent = opts && opts.silent === true;
       try {
         const body = {
           watchDir: $('cfgWatchDir').value,
@@ -394,8 +573,9 @@
           autoReceive: $('cfgAutoReceive').checked
         };
         await api('POST', '/api/config', body);
-        showMessage('配置已保存', 'success');
+        if (!silent) showMessage('配置已保存', 'success');
         await loadConfig();
+        await loadServiceStatus();
       } catch (err) {
         showMessage('保存失败：' + err.message, 'error');
       }
@@ -445,12 +625,404 @@
       eventSource.onerror = () => {
         $('connStatus').textContent = '未连接';
         $('connStatus').className = 'status-pill disconnected';
+        // Auto-reconnect after 3s to recover from transient drops.
+        if (!window._sseReconnectTimer) {
+          window._sseReconnectTimer = setTimeout(() => {
+            window._sseReconnectTimer = null;
+            connectLogStream();
+          }, 3000);
+        }
       };
       eventSource.onopen = () => {
         $('connStatus').textContent = '已连接';
         $('connStatus').className = 'status-pill connected';
       };
     }
+
+    // Debounced auto-save: any change to a config input posts to /api/config
+    // after 500ms of inactivity. The "保存配置" button still works as a
+    // forced immediate save for users who prefer explicit actions.
+    let autoSaveTimer = null;
+    function scheduleAutoSave() {
+      if (autoSaveTimer) clearTimeout(autoSaveTimer);
+      autoSaveTimer = setTimeout(() => {
+        autoSaveTimer = null;
+        saveConfig({ silent: true });
+      }, 500);
+    }
+    function bindAutoSave() {
+      ['cfgWatchDir', 'cfgDownloadDir'].forEach(id => {
+        const el = $(id);
+        el.addEventListener('change', scheduleAutoSave);
+        el.addEventListener('blur', scheduleAutoSave);
+      });
+      ['cfgAutoUpload', 'cfgAutoReceive'].forEach(id => {
+        $(id).addEventListener('change', scheduleAutoSave);
+      });
+    }
+
+    // -------- Image library (admin) --------
+    const imgState = {
+      images: [],
+      cursor: null,
+      filter: 'all',
+      loaded: false,
+      previewBlobUrls: {},
+      selectMode: false,
+      selectedImageIds: new Set(),
+    };
+
+    async function adminApi(method, path, body) {
+      const opts = { method, headers: { Authorization: 'Bearer ' + adminJwt } };
+      if (body) {
+        opts.headers['Content-Type'] = 'application/json';
+        opts.body = JSON.stringify(body);
+      }
+      const res = await fetch('/api/proxy' + path, opts);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        throw new Error((data.error && data.error.message) || res.statusText || '请求失败');
+      }
+      return data.data || {};
+    }
+
+    function escapeHtmlAttr(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    function buildImageCardHtml(img) {
+      const uploader = (img.uploadedBy && (img.uploadedBy.deviceName || img.uploadedBy.userDisplayName)) || '未知';
+      const expiredTag = img.isExpired ? '<span class="status-pill disconnected">已过期</span>' : '<span class="status-pill connected">有效</span>';
+      const isSelected = imgState.selectedImageIds.has(img.id);
+      const selectClass = imgState.selectMode ? ' is-select-mode' : '';
+      const selectedClass = isSelected ? ' is-selected' : '';
+      const checkbox = imgState.selectMode
+        ? '<div class="image-card-checkbox" data-action="image-select">' + (isSelected ? '✓' : '') + '</div>'
+        : '';
+      const previewAction = imgState.selectMode ? 'image-select' : 'image-preview';
+      const actions = imgState.selectMode
+        ? '<div class="image-card-actions"><span class="image-card-selected-hint">' + (isSelected ? '已选中' : '点击选中') + '</span></div>'
+        : '<div class="image-card-actions">' +
+            '<button class="secondary" data-action="image-preview" type="button">预览</button>' +
+            '<button class="danger" data-action="image-delete" type="button">删除</button>' +
+          '</div>';
+      return '<div class="image-card' + (img.isExpired ? ' is-expired' : '') + selectClass + selectedClass + '" data-image-id="' + escapeHtmlAttr(img.id) + '">' +
+        checkbox +
+        '<div class="image-card-preview" data-action="' + previewAction + '"><span>加载中…</span></div>' +
+        '<div class="image-card-name">' + escapeHtmlAttr(uploader) + ' ' + expiredTag + '</div>' +
+        '<div class="image-card-sub">' + escapeHtmlAttr(img.mimeType) + (img.width && img.height ? ' · ' + img.width + '×' + img.height : '') + '</div>' +
+        '<div class="image-card-sub">' + fmtTime(img.createdAt) + ' · ' + fmtSize(img.fileSize) + '</div>' +
+        actions +
+        '</div>';
+    }
+
+    function renderImageGrid() {
+      const grid = $('imageGrid');
+      if (!imgState.images.length) {
+        grid.innerHTML = '<div class="image-empty">暂无图片，或未登录管理账号</div>';
+        $('imageLoadMore').style.display = 'none';
+        updateImgSelectionBar();
+        return;
+      }
+      grid.innerHTML = imgState.images.map(buildImageCardHtml).join('');
+      $('imageLoadMore').style.display = imgState.cursor ? 'block' : 'none';
+      imgState.images.forEach(img => loadImagePreview(img.id));
+      updateImgSelectionBar();
+    }
+
+    function findImgCard(id) {
+      return document.querySelector('.image-card[data-image-id="' + CSS.escape(id) + '"]');
+    }
+
+    function findImgPreviewEl(id) {
+      return document.querySelector('.image-card[data-image-id="' + CSS.escape(id) + '"] .image-card-preview');
+    }
+
+    async function loadImagePreview(imageId) {
+      const card = findImgPreviewEl(imageId);
+      const cached = imgState.previewBlobUrls[imageId];
+      if (cached) {
+        if (card && !card.querySelector('img')) {
+          card.innerHTML = '<img src="' + cached + '" alt="预览" />';
+        }
+        return cached;
+      }
+      if (!card) return null;
+      try {
+        const res = await fetch('/api/proxy/images/' + encodeURIComponent(imageId) + '/download', {
+          headers: { Authorization: 'Bearer ' + adminJwt },
+        });
+        if (!res.ok) {
+          if (card.isConnected) card.innerHTML = '<span>预览失败</span>';
+          return null;
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        imgState.previewBlobUrls[imageId] = url;
+        if (card.isConnected) card.innerHTML = '<img src="' + url + '" alt="预览" />';
+        return url;
+      } catch {
+        if (card.isConnected) card.innerHTML = '<span>预览失败</span>';
+        return null;
+      }
+    }
+
+    function revokePreview(imageId) {
+      if (imgState.previewBlobUrls[imageId]) {
+        URL.revokeObjectURL(imgState.previewBlobUrls[imageId]);
+        delete imgState.previewBlobUrls[imageId];
+      }
+    }
+
+    function removeImgCardFromDom(imageId) {
+      const card = findImgCard(imageId);
+      if (card) card.remove();
+    }
+
+    function showImgEmptyIfNeeded() {
+      if (!imgState.images.length) {
+        $('imageGrid').innerHTML = '<div class="image-empty">暂无图片</div>';
+        $('imageLoadMore').style.display = 'none';
+      }
+    }
+
+    function isAllOnImgPageSelected() {
+      if (!imgState.images.length) return false;
+      return imgState.images.every(img => imgState.selectedImageIds.has(img.id));
+    }
+
+    function updateImgSelectionBar() {
+      const bar = $('imgSelectionBar');
+      if (!imgState.selectMode) {
+        bar.style.display = 'none';
+        return;
+      }
+      bar.style.display = 'block';
+      $('imgSelectedCount').textContent = '已选 ' + imgState.selectedImageIds.size;
+      $('btnImgSelectAll').textContent = isAllOnImgPageSelected() ? '取消全选' : '全选本页';
+      const count = imgState.selectedImageIds.size;
+      $('btnImgDeleteSelected').disabled = count === 0;
+      $('btnImgDeleteSelected').textContent = '删除所选 (' + count + ')';
+    }
+
+    function toggleImgSelectMode() {
+      imgState.selectMode = !imgState.selectMode;
+      if (!imgState.selectMode) imgState.selectedImageIds.clear();
+      renderImageGrid();
+    }
+
+    function toggleImgCardSelection(imageId) {
+      if (imgState.selectedImageIds.has(imageId)) {
+        imgState.selectedImageIds.delete(imageId);
+      } else {
+        imgState.selectedImageIds.add(imageId);
+      }
+      const card = findImgCard(imageId);
+      if (card) {
+        const isSel = imgState.selectedImageIds.has(imageId);
+        card.classList.toggle('is-selected', isSel);
+        const cb = card.querySelector('.image-card-checkbox');
+        if (cb) cb.textContent = isSel ? '✓' : '';
+        const hint = card.querySelector('.image-card-selected-hint');
+        if (hint) hint.textContent = isSel ? '已选中' : '点击选中';
+      }
+      updateImgSelectionBar();
+    }
+
+    function toggleImgSelectAllOnPage() {
+      if (isAllOnImgPageSelected()) {
+        imgState.images.forEach(img => imgState.selectedImageIds.delete(img.id));
+      } else {
+        imgState.images.forEach(img => imgState.selectedImageIds.add(img.id));
+      }
+      renderImageGrid();
+    }
+
+    function syncImgSelectionVisual() {
+      document.querySelectorAll('.image-card').forEach(card => {
+        const id = card.dataset.imageId;
+        if (!id) return;
+        const shouldBe = imgState.selectedImageIds.has(id);
+        const isSel = card.classList.contains('is-selected');
+        if (shouldBe === isSel) return;
+        card.classList.toggle('is-selected', shouldBe);
+        const cb = card.querySelector('.image-card-checkbox');
+        if (cb) cb.textContent = shouldBe ? '✓' : '';
+        const hint = card.querySelector('.image-card-selected-hint');
+        if (hint) hint.textContent = shouldBe ? '已选中' : '点击选中';
+      });
+    }
+
+    async function loadImages(reset) {
+      if (reset === undefined) reset = true;
+      if (!adminJwt) {
+        showMessage('请先在"服务器管理"页登录管理账号', 'error');
+        return;
+      }
+      showMessage('', 'ok');
+      try {
+        const params = new URLSearchParams();
+        params.set('limit', '50');
+        params.set('filter', imgState.filter);
+        if (!reset && imgState.cursor) params.set('before', imgState.cursor);
+        const data = await adminApi('GET', '/images?' + params.toString());
+        const incoming = data.images || [];
+        if (reset) {
+          const keep = new Set(incoming.map(img => img.id));
+          Object.keys(imgState.previewBlobUrls).forEach(id => {
+            if (!keep.has(id)) revokePreview(id);
+          });
+          imgState.selectedImageIds.forEach(id => {
+            if (!keep.has(id)) imgState.selectedImageIds.delete(id);
+          });
+          imgState.images = incoming;
+        } else {
+          const existing = new Set(imgState.images.map(img => img.id));
+          imgState.images = imgState.images.concat(incoming.filter(img => !existing.has(img.id)));
+        }
+        imgState.cursor = data.nextCursor || null;
+        renderImageGrid();
+      } catch (err) {
+        showMessage(err.message || String(err), 'error');
+      }
+    }
+
+    async function openImagePreview(imageId) {
+      const img = imgState.images.find(x => x.id === imageId);
+      if (!img) return;
+      let url = imgState.previewBlobUrls[imageId];
+      if (!url) url = await loadImagePreview(imageId);
+      if (!url) {
+        showMessage('预览加载失败', 'error');
+        return;
+      }
+      $('imageModalImg').src = url;
+      $('imageModalImg').alt = (img.uploadedBy && img.uploadedBy.deviceName) || '预览';
+      const u = img.uploadedBy || {};
+      $('imageModalMeta').innerHTML = '<dl>' +
+        '<dt>ID</dt><dd>' + escapeHtmlAttr(img.id) + '</dd>' +
+        '<dt>类型</dt><dd>' + escapeHtmlAttr(img.mimeType) + '</dd>' +
+        '<dt>尺寸</dt><dd>' + (img.width && img.height ? img.width + ' × ' + img.height : '-') + '</dd>' +
+        '<dt>大小</dt><dd>' + fmtSize(img.fileSize) + '</dd>' +
+        '<dt>来源</dt><dd>' + escapeHtmlAttr(img.sourceKind) + (img.sourceDisplayName ? ' · ' + escapeHtmlAttr(img.sourceDisplayName) : '') + '</dd>' +
+        '<dt>上传者</dt><dd>' + escapeHtmlAttr(u.userDisplayName || '-') + ' (' + escapeHtmlAttr(u.deviceName || '-') + ')</dd>' +
+        '<dt>sha256</dt><dd>' + escapeHtmlAttr(img.sha256) + '</dd>' +
+        '<dt>创建</dt><dd>' + fmtTime(img.createdAt) + '</dd>' +
+        '<dt>过期</dt><dd>' + fmtTime(img.expiresAt) + '</dd>' +
+        '</dl>';
+      $('imageModalDelete').dataset.imageId = imageId;
+      $('imageModal').classList.remove('hidden');
+    }
+
+    function closeImagePreview() {
+      $('imageModal').classList.add('hidden');
+      $('imageModalImg').src = '';
+      delete $('imageModalDelete').dataset.imageId;
+    }
+
+    async function deleteImage(imageId) {
+      if (!confirm('确认删除该图片？操作不可撤销。')) return;
+      showMessage('', 'ok');
+      try {
+        await adminApi('DELETE', '/images/' + encodeURIComponent(imageId));
+        showMessage('图片已删除', 'ok');
+        imgState.images = imgState.images.filter(x => x.id !== imageId);
+        imgState.selectedImageIds.delete(imageId);
+        revokePreview(imageId);
+        removeImgCardFromDom(imageId);
+        showImgEmptyIfNeeded();
+        updateImgSelectionBar();
+        closeImagePreview();
+      } catch (err) {
+        showMessage(err.message || String(err), 'error');
+      }
+    }
+
+    async function deleteSelectedImages() {
+      const ids = Array.from(imgState.selectedImageIds);
+      if (!ids.length) return;
+      if (!confirm('确认删除所选 ' + ids.length + ' 张图片？操作不可撤销。')) return;
+      showMessage('', 'ok');
+      const results = await Promise.allSettled(ids.map(id => adminApi('DELETE', '/images/' + encodeURIComponent(id))));
+      const succeeded = [];
+      const failed = [];
+      results.forEach((r, i) => {
+        if (r.status === 'fulfilled') succeeded.push(ids[i]);
+        else failed.push({ id: ids[i], reason: r.reason && (r.reason.message || String(r.reason)) });
+      });
+      const succeededSet = new Set(succeeded);
+      imgState.images = imgState.images.filter(img => !succeededSet.has(img.id));
+      succeeded.forEach(id => {
+        imgState.selectedImageIds.delete(id);
+        revokePreview(id);
+        removeImgCardFromDom(id);
+      });
+      failed.forEach(entry => imgState.selectedImageIds.delete(entry.id));
+      syncImgSelectionVisual();
+      showImgEmptyIfNeeded();
+      updateImgSelectionBar();
+      const msg = failed.length === 0
+        ? '已删除 ' + succeeded.length + ' 张图片'
+        : '已删除 ' + succeeded.length + ' 张，失败 ' + failed.length + ' 张';
+      showMessage(msg, failed.length === 0 ? 'ok' : 'warn');
+    }
+
+    $('imageGrid').addEventListener('click', (event) => {
+      const card = event.target.closest('.image-card');
+      if (!card) return;
+      const id = card.dataset.imageId;
+      if (!id) return;
+      if (imgState.selectMode) {
+        toggleImgCardSelection(id);
+        return;
+      }
+      const actionEl = event.target.closest('[data-action]');
+      const action = actionEl && actionEl.dataset.action;
+      if (action === 'image-delete') {
+        deleteImage(id);
+      } else {
+        openImagePreview(id);
+      }
+    });
+
+    $('btnImgRefresh').addEventListener('click', () => {
+      imgState.cursor = null;
+      imgState.selectedImageIds.clear();
+      loadImages(true);
+    });
+    $('imgFilter').addEventListener('change', (e) => {
+      imgState.filter = e.target.value;
+      imgState.cursor = null;
+      imgState.selectedImageIds.clear();
+      loadImages(true);
+    });
+    $('btnImgLoadMore').addEventListener('click', () => {
+      if (imgState.cursor) loadImages(false);
+    });
+    $('btnImgSelectAll').addEventListener('click', toggleImgSelectAllOnPage);
+    $('btnImgDeleteSelected').addEventListener('click', deleteSelectedImages);
+    $('btnImgExitSelect').addEventListener('click', () => {
+      if (imgState.selectMode) toggleImgSelectMode();
+    });
+    $('imageModalClose').addEventListener('click', closeImagePreview);
+    $('imageModalDelete').addEventListener('click', (e) => {
+      const id = e.currentTarget.dataset.imageId;
+      if (id) deleteImage(id);
+    });
+    $('imageModal').addEventListener('click', (e) => {
+      if (e.target === $('imageModal')) closeImagePreview();
+    });
+
+    // Auto-load images on first tab visit. Lazy load avoids paying the
+    // admin API call cost before the user actually opens the tab.
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        if (tab.dataset.tab === 'images' && !imgState.loaded) {
+          imgState.loaded = true;
+          loadImages(true);
+        }
+      });
+    });
 
     // Tabs
     document.querySelectorAll('.tab').forEach(tab => {
@@ -459,6 +1031,17 @@
         document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
         tab.classList.add('active');
         $(tab.dataset.tab).classList.add('active');
+      });
+    });
+    // Remove the duplicate handler above; the lazy-load on 'images' tab is
+    // handled by the second handler below. (The double binding was harmless
+    // but wasteful.)
+    document.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        if (tab.dataset.tab === 'images' && !imgState.loaded) {
+          imgState.loaded = true;
+          loadImages(true);
+        }
       });
     });
 
@@ -474,12 +1057,17 @@
     $('btnOpenAdmin').addEventListener('click', openAdmin);
     $('btnClearLog').addEventListener('click', () => $('logPanel').innerHTML = '');
 
-    $('btnStartReceive').addEventListener('click', () => api('POST', '/api/service/receive/start').then(() => showMessage('接收服务已启动', 'success')).catch(e => showMessage(e.message, 'error')));
-    $('btnStopReceive').addEventListener('click', () => api('POST', '/api/service/receive/stop').then(() => showMessage('接收服务已停止', 'success')).catch(e => showMessage(e.message, 'error')));
-    $('btnStartWatch').addEventListener('click', () => api('POST', '/api/service/watch/start').then(() => showMessage('监听服务已启动', 'success')).catch(e => showMessage(e.message, 'error')));
-    $('btnStopWatch').addEventListener('click', () => api('POST', '/api/service/watch/stop').then(() => showMessage('监听服务已停止', 'success')).catch(e => showMessage(e.message, 'error')));
+    $('btnStartReceive').addEventListener('click', () => api('POST', '/api/service/receive/start').then(() => { showMessage('接收服务已启动', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
+    $('btnStopReceive').addEventListener('click', () => api('POST', '/api/service/receive/stop').then(() => { showMessage('接收服务已停止', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
+    $('btnStartWatch').addEventListener('click', () => api('POST', '/api/service/watch/start').then(() => { showMessage('监听服务已启动', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
+    $('btnStopWatch').addEventListener('click', () => api('POST', '/api/service/watch/stop').then(() => { showMessage('监听服务已停止', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
 
+    bindAutoSave();
     loadConfig().then(connectLogStream);
+    loadServiceStatus();
+    loadRecentDeliveries();
+    setInterval(loadServiceStatus, 3000);
+    setInterval(loadRecentDeliveries, 5000);
   </script>
 </body>
 </html>

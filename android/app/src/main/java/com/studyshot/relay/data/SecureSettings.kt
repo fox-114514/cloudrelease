@@ -16,6 +16,7 @@ data class AppSettings(
     val realtimeModeEnabled: Boolean = false,
     val wifiOnly: Boolean = false,
     val autoUploadScope: String = "screenshot_only",
+    val selectedAlbumPaths: List<String> = emptyList(),
     val autoReceiveEnabled: Boolean = false,
     val downloadNotificationEnabled: Boolean = true,
     val saveDownloadsToGallery: Boolean = false,
@@ -63,12 +64,14 @@ class SecureSettings(context: Context) {
         realtimeModeEnabled: Boolean,
         wifiOnly: Boolean,
         autoUploadScope: String,
+        selectedAlbumPaths: List<String>,
     ) {
         prefs.edit {
             putBoolean(KEY_AUTO_UPLOAD_ENABLED, autoUploadEnabled)
             putBoolean(KEY_REALTIME_MODE_ENABLED, realtimeModeEnabled)
             putBoolean(KEY_WIFI_ONLY, wifiOnly)
             putString(KEY_AUTO_UPLOAD_SCOPE, autoUploadScope)
+            putStringSet(KEY_SELECTED_ALBUM_PATHS, selectedAlbumPaths.toSet())
         }
         settingsFlow.value = readSettings()
     }
@@ -104,6 +107,10 @@ class SecureSettings(context: Context) {
             realtimeModeEnabled = prefs.getBoolean(KEY_REALTIME_MODE_ENABLED, false),
             wifiOnly = prefs.getBoolean(KEY_WIFI_ONLY, false),
             autoUploadScope = prefs.getString(KEY_AUTO_UPLOAD_SCOPE, "screenshot_only") ?: "screenshot_only",
+            selectedAlbumPaths = prefs.getStringSet(KEY_SELECTED_ALBUM_PATHS, emptySet())
+                ?.filter { it.isNotBlank() }
+                ?.sorted()
+                ?: emptyList(),
             autoReceiveEnabled = prefs.getBoolean(KEY_AUTO_RECEIVE_ENABLED, false),
             downloadNotificationEnabled = prefs.getBoolean(KEY_DOWNLOAD_NOTIFICATION_ENABLED, true),
             saveDownloadsToGallery = prefs.getBoolean(KEY_SAVE_DOWNLOADS_TO_GALLERY, false),
@@ -121,6 +128,7 @@ class SecureSettings(context: Context) {
         private const val KEY_REALTIME_MODE_ENABLED = "realtime_mode_enabled"
         private const val KEY_WIFI_ONLY = "wifi_only"
         private const val KEY_AUTO_UPLOAD_SCOPE = "auto_upload_scope"
+        private const val KEY_SELECTED_ALBUM_PATHS = "selected_album_paths"
         private const val KEY_AUTO_RECEIVE_ENABLED = "auto_receive_enabled"
         private const val KEY_DOWNLOAD_NOTIFICATION_ENABLED = "download_notification_enabled"
         private const val KEY_SAVE_DOWNLOADS_TO_GALLERY = "save_downloads_to_gallery"

@@ -17,7 +17,7 @@ class PowerSaveScanWorker(
         if (!settings.autoUploadEnabled || settings.realtimeModeEnabled) {
             return@withContext Result.success()
         }
-        if (settings.autoUploadScope != "screenshot_only") {
+        if (settings.autoUploadScope !in setOf("screenshot_only", "selected_album")) {
             return@withContext Result.success()
         }
 
@@ -26,9 +26,14 @@ class PowerSaveScanWorker(
         val scanner = MediaStoreScanner(applicationContext.contentResolver)
         val since = System.currentTimeMillis() / 1000 - 30 * 60
 
-        scanner.queryRecentImages(since).forEach { candidate ->
+        scanner.queryRecentImages(
+            sinceSeconds = since,
+            autoUploadScope = settings.autoUploadScope,
+            selectedAlbumPaths = settings.selectedAlbumPaths,
+        ).forEach { candidate ->
             repository.enqueueAutoUpload(
                 uri = candidate.uri,
+                sourceKind = candidate.sourceKind,
                 sourceDisplayName = candidate.relativePath.ifBlank { candidate.displayName },
                 sourceMediaIdHash = candidate.mediaIdHash,
                 wifiOnly = settings.wifiOnly,

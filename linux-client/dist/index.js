@@ -8,7 +8,20 @@ import { bindDevice, loadConfig, saveConfig, unbind } from "./config.js";
 import { startWatcher } from "./watcher.js";
 import { uploadSingle } from "./uploader.js";
 import { WsReceiveClient } from "./ws-client.js";
-import { defaultDownloadDir, ensureDir } from "./utils.js";
+import { defaultDownloadDir, ensureAllowedDir, ensureDir, isAllowedDir } from "./utils.js";
+/** Run `cleanup` on SIGINT/SIGTERM and exit with code 0. */
+function installShutdown(cleanup) {
+    let triggered = false;
+    const handler = (signal) => {
+        if (triggered)
+            return;
+        triggered = true;
+        console.log(`\nReceived ${signal}, shutting down...`);
+        Promise.resolve(cleanup()).finally(() => process.exit(0));
+    };
+    process.on("SIGINT", () => handler("SIGINT"));
+    process.on("SIGTERM", () => handler("SIGTERM"));
+}
 const program = new Command();
 program.name("studyshot-relay").description("StudyShot Relay Linux CLI").version("0.1.0");
 program
@@ -92,6 +105,7 @@ program
     .command("receive")
     .description("Connect WebSocket and auto-download incoming images")
     .option("-d, --download-dir <dir>", "Directory to save received images")
+    .option("--allow-unsafe-path", "Allow non-home/non-tmp paths (logs a warning)", false)
     .action(async (options) => {
     const config = await loadConfig();
     if (!config.device) {
@@ -99,7 +113,17 @@ program
         process.exit(1);
     }
     if (options.downloadDir) {
-        config.downloadDir = path.resolve(options.downloadDir);
+        try {
+            config.downloadDir = await ensureAllowedDir(options.downloadDir, options.allowUnsafePath === true);
+        }
+        catch (err) {
+            console.error(err.message);
+            console.error("Pass --allow-unsafe-path to override (logs a warning).");
+            process.exit(1);
+        }
+        if (options.allowUnsafePath && !isAllowedDir(config.downloadDir).ok) {
+            console.warn(`[receive] 警告：下载到非安全路径 ${config.downloadDir}`);
+        }
         await saveConfig(config);
     }
     const downloadDir = config.downloadDir || defaultDownloadDir();
@@ -112,27 +136,33 @@ program
         onError: (message) => console.error(`[cli] ${message}`),
     });
     client.start();
-    process.on("SIGINT", () => {
-        console.log("\nStopping...");
+    installShutdown(() => {
         client.stop();
-        process.exit(0);
-    });
-    process.on("SIGTERM", () => {
-        client.stop();
-        process.exit(0);
     });
 });
 program
     .command("watch")
     .description("Watch a directory and auto-upload new images")
     .argument("<dir>", "Directory to watch")
-    .action(async (dir) => {
+    .option("--allow-unsafe-path", "Allow non-home/non-tmp paths (logs a warning)", false)
+    .action(async (dir, options) => {
     const config = await loadConfig();
     if (!config.device) {
         console.error("Not bound. Run bind first.");
         process.exit(1);
     }
-    const watchDir = path.resolve(dir);
+    let watchDir;
+    try {
+        watchDir = await ensureAllowedDir(dir, options.allowUnsafePath === true);
+    }
+    catch (err) {
+        console.error(err.message);
+        console.error("Pass --allow-unsafe-path to override (logs a warning).");
+        process.exit(1);
+    }
+    if (options.allowUnsafePath && !isAllowedDir(watchDir).ok) {
+        console.warn(`[watch] 警告：监听非安全路径 ${watchDir}（--allow-unsafe-path）`);
+    }
     try {
         await fs.access(watchDir);
     }
@@ -149,14 +179,8 @@ program
         onLog: console.log,
         onError: console.error,
     });
-    process.on("SIGINT", async () => {
-        console.log("\nStopping watcher...");
+    installShutdown(async () => {
         await watcher.close();
-        process.exit(0);
-    });
-    process.on("SIGTERM", async () => {
-        await watcher.close();
-        process.exit(0);
     });
 });
 program
@@ -174,13 +198,9 @@ program
         const server = await startWebServer(port);
         console.log(`Web UI: ${server.url}`);
         openBrowser(server.url);
-        const stop = async () => {
-            console.log("\nShutting down...");
+        installShutdown(async () => {
             await server.close();
-            process.exit(0);
-        };
-        process.on("SIGINT", stop);
-        process.on("SIGTERM", stop);
+        });
     }
     catch (err) {
         console.error(`Launch failed: ${err.message}`);
@@ -220,14 +240,10 @@ program
         onError: (message) => console.error(`[cli] ${message}`),
     });
     client.start();
-    const stop = async () => {
-        console.log("\nStopping...");
+    installShutdown(async () => {
         client.stop();
         await watcher?.close();
-        process.exit(0);
-    };
-    process.on("SIGINT", stop);
-    process.on("SIGTERM", stop);
+    });
 });
 program.parse();
 //# sourceMappingURL=index.js.map

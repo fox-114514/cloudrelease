@@ -1,6 +1,6 @@
 import fastify from "fastify";
 import fastifyStatic from "@fastify/static";
-import { exec } from "node:child_process";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { bindDevice, loadConfig, saveConfig, unbind } from "../config.js";
 import { startWatcher } from "../watcher.js";
 import { WsReceiveClient } from "../ws-client.js";
-import { normalizeBaseUrl } from "../utils.js";
+import { ensureAllowedDir, isAllowedDir, normalizeBaseUrl } from "../utils.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const logEmitter = new EventEmitter();
 logEmitter.setMaxListeners(100);
@@ -26,7 +26,22 @@ async function startReceive() {
         device: config.device,
         config,
         onStatus: (line) => broadcastLog(line, "info"),
-        onDownload: (filePath) => broadcastLog(`Received ${filePath}`, "success"),
+        onDownload: async (filePath, imageId) => {
+            broadcastLog(`Received ${filePath}`, "success");
+            try {
+                const stat = await fs.stat(filePath);
+                recordRecentDelivery({
+                    imageId,
+                    fileName: path.basename(filePath),
+                    sourceDevice: config.device?.deviceName ?? "unknown",
+                    size: stat.size,
+                    savedAt: new Date().toISOString(),
+                });
+            }
+            catch (err) {
+                broadcastLog(`记录最近投递失败：${err.message}`, "error");
+            }
+        },
         onError: (message) => broadcastLog(message, "error"),
     });
     client.start();
@@ -59,6 +74,14 @@ async function stopWatch() {
     services.watcher = undefined;
     broadcastLog("Watch service stopped", "info");
 }
+const MAX_RECENT_DELIVERIES = 20;
+const recentDeliveries = [];
+export function recordRecentDelivery(entry) {
+    recentDeliveries.unshift(entry);
+    if (recentDeliveries.length > MAX_RECENT_DELIVERIES) {
+        recentDeliveries.length = MAX_RECENT_DELIVERIES;
+    }
+}
 export async function startWebServer(port = 0) {
     const app = fastify({ logger: false });
     await app.register(fastifyStatic, {
@@ -70,17 +93,51 @@ export async function startWebServer(port = 0) {
         return reply.send(config);
     });
     app.post("/api/config", async (req, reply) => {
-        const config = await loadConfig();
-        const body = req.body;
-        if (body.watchDir !== undefined)
-            config.watchDir = body.watchDir;
-        if (body.downloadDir !== undefined)
-            config.downloadDir = body.downloadDir;
+        const oldConfig = await loadConfig();
+        const config = { ...oldConfig };
+        const body = req.body ?? {};
+        const allowUnsafe = body.allowUnsafePath === true;
+        try {
+            if (body.watchDir !== undefined) {
+                const resolved = await ensureAllowedDir(body.watchDir, allowUnsafe);
+                if (allowUnsafe && !isAllowedDir(resolved).ok) {
+                    broadcastLog(`警告：watchDir 设置为非安全路径 ${resolved}`, "warn");
+                }
+                config.watchDir = resolved;
+            }
+            if (body.downloadDir !== undefined) {
+                const resolved = await ensureAllowedDir(body.downloadDir, allowUnsafe);
+                if (allowUnsafe && !isAllowedDir(resolved).ok) {
+                    broadcastLog(`警告：downloadDir 设置为非安全路径 ${resolved}`, "warn");
+                }
+                config.downloadDir = resolved;
+            }
+        }
+        catch (err) {
+            return reply.status(400).send({ success: false, error: { message: err.message } });
+        }
         if (body.autoUpload !== undefined)
             config.autoUpload = body.autoUpload;
         if (body.autoReceive !== undefined)
             config.autoReceive = body.autoReceive;
+        const dirChanged = (body.watchDir !== undefined && config.watchDir !== oldConfig.watchDir) ||
+            (body.downloadDir !== undefined && config.downloadDir !== oldConfig.downloadDir);
+        const autoUploadChanged = body.autoUpload !== undefined && config.autoUpload !== oldConfig.autoUpload;
         await saveConfig(config);
+        // If watchDir changed and auto upload is on, restart the watcher so
+        // it picks up the new path. Similarly toggle watcher when autoUpload flips.
+        if (dirChanged && body.watchDir !== undefined && config.autoUpload) {
+            await stopWatch().catch(() => undefined);
+            await startWatch().catch((err) => broadcastLog(`重启监听失败：${err.message}`, "error"));
+        }
+        else if (autoUploadChanged) {
+            if (config.autoUpload) {
+                await startWatch().catch((err) => broadcastLog(`启动监听失败：${err.message}`, "error"));
+            }
+            else {
+                await stopWatch().catch(() => undefined);
+            }
+        }
         return reply.send({ success: true });
     });
     app.post("/api/bind", async (req, reply) => {
@@ -112,6 +169,76 @@ export async function startWebServer(port = 0) {
     app.post("/api/service/watch/stop", async (_req, reply) => {
         await stopWatch();
         return reply.send({ success: true });
+    });
+    app.get("/api/service/status", async (_req, reply) => {
+        return reply.send({
+            receive: Boolean(services.receiveClient),
+            watch: Boolean(services.watcher),
+        });
+    });
+    app.get("/api/recent-deliveries", async (_req, reply) => {
+        return reply.send({ deliveries: recentDeliveries });
+    });
+    // ---- admin image library proxy ----
+    // The Linux-client Web UI does not store the admin JWT itself; the browser
+    // attaches the JWT to every request, the linux server attaches it to the
+    // upstream call to the backend, and returns the response. This keeps the
+    // JWT scoped to the browser session and avoids storing secrets here.
+    async function requireAdminJwt(req, reply) {
+        const auth = req.headers.authorization;
+        if (!auth?.startsWith("Bearer ")) {
+            reply.status(401).send({ success: false, error: { message: "需要先登录管理账号" } });
+            return null;
+        }
+        return auth.slice(7);
+    }
+    app.get("/api/proxy/images", async (req, reply) => {
+        const jwt = await requireAdminJwt(req, reply);
+        if (!jwt)
+            return;
+        const config = await loadConfig();
+        if (!config.device)
+            return reply.status(400).send({ success: false, error: { message: "Not bound" } });
+        const baseUrl = normalizeBaseUrl(config.device.serverBaseUrl);
+        const url = new URL(`${baseUrl}/api/v1/images`);
+        const query = req.query;
+        for (const [k, v] of Object.entries(query)) {
+            if (typeof v === "string" && v !== "")
+                url.searchParams.set(k, v);
+        }
+        const response = await fetch(url, { headers: { Authorization: `Bearer ${jwt}` } });
+        const body = await response.text();
+        return reply.status(response.status).type("application/json").send(body);
+    });
+    app.delete("/api/proxy/images/:imageId", async (req, reply) => {
+        const jwt = await requireAdminJwt(req, reply);
+        if (!jwt)
+            return;
+        const { imageId } = req.params;
+        const config = await loadConfig();
+        if (!config.device)
+            return reply.status(400).send({ success: false, error: { message: "Not bound" } });
+        const response = await fetch(`${normalizeBaseUrl(config.device.serverBaseUrl)}/api/v1/images/${encodeURIComponent(imageId)}`, { method: "DELETE", headers: { Authorization: `Bearer ${jwt}` } });
+        const body = await response.text();
+        return reply.status(response.status).type("application/json").send(body);
+    });
+    app.get("/api/proxy/images/:imageId/download", async (req, reply) => {
+        const jwt = await requireAdminJwt(req, reply);
+        if (!jwt)
+            return;
+        const { imageId } = req.params;
+        const config = await loadConfig();
+        if (!config.device)
+            return reply.status(400).send({ success: false, error: { message: "Not bound" } });
+        const response = await fetch(`${normalizeBaseUrl(config.device.serverBaseUrl)}/api/v1/images/${encodeURIComponent(imageId)}/download`, { headers: { Authorization: `Bearer ${jwt}` } });
+        if (!response.ok) {
+            const body = await response.text();
+            return reply.status(response.status).type("application/json").send(body);
+        }
+        const contentType = response.headers.get("content-type") || "application/octet-stream";
+        reply.header("Content-Type", contentType);
+        const buffer = Buffer.from(await response.arrayBuffer());
+        return reply.send(buffer);
     });
     app.post("/api/proxy/auth/login", async (req, reply) => {
         const config = await loadConfig();
@@ -148,6 +275,12 @@ export async function startWebServer(port = 0) {
         if (req.method === "GET" && !req.url.startsWith("/api/")) {
             const indexPath = path.join(__dirname, "index.html");
             const html = await fs.readFile(indexPath, "utf-8");
+            // Inline <style>/<script> need 'unsafe-inline'. We cannot tighten
+            // connect-src further because serverBaseUrl is user-configured; the
+            // other directives still close off plugin/object/base-tag attacks.
+            reply.header("Content-Security-Policy", "default-src 'self'; connect-src *; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none';");
+            reply.header("X-Content-Type-Options", "nosniff");
+            reply.header("Referrer-Policy", "no-referrer");
             return reply.type("text/html").send(html);
         }
         return reply.status(404).send({ error: { message: "Not found" } });
@@ -165,10 +298,14 @@ export async function startWebServer(port = 0) {
     };
 }
 export function openBrowser(url) {
-    const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-    exec(`${command} ${url}`, (err) => {
-        if (err)
-            broadcastLog(`Failed to open browser: ${err.message}`, "error");
+    const command = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+    // spawn with arg array avoids shell parsing of the URL; cmd.exe needs
+    // /c start on Windows so the spawned process actually opens the URL.
+    const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+    const child = spawn(command, args, { stdio: "ignore", detached: true });
+    child.on("error", (err) => {
+        broadcastLog(`Failed to open browser: ${err.message}`, "error");
     });
+    child.unref();
 }
 //# sourceMappingURL=server.js.map

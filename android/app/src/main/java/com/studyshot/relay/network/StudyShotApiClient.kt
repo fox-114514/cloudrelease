@@ -30,7 +30,7 @@ class StudyShotApiClient(
         request: RegisterDeviceRequest,
     ): RegisterDeviceResponse {
         val json = JSONObject()
-            .put("bindCode", request.bindCode)
+            .put("bindCode", request.bindCode.trim())
             .put("deviceName", request.deviceName)
             .put("platform", request.platform)
             .put("osVersion", request.osVersion)

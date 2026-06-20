@@ -26,7 +26,7 @@ function installShutdown(cleanup: () => Promise<void> | void): void {
 
 const program = new Command();
 
-program.name("studyshot-relay").description("StudyShot Relay Linux CLI").version("0.4.0");
+program.name("studyshot-relay").description("StudyShot Relay Linux CLI").version("0.4.1");
 
 program
   .command("bind")

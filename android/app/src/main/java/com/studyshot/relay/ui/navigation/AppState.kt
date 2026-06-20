@@ -163,6 +163,7 @@ class AppState internal constructor(
         onComplete: () -> Unit = {},
     ) {
         val normalized = SecureSettings.normalizeBaseUrl(server)
+        val normalizedCode = code.trim()
         if (normalized.isBlank()) {
             emit(TransientMessage("服务器地址不能为空", StatusTone.Critical))
             onComplete()
@@ -173,7 +174,7 @@ class AppState internal constructor(
             onComplete()
             return
         }
-        if (code.isBlank()) {
+        if (normalizedCode.isBlank()) {
             emit(TransientMessage("绑定码不能为空", StatusTone.Critical))
             onComplete()
             return
@@ -184,7 +185,7 @@ class AppState internal constructor(
                 val response = app.apiClient.registerDevice(
                     serverBaseUrl = normalized,
                     request = RegisterDeviceRequest(
-                        bindCode = code,
+                        bindCode = normalizedCode,
                         deviceName = finalName,
                         osVersion = "Android ${android.os.Build.VERSION.RELEASE}",
                         appVersion = BuildConfig.VERSION_NAME,

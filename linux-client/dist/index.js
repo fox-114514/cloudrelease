@@ -23,7 +23,7 @@ function installShutdown(cleanup) {
     process.on("SIGTERM", () => handler("SIGTERM"));
 }
 const program = new Command();
-program.name("studyshot-relay").description("StudyShot Relay Linux CLI").version("0.4.0");
+program.name("studyshot-relay").description("StudyShot Relay Linux CLI").version("0.4.1");
 program
     .command("bind")
     .description("Bind this Linux client to a StudyShot Relay server")

@@ -103,13 +103,13 @@ fun BindScreen(
             )
             OutlinedTextField(
                 value = code,
-                onValueChange = { code = it.uppercase() },
+                onValueChange = { code = it },
                 singleLine = true,
                 visualTransformation = if (showCode) VisualTransformation.None else PasswordVisualTransformation(),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 4.dp),
-                placeholder = { Text("例如 6D2F-9KQT") },
+                placeholder = { Text("粘贴生成的绑定码（区分大小写）") },
             )
             SettingsRow(
                 icon = Icons.Outlined.Bolt,

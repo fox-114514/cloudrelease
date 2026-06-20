@@ -7,7 +7,7 @@ import { closeConnectionsForDevice } from "../plugins/ws.js";
 import { logAudit } from "../services/audit.js";
 
 const registerDeviceSchema = z.object({
-  bindCode: z.string().min(1),
+  bindCode: z.string().trim().min(1),
   deviceName: z.string().min(1).max(100),
   platform: z.enum(["android", "windows", "linux"]),
   osVersion: z.string().default(""),

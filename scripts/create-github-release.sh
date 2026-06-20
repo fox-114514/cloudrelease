@@ -42,7 +42,7 @@ else
 fi
 
 # Upload assets
-for file in "$RELEASE_DIR"/*; do
+for file in "$RELEASE_DIR"/*"$VERSION"*; do
   if [[ -f "$file" ]]; then
     echo "Uploading $(basename "$file")..."
     "$GH_BIN" release upload "$TAG" "$file" --repo "$REPO" --clobber

@@ -129,6 +129,7 @@ class ScreenshotObserverService : Service() {
                     sourceDisplayName = candidate.relativePath.ifBlank { candidate.displayName },
                     sourceMediaIdHash = candidate.mediaIdHash,
                     wifiOnly = settings.wifiOnly,
+                    uploadImmediately = true,
                 )
                 enqueued++
             }

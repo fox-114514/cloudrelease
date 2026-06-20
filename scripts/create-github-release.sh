@@ -15,7 +15,7 @@ if [[ -z "${GITHUB_TOKEN:-}" ]]; then
   exit 1
 fi
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 TAG="v${VERSION}"
 REPO="fox-114514/cloudrelease"
 

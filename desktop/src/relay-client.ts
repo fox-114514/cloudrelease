@@ -328,7 +328,7 @@ export class RelayClient {
         deviceName: input.deviceName.trim() || os.hostname(),
         platform: currentPlatform(),
         osVersion: `${os.type()} ${os.release()}`,
-        appVersion: "0.3.0",
+        appVersion: "0.4.0",
       }),
     });
 

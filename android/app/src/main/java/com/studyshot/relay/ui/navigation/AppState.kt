@@ -10,6 +10,7 @@ import com.studyshot.relay.StudyShotApp
 import com.studyshot.relay.BuildConfig
 import com.studyshot.relay.data.SecureSettings
 import com.studyshot.relay.network.AdminSession
+import com.studyshot.relay.network.CreateBindCodeResponse
 import com.studyshot.relay.network.LibraryImage
 import com.studyshot.relay.network.ManagedDevice
 import com.studyshot.relay.network.RegisterDeviceRequest
@@ -39,6 +40,9 @@ class AppState internal constructor(
 
     private val _adminDevices = MutableStateFlow<List<ManagedDevice>>(emptyList())
     val adminDevices: StateFlow<List<ManagedDevice>> = _adminDevices.asStateFlow()
+
+    private val _generatedBindCode = MutableStateFlow<CreateBindCodeResponse?>(null)
+    val generatedBindCode: StateFlow<CreateBindCodeResponse?> = _generatedBindCode.asStateFlow()
 
     private val _libraryImages = MutableStateFlow<List<LibraryImage>>(emptyList())
     val libraryImages: StateFlow<List<LibraryImage>> = _libraryImages.asStateFlow()
@@ -152,18 +156,26 @@ class AppState internal constructor(
         saveUploadSettings(excludedAlbumPaths = current.excludedAlbumPaths.filterNot { it == path })
     }
 
-    fun bindDevice(server: String, code: String, name: String) {
+    fun bindDevice(
+        server: String,
+        code: String,
+        name: String,
+        onComplete: () -> Unit = {},
+    ) {
         val normalized = SecureSettings.normalizeBaseUrl(server)
         if (normalized.isBlank()) {
             emit(TransientMessage("服务器地址不能为空", StatusTone.Critical))
+            onComplete()
             return
         }
         if (!normalized.startsWith("http://") && !normalized.startsWith("https://")) {
             emit(TransientMessage("服务器地址必须以 http:// 或 https:// 开头", StatusTone.Critical))
+            onComplete()
             return
         }
         if (code.isBlank()) {
             emit(TransientMessage("绑定码不能为空", StatusTone.Critical))
+            onComplete()
             return
         }
         val finalName = name.ifBlank { android.os.Build.MODEL }
@@ -191,6 +203,8 @@ class AppState internal constructor(
                 emit(TransientMessage("绑定成功", StatusTone.Positive))
             } catch (err: Exception) {
                 emit(TransientMessage("绑定失败：${err.message ?: err.javaClass.simpleName}", StatusTone.Critical))
+            } finally {
+                onComplete()
             }
         }
     }
@@ -209,7 +223,12 @@ class AppState internal constructor(
         }
     }
 
-    fun adminLogin(server: String, login: String, password: String) {
+    fun adminLogin(
+        server: String,
+        login: String,
+        password: String,
+        onComplete: () -> Unit = {},
+    ) {
         val normalized = SecureSettings.normalizeBaseUrl(server.ifBlank { app.secureSettings.settings.value.serverBaseUrl })
         scope.launch {
             try {
@@ -236,6 +255,8 @@ class AppState internal constructor(
                 emit(TransientMessage("管理登录成功", StatusTone.Positive))
             } catch (err: Exception) {
                 emit(TransientMessage(err.message ?: "管理登录失败", StatusTone.Critical))
+            } finally {
+                onComplete()
             }
         }
     }
@@ -243,6 +264,7 @@ class AppState internal constructor(
     fun adminLogout() {
         _adminSession.value = null
         _adminDevices.value = emptyList()
+        _generatedBindCode.value = null
         _libraryImages.value = emptyList()
         _imageCursor.value = null
     }
@@ -382,8 +404,39 @@ class AppState internal constructor(
         }
     }
 
-    fun createBindCode(hint: String) {
+    fun deleteDevice(
+        deviceId: String,
+        onDeleted: () -> Unit = {},
+    ) {
         val session = _adminSession.value ?: return
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    app.apiClient.deleteDevice(
+                        app.secureSettings.settings.value.serverBaseUrl,
+                        session.accessToken,
+                        deviceId,
+                    )
+                }
+                _adminDevices.update { devices -> devices.filterNot { it.id == deviceId } }
+                emit(TransientMessage("已删除撤销设备", StatusTone.Positive))
+                onDeleted()
+            } catch (err: Exception) {
+                emit(TransientMessage(err.message ?: "删除设备失败", StatusTone.Critical))
+            }
+        }
+    }
+
+    fun createBindCode(
+        hint: String,
+        onComplete: () -> Unit = {},
+    ) {
+        val session = _adminSession.value
+        if (session == null) {
+            emit(TransientMessage("请先登录管理账号", StatusTone.Critical))
+            onComplete()
+            return
+        }
         scope.launch {
             try {
                 val response = withContext(Dispatchers.IO) {
@@ -393,14 +446,11 @@ class AppState internal constructor(
                         hint,
                     )
                 }
-                emit(
-                    TransientMessage(
-                        "绑定码：${response.bindCode}（${response.expiresAt} 到期）",
-                        StatusTone.Positive,
-                    )
-                )
+                _generatedBindCode.value = response
             } catch (err: Exception) {
                 emit(TransientMessage(err.message ?: "创建绑定码失败", StatusTone.Critical))
+            } finally {
+                onComplete()
             }
         }
     }

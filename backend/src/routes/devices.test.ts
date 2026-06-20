@@ -301,3 +301,55 @@ describe("POST /api/v1/devices/:id/revoke", () => {
     expect(body.error.code).toBe("DEVICE_REVOKED");
   });
 });
+
+describe("DELETE /api/v1/devices/:id", () => {
+  it("soft-deletes a revoked device and hides it from the device list", async () => {
+    const app = await buildApp();
+    const loginName = `owner-${randomUUID()}`;
+    await createOwner(loginName, "password");
+    const token = await login(app, loginName, "password");
+    const bindCode = await createBindCode(app, token);
+    const { deviceId } = await registerDevice(app, bindCode);
+
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/devices/${deviceId}/revoke`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const deleteRes = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/devices/${deviceId}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(deleteRes.statusCode).toBe(200);
+    const deleted = await prisma.device.findUnique({ where: { id: deviceId } });
+    expect(deleted?.deletedAt).not.toBeNull();
+
+    const listRes = await app.inject({
+      method: "GET",
+      url: "/api/v1/devices",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const body = JSON.parse(listRes.payload);
+    expect(body.data.devices.some((device: { id: string }) => device.id === deviceId)).toBe(false);
+  });
+
+  it("rejects deletion until the device is revoked", async () => {
+    const app = await buildApp();
+    const loginName = `owner-${randomUUID()}`;
+    await createOwner(loginName, "password");
+    const token = await login(app, loginName, "password");
+    const bindCode = await createBindCode(app, token);
+    const { deviceId } = await registerDevice(app, bindCode);
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/v1/devices/${deviceId}`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect(JSON.parse(res.payload).error.code).toBe("DEVICE_NOT_REVOKED");
+  });
+});

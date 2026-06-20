@@ -25,6 +25,12 @@ const api = {
     ipcRenderer.invoke("upload:chooseAndUpload"),
   chooseDownloadDir: (): Promise<string | undefined> => ipcRenderer.invoke("dialog:chooseDownloadDir"),
   openDownloadDir: (): Promise<boolean> => ipcRenderer.invoke("downloadDir:open"),
+  chooseWatchDir: (): Promise<string | undefined> => ipcRenderer.invoke("dialog:chooseWatchDir"),
+  chooseWatchExcludedDir: (): Promise<string | undefined> =>
+    ipcRenderer.invoke("dialog:chooseWatchExcludedDir"),
+  openWatchDir: (): Promise<boolean> => ipcRenderer.invoke("watchDir:open"),
+  startWatcher: (): Promise<RendererState> => ipcRenderer.invoke("watch:start"),
+  stopWatcher: (): Promise<RendererState> => ipcRenderer.invoke("watch:stop"),
   copyHistoryToClipboard: (deliveryId: string): Promise<unknown> =>
     ipcRenderer.invoke("history:copyToClipboard", deliveryId),
   showHistoryInFolder: (deliveryId: string): Promise<boolean> =>
@@ -41,7 +47,13 @@ const api = {
   adminRevokeDevice: (deviceId: string): Promise<RendererState> =>
     ipcRenderer.invoke("admin:revokeDevice", deviceId),
   onStateChanged: (listener: (state: RendererState) => void): (() => void) => {
-    const wrapped = (_event: Electron.IpcRendererEvent, state: RendererState): void => listener(state);
+    const wrapped = (_event: Electron.IpcRendererEvent, state: RendererState): void => {
+      try {
+        listener(state);
+      } catch (err) {
+        console.error("[studyshot] state:changed listener threw:", err);
+      }
+    };
     ipcRenderer.on("state:changed", wrapped);
     return () => ipcRenderer.removeListener("state:changed", wrapped);
   },

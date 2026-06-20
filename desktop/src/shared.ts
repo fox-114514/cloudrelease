@@ -24,7 +24,10 @@ export interface RendererSettings {
   deviceId?: string;
   deviceName: string;
   downloadDir: string;
+  watchDir: string;
+  watchExcludedDirs: string[];
   autoReceive: boolean;
+  autoUpload: boolean;
   copyToClipboard: boolean;
   showNotification: boolean;
   startAtLogin: boolean;
@@ -57,6 +60,23 @@ export interface RendererState {
   connection: ConnectionState;
   recentDownloads: DownloadRecord[];
   admin: AdminState;
+  watch: WatchState;
+}
+
+export interface WatchState {
+  enabled: boolean;
+  active: boolean;
+  dir: string;
+  lastEvent?: string;
+  lastError?: string;
+  recentUploads: WatchUploadEvent[];
+}
+
+export interface WatchUploadEvent {
+  fileName: string;
+  uploadedAt: string;
+  ok: boolean;
+  message?: string;
 }
 
 export interface RegisterDeviceInput {
@@ -81,7 +101,10 @@ export interface SaveSettingsInput {
   serverBaseUrl?: string;
   deviceName?: string;
   downloadDir?: string;
+  watchDir?: string;
+  watchExcludedDirs?: string[];
   autoReceive?: boolean;
+  autoUpload?: boolean;
   copyToClipboard?: boolean;
   showNotification?: boolean;
   startAtLogin?: boolean;

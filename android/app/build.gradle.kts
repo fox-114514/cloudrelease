@@ -12,8 +12,8 @@ android {
         applicationId = "com.studyshot.relay"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 4
+        versionName = "0.4.0"
 
         vectorDrawables {
             useSupportLibrary = true
@@ -90,4 +90,3 @@ dependencies {
 
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 }
-

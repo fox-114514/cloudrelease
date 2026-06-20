@@ -241,6 +241,9 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
 
   // List images (admin only).
   app.get("/images", async (request, reply) => {
+    if (!request.user && !request.device) {
+      throw new AppError("UNAUTHORIZED", "Authentication required", 401);
+    }
     if (!isAdminAuthorized(request)) {
       throw new AppError(
         "FORBIDDEN",
@@ -330,6 +333,9 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
 
   // Delete image (admin only).
   app.delete("/images/:imageId", async (request, reply) => {
+    if (!request.user && !request.device) {
+      throw new AppError("UNAUTHORIZED", "Authentication required", 401);
+    }
     if (!isAdminAuthorized(request)) {
       throw new AppError(
         "FORBIDDEN",

@@ -76,7 +76,7 @@ fun SettingsScreen(
                 icon = Icons.Outlined.Folder,
                 title = "监听图集",
                 subtitle = if (settings.autoUploadScope == "selected_album") {
-                    "${settings.selectedAlbumPaths.size} 个目录"
+                    "${settings.selectedAlbumPaths.size} 个目录 · 排除 ${settings.excludedAlbumPaths.size} 个"
                 } else {
                     "默认只监听截图"
                 },

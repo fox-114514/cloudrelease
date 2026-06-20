@@ -15,7 +15,7 @@ if [[ -z "${GITHUB_TOKEN:-}" ]]; then
   exit 1
 fi
 
-VERSION="0.1.0"
+VERSION="0.4.0"
 TAG="v${VERSION}"
 REPO="fox-114514/cloudrelease"
 
@@ -42,7 +42,7 @@ else
 fi
 
 # Upload assets
-for file in "$RELEASE_DIR"/*; do
+for file in "$RELEASE_DIR"/*"$VERSION"*; do
   if [[ -f "$file" ]]; then
     echo "Uploading $(basename "$file")..."
     "$GH_BIN" release upload "$TAG" "$file" --repo "$REPO" --clobber

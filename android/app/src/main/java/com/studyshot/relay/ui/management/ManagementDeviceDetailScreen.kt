@@ -18,12 +18,16 @@ import androidx.compose.material.icons.outlined.Inventory
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -68,7 +72,7 @@ fun ManagementDeviceDetailScreen(
             return
         }
         DevicePermissionsSection(state = state, device = device)
-        DeviceRevokeSection(state = state, device = device)
+        DeviceRevokeSection(state = state, device = device, onDeleted = onBack)
     }
 }
 
@@ -126,16 +130,56 @@ private fun DevicePermissionsSection(
 private fun DeviceRevokeSection(
     state: AppState,
     device: ManagedDevice,
+    onDeleted: () -> Unit,
 ) {
     val revoked = !device.revokedAt.isNullOrBlank()
+    var confirmDelete by remember { mutableStateOf(false) }
+
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("删除已撤销设备？") },
+            text = { Text("设备会从管理列表隐藏，历史图片和审计记录仍会保留。此操作不可恢复。") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmDelete = false
+                        state.deleteDevice(device.id, onDeleted = onDeleted)
+                    },
+                ) {
+                    Text("确认删除", color = Rose700)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) {
+                    Text("取消")
+                }
+            },
+        )
+    }
     Column(
         modifier = Modifier
             .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
         if (revoked) {
             HelpCallout(
-                text = "该设备已被撤销，所有 token 立即失效。",
+                text = "该设备已被撤销，所有 token 立即失效。可以将它从设备列表删除。",
             )
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = { confirmDelete = true },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Rose700,
+                    contentColor = androidx.compose.ui.graphics.Color.White,
+                ),
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                Text(
+                    text = "删除已撤销设备",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
         } else {
             Button(
                 onClick = { state.revokeDevice(device.id) },

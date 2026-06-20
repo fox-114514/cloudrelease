@@ -194,7 +194,10 @@ export async function deviceRoutes(app: FastifyInstance): Promise<void> {
       throw new AppError("FORBIDDEN", "Device does not have manage permission", 403);
     }
 
-    let where: { ownerUserId: string; userId?: string } = { ownerUserId: auth.ownerUserId };
+    let where: { ownerUserId: string; deletedAt: null; userId?: string } = {
+      ownerUserId: auth.ownerUserId,
+      deletedAt: null,
+    };
     if (!auth.isOwner && !auth.canManageSpace) {
       where.userId = auth.userId;
     }
@@ -238,7 +241,7 @@ export async function deviceRoutes(app: FastifyInstance): Promise<void> {
     const body = updateDeviceSchema.parse(request.body);
 
     const device = await prisma.device.findFirst({
-      where: { id: deviceId, ownerUserId: auth.ownerUserId },
+      where: { id: deviceId, ownerUserId: auth.ownerUserId, deletedAt: null },
     });
 
     if (!device) {
@@ -284,7 +287,7 @@ export async function deviceRoutes(app: FastifyInstance): Promise<void> {
     const body = updatePermissionsSchema.parse(request.body);
 
     const device = await prisma.device.findFirst({
-      where: { id: deviceId, ownerUserId: auth.ownerUserId },
+      where: { id: deviceId, ownerUserId: auth.ownerUserId, deletedAt: null },
     });
 
     if (!device) {
@@ -320,7 +323,7 @@ export async function deviceRoutes(app: FastifyInstance): Promise<void> {
 
     const { deviceId } = request.params as { deviceId: string };
     const targetDevice = await prisma.device.findFirst({
-      where: { id: deviceId, ownerUserId: auth.ownerUserId },
+      where: { id: deviceId, ownerUserId: auth.ownerUserId, deletedAt: null },
     });
     if (!targetDevice) {
       throw new AppError("NOT_FOUND", "Device not found", 404);
@@ -363,6 +366,7 @@ export async function deviceRoutes(app: FastifyInstance): Promise<void> {
       where: {
         id: { in: [deviceId, sourceDeviceId] },
         ownerUserId: auth.ownerUserId,
+        deletedAt: null,
       },
     });
 
@@ -418,7 +422,7 @@ export async function deviceRoutes(app: FastifyInstance): Promise<void> {
 
     const { deviceId, sourceDeviceId } = request.params as { deviceId: string; sourceDeviceId: string };
     const targetDevice = await prisma.device.findFirst({
-      where: { id: deviceId, ownerUserId: auth.ownerUserId },
+      where: { id: deviceId, ownerUserId: auth.ownerUserId, deletedAt: null },
     });
     if (!targetDevice) {
       throw new AppError("NOT_FOUND", "Device not found", 404);
@@ -451,7 +455,7 @@ export async function deviceRoutes(app: FastifyInstance): Promise<void> {
 
     const { deviceId } = request.params as { deviceId: string };
     const device = await prisma.device.findFirst({
-      where: { id: deviceId, ownerUserId: auth.ownerUserId },
+      where: { id: deviceId, ownerUserId: auth.ownerUserId, deletedAt: null },
     });
 
     if (!device) {
@@ -478,5 +482,59 @@ export async function deviceRoutes(app: FastifyInstance): Promise<void> {
       success: true,
       data: { revokedAt: new Date().toISOString() },
     });
+  });
+
+  // Hide a revoked device from management while preserving image/audit history.
+  app.delete("/devices/:deviceId", async (request, reply) => {
+    const auth = getAuthContext(request);
+    if (!auth.isOwner && !auth.canManageSpace) {
+      throw new AppError("FORBIDDEN", "Insufficient permission to delete device", 403);
+    }
+
+    const { deviceId } = request.params as { deviceId: string };
+    const device = await prisma.device.findFirst({
+      where: { id: deviceId, ownerUserId: auth.ownerUserId, deletedAt: null },
+    });
+    if (!device) {
+      throw new AppError("NOT_FOUND", "Device not found", 404);
+    }
+    if (!device.revokedAt) {
+      throw new AppError("DEVICE_NOT_REVOKED", "Device must be revoked before deletion", 409);
+    }
+
+    const deletedAt = new Date();
+    await prisma.$transaction(async (tx) => {
+      await tx.receiveSourceRule.deleteMany({
+        where: {
+          OR: [{ targetDeviceId: deviceId }, { sourceDeviceId: deviceId }],
+        },
+      });
+      await tx.delivery.updateMany({
+        where: {
+          targetDeviceId: deviceId,
+          status: { in: ["pending", "notified"] },
+        },
+        data: {
+          status: "skipped",
+          failureReason: "Target device deleted",
+        },
+      });
+      await tx.device.update({
+        where: { id: deviceId },
+        data: { deletedAt },
+      });
+    });
+
+    await logAudit({
+      ownerUserId: auth.ownerUserId,
+      actorUserId: auth.userId,
+      actorDeviceId: auth.deviceId,
+      action: "device.deleted",
+      targetType: "device",
+      targetId: deviceId,
+    });
+
+    await closeConnectionsForDevice(deviceId);
+    reply.send({ success: true, data: { deletedAt: deletedAt.toISOString() } });
   });
 }

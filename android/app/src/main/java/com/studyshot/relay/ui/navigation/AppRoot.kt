@@ -116,6 +116,7 @@ fun AppRoot(
         settings.wifiOnly,
         settings.autoUploadScope,
         settings.selectedAlbumPaths,
+        settings.excludedAlbumPaths,
         permissionRefreshTick.intValue,
     ) {
         if (settings.autoUploadEnabled && !settings.realtimeModeEnabled && hasImagePermission()) {
@@ -154,6 +155,17 @@ fun AppRoot(
             }
             state.addAlbumPath(albumPath)
             state.emit(TransientMessage("已添加监听图集：$albumPath", StatusTone.Positive))
+        }
+    }
+    val pickExcludedAlbumDirectory = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val albumPath = MediaStoreScanner.albumPathFromTreeUri(uri)
+            if (albumPath.isNullOrBlank()) {
+                state.emit(TransientMessage("无法识别该目录", StatusTone.Critical))
+                return@launch
+            }
+            state.addExcludedAlbumPath(albumPath)
         }
     }
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -256,6 +268,7 @@ fun AppRoot(
                 WatchAlbumsScreen(
                     state = state,
                     onAddAlbum = { pickAlbumDirectory.launch(null) },
+                    onAddExcludedAlbum = { pickExcludedAlbumDirectory.launch(null) },
                     hasImagePermission = hasImagePermission(),
                 )
             }

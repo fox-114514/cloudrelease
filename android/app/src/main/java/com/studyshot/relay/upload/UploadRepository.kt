@@ -55,6 +55,11 @@ class UploadRepository(
         wifiOnly: Boolean,
     ): String {
         val taskId = UUID.nameUUIDFromBytes(uri.toString().toByteArray()).toString()
+        // MediaStore commonly emits several callbacks for the same image. Once a URI
+        // has a local task, do not rewrite it or schedule another WorkManager job.
+        if (database.dao().getUploadTask(taskId) != null) {
+            return taskId
+        }
         val now = System.currentTimeMillis()
         database.dao().upsertUploadTask(
             UploadTaskEntity(

@@ -94,8 +94,10 @@ fun ActivityScreen(
     state: AppState,
     onPickImage: () -> Unit,
 ) {
-    val uploads by state.app.database.dao().observeUploadTasks(50).collectAsState(initial = emptyList())
-    val downloads by state.app.database.dao().observeDownloadRecords(50).collectAsState(initial = emptyList())
+    val uploadsFlow = remember(state.app.database) { state.app.database.dao().observeUploadTasks(50) }
+    val downloadsFlow = remember(state.app.database) { state.app.database.dao().observeDownloadRecords(50) }
+    val uploads by uploadsFlow.collectAsState(initial = emptyList())
+    val downloads by downloadsFlow.collectAsState(initial = emptyList())
     val adminSession by state.adminSession.collectAsState()
     val images by state.libraryImages.collectAsState()
     val imageLoading by state.imageLoading.collectAsState()

@@ -1,5 +1,6 @@
 import { clipboard, nativeImage, Notification } from "electron";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
+import * as fs from "node:fs/promises";
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
@@ -22,6 +23,8 @@ import type {
   Platform,
   RegisterDeviceInput,
   RendererState,
+  WatchState,
+  WatchUploadEvent,
 } from "./shared";
 
 interface ApiEnvelope<T> {
@@ -161,25 +164,63 @@ function formatTimestamp(input: string): string {
   ].join("");
 }
 
-async function uniquePath(basePath: string): Promise<string> {
+async function writeFileExclusive(target: string, data: Buffer): Promise<void> {
+  // O_EXCL: open fails if the path already exists. The caller (writeFileWithRetry)
+  // catches EEXIST and bumps the suffix, so two concurrent deliveries can't
+  // both end up writing to the same path.
+  const handle = await fs.open(target, "wx", 0o600);
+  try {
+    await handle.writeFile(data);
+  } catch (err) {
+    await handle.close().catch(() => undefined);
+    try {
+      await fs.unlink(target);
+    } catch {
+      // ignore
+    }
+    throw err;
+  }
+  await handle.close();
+}
+
+async function writeFileWithUniqueSuffix(basePath: string, data: Buffer): Promise<string> {
   const parsed = path.parse(basePath);
+  let lastError: unknown;
   for (let index = 0; index < 1000; index += 1) {
     const candidate =
       index === 0
         ? basePath
         : path.join(parsed.dir, `${parsed.name}-${String(index + 1).padStart(2, "0")}${parsed.ext}`);
     try {
-      await access(candidate);
-    } catch {
+      await writeFileExclusive(candidate, data);
       return candidate;
+    } catch (err) {
+      lastError = err;
+      if ((err as NodeJS.ErrnoException).code === "EEXIST") continue;
+      throw err;
     }
   }
-  throw new Error("Unable to allocate a unique file name");
+  throw lastError instanceof Error ? lastError : new Error("Unable to allocate a unique file name");
 }
 
 async function parseEnvelope<T>(response: Response): Promise<T> {
   const text = await response.text();
-  const body = text ? (JSON.parse(text) as ApiEnvelope<T>) : ({ success: true } as ApiEnvelope<T>);
+  let body: ApiEnvelope<T>;
+  if (!text) {
+    body = { success: true } as ApiEnvelope<T>;
+  } else {
+    try {
+      body = JSON.parse(text) as ApiEnvelope<T>;
+    } catch {
+      // Reverse proxy / CDN error pages come back as HTML. Wrap so the user
+      // sees a meaningful error instead of "Unexpected token <".
+      throw new ApiError(
+        response.status,
+        "INVALID_RESPONSE",
+        `Server returned non-JSON response (HTTP ${response.status})`,
+      );
+    }
+  }
   if (!response.ok || !body.success) {
     throw new ApiError(
       response.status,
@@ -225,6 +266,30 @@ export class RelayClient {
     isLoggedIn: false,
     devices: [],
   };
+  private watch: WatchState = {
+    enabled: false,
+    active: false,
+    dir: "",
+    recentUploads: [],
+  };
+
+  updateWatchState(patch: Partial<WatchState>): void {
+    this.watch = { ...this.watch, ...patch };
+    this.emitState();
+  }
+
+  appendWatchUpload(event: WatchUploadEvent): void {
+    this.watch = {
+      ...this.watch,
+      recentUploads: [event, ...this.watch.recentUploads].slice(0, 30),
+      lastEvent: event.uploadedAt,
+    };
+    this.emitState();
+  }
+
+  get watchState(): WatchState {
+    return this.watch;
+  }
 
   constructor(
     private readonly config: ConfigStore,
@@ -242,6 +307,7 @@ export class RelayClient {
       connection: this.connection,
       recentDownloads: this.history.list(),
       admin: this.admin,
+      watch: this.watch,
     };
   }
 
@@ -262,7 +328,7 @@ export class RelayClient {
         deviceName: input.deviceName.trim() || os.hostname(),
         platform: currentPlatform(),
         osVersion: `${os.type()} ${os.release()}`,
-        appVersion: "0.1.0",
+        appVersion: "0.4.0",
       }),
     });
 
@@ -501,6 +567,17 @@ export class RelayClient {
   }
 
   async uploadManualImage(filePath: string): Promise<ManualUploadResult> {
+    return this.uploadFromPath(filePath, "manual_share");
+  }
+
+  async uploadScreenshotFromPath(filePath: string): Promise<ManualUploadResult> {
+    return this.uploadFromPath(filePath, "screenshot");
+  }
+
+  private async uploadFromPath(
+    filePath: string,
+    sourceKind: "screenshot" | "manual_share" | "selected_album" | "unknown"
+  ): Promise<ManualUploadResult> {
     const token = this.requireDeviceToken();
     if (!this.config.serverBaseUrl) {
       throw new Error("服务器地址不能为空");
@@ -515,7 +592,7 @@ export class RelayClient {
     const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
     const form = new FormData();
     form.append("sha256", sha256);
-    form.append("sourceKind", "manual_share");
+    form.append("sourceKind", sourceKind);
     form.append("sourceDisplayName", path.basename(filePath));
     form.append("file", new Blob([buffer], { type: mimeType }), path.basename(filePath));
 
@@ -526,7 +603,8 @@ export class RelayClient {
     });
 
     const data = await parseEnvelope<UploadImageResponse>(response);
-    logInfo("Manual image uploaded", {
+    logInfo("Image uploaded", {
+      sourceKind,
       imageId: data.imageId,
       deduplicated: data.deduplicated,
       createdDeliveriesCount: data.createdDeliveriesCount,
@@ -642,10 +720,10 @@ export class RelayClient {
       sourceName,
       delivery.image.id.slice(0, 8),
     ].join("_");
-    const filePath = await uniquePath(
-      path.join(this.config.downloadDir, `${fileName}${extensionForMime(delivery.image.mimeType)}`)
+    const filePath = await writeFileWithUniqueSuffix(
+      path.join(this.config.downloadDir, `${fileName}${extensionForMime(delivery.image.mimeType)}`),
+      buffer,
     );
-    await writeFile(filePath, buffer, { mode: 0o600 });
 
     const clipboardResult = this.config.copyToClipboard
       ? this.copyImageToClipboard(filePath)

@@ -5,6 +5,8 @@ Electron + TypeScript desktop receiver for Windows and Linux.
 ## Current MVP
 
 - Register this computer with a server bind code.
+- Watch a local directory and automatically upload new images.
+- Exclude selected child directories; exclusions include all descendants.
 - Create a bind code by logging in as the owner user.
 - Store the device token with Electron `safeStorage` when available.
 - Connect to `/api/v1/ws` with the device token.
@@ -55,6 +57,8 @@ Stored settings include:
 - device ID
 - encrypted device token when `safeStorage` is available
 - download directory
+- watch directory and excluded child directories
+- auto upload setting
 - auto receive setting
 - copy-to-clipboard setting
 - notification setting
@@ -74,6 +78,7 @@ The renderer process never receives the device token.
 7. Confirm the desktop app downloads it into the selected folder.
 8. Confirm the server delivery is ACKed.
 9. If clipboard is enabled, confirm the image can be pasted into a target app.
+10. Add a child directory to the exclusion list and confirm images below it are ignored while sibling directories still upload.
 
 ## Current Limits
 

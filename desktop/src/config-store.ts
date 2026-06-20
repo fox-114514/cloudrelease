@@ -9,7 +9,10 @@ interface StoredConfig {
   deviceId?: string;
   deviceName: string;
   downloadDir: string;
+  watchDir: string;
+  watchExcludedDirs: string[];
   autoReceive: boolean;
+  autoUpload: boolean;
   copyToClipboard: boolean;
   showNotification: boolean;
   startAtLogin: boolean;
@@ -22,6 +25,10 @@ const CONFIG_FILE = "config.json";
 
 function defaultDownloadDir(): string {
   return path.join(app.getPath("pictures"), "StudyShot Relay");
+}
+
+function defaultWatchDir(): string {
+  return path.join(app.getPath("pictures"), "Screenshots");
 }
 
 function defaultDeviceName(): string {
@@ -47,7 +54,10 @@ export class ConfigStore {
       serverBaseUrl: "",
       deviceName: defaultDeviceName(),
       downloadDir: defaultDownloadDir(),
+      watchDir: defaultWatchDir(),
+      watchExcludedDirs: [],
       autoReceive: true,
+      autoUpload: false,
       copyToClipboard: true,
       showNotification: true,
       startAtLogin: false,
@@ -63,6 +73,10 @@ export class ConfigStore {
         ...this.config,
         ...parsed,
         serverBaseUrl: normalizeBaseUrl(parsed.serverBaseUrl ?? this.config.serverBaseUrl),
+        watchExcludedDirs: normalizeExcludedDirs(
+          parsed.watchDir ?? this.config.watchDir,
+          parsed.watchExcludedDirs ?? [],
+        ),
         tokenStorage: parsed.tokenStorage ?? "none",
       };
     } catch (err) {
@@ -78,7 +92,10 @@ export class ConfigStore {
       deviceId: this.config.deviceId,
       deviceName: this.config.deviceName,
       downloadDir: this.config.downloadDir,
+      watchDir: this.config.watchDir,
+      watchExcludedDirs: this.config.watchExcludedDirs,
       autoReceive: this.config.autoReceive,
+      autoUpload: this.config.autoUpload,
       copyToClipboard: this.config.copyToClipboard,
       showNotification: this.config.showNotification,
       startAtLogin: this.config.startAtLogin,
@@ -107,8 +124,20 @@ export class ConfigStore {
     return this.config.downloadDir;
   }
 
+  get watchDir(): string {
+    return this.config.watchDir;
+  }
+
+  get watchExcludedDirs(): string[] {
+    return [...this.config.watchExcludedDirs];
+  }
+
   get autoReceive(): boolean {
     return this.config.autoReceive;
+  }
+
+  get autoUpload(): boolean {
+    return this.config.autoUpload;
   }
 
   get copyToClipboard(): boolean {
@@ -127,10 +156,35 @@ export class ConfigStore {
       this.config.deviceName = input.deviceName.trim() || defaultDeviceName();
     }
     if (input.downloadDir !== undefined) {
-      this.config.downloadDir = input.downloadDir;
+      const trimmed = input.downloadDir.trim();
+      if (!trimmed) {
+        throw new Error("下载目录不能为空");
+      }
+      this.config.downloadDir = trimmed;
+    }
+    if (input.watchDir !== undefined) {
+      const trimmed = input.watchDir.trim();
+      if (!trimmed) {
+        throw new Error("监听目录不能为空");
+      }
+      this.config.watchDir = trimmed;
+      this.config.watchExcludedDirs = normalizeExcludedDirs(
+        trimmed,
+        this.config.watchExcludedDirs,
+      );
+    }
+    if (input.watchExcludedDirs !== undefined) {
+      const normalized = normalizeExcludedDirs(this.config.watchDir, input.watchExcludedDirs);
+      if (normalized.length !== input.watchExcludedDirs.length) {
+        throw new Error("排除目录必须位于监听目录内部，且不能等于监听目录");
+      }
+      this.config.watchExcludedDirs = normalized;
     }
     if (input.autoReceive !== undefined) {
       this.config.autoReceive = input.autoReceive;
+    }
+    if (input.autoUpload !== undefined) {
+      this.config.autoUpload = input.autoUpload;
     }
     if (input.copyToClipboard !== undefined) {
       this.config.copyToClipboard = input.copyToClipboard;
@@ -209,3 +263,20 @@ export class ConfigStore {
 }
 
 export { normalizeBaseUrl };
+
+function normalizeExcludedDirs(watchDir: string, candidates: string[]): string[] {
+  const root = path.resolve(watchDir);
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const candidate of candidates) {
+    const resolved = path.resolve(candidate.trim());
+    const relative = path.relative(root, resolved);
+    const isDescendant = relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+    if (!isDescendant) continue;
+    const key = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(resolved);
+  }
+  return result.sort((a, b) => a.localeCompare(b));
+}

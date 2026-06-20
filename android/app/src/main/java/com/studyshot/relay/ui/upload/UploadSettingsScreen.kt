@@ -148,6 +148,7 @@ fun UploadSettingsScreen(
                     state.saveUploadSettings(
                         autoUploadScope = "screenshot_only",
                         selectedAlbumPaths = emptyList(),
+                        excludedAlbumPaths = emptyList(),
                     )
                 },
                 isLast = false,

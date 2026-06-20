@@ -36,6 +36,7 @@ import com.studyshot.relay.ui.theme.Teal600
 fun WatchAlbumsScreen(
     state: AppState,
     onAddAlbum: () -> Unit,
+    onAddExcludedAlbum: () -> Unit,
     hasImagePermission: Boolean,
 ) {
     val settings by state.app.secureSettings.settings.collectAsState()
@@ -113,6 +114,58 @@ fun WatchAlbumsScreen(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
+        }
+
+        if (settings.selectedAlbumPaths.isNotEmpty()) {
+            Spacer(Modifier.height(16.dp))
+
+            SettingsGroup(
+                title = "排除目录",
+                footer = "排除后，该文件夹及其所有子文件夹中的图片都不会上传。",
+            ) {
+                if (settings.excludedAlbumPaths.isEmpty()) {
+                    SettingsRow(
+                        icon = Icons.Outlined.FolderOff,
+                        title = "没有排除目录",
+                        subtitle = "当前监听已选目录中的全部子文件夹",
+                        value = "添加",
+                        onClick = onAddExcludedAlbum,
+                        isLast = true,
+                        enabled = hasImagePermission,
+                    )
+                } else {
+                    settings.excludedAlbumPaths.forEachIndexed { index, path ->
+                        SettingsRow(
+                            icon = Icons.Outlined.FolderOff,
+                            title = path,
+                            subtitle = "该目录及其子目录不会被监听",
+                            value = "取消排除",
+                            onClick = { state.removeExcludedAlbumPath(path) },
+                            isLast = index == settings.excludedAlbumPaths.lastIndex,
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            Button(
+                onClick = onAddExcludedAlbum,
+                enabled = hasImagePermission,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                ),
+            ) {
+                Text(
+                    text = "添加排除目录",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
         }
     }
 }

@@ -139,7 +139,12 @@ fun ManagementLoginScreen(
         Button(
             onClick = {
                 logging = true
-                state.adminLogin(server, login, password)
+                state.adminLogin(
+                    server = server,
+                    login = login,
+                    password = password,
+                    onComplete = { logging = false },
+                )
             },
             enabled = !logging && server.isNotBlank() && login.isNotBlank() && password.isNotBlank(),
             modifier = Modifier
@@ -151,7 +156,11 @@ fun ManagementLoginScreen(
             ),
         ) {
             Text(
-                text = if (adminSession != null) "重新登录" else "登录",
+                text = when {
+                    logging -> "登录中…"
+                    adminSession != null -> "重新登录"
+                    else -> "登录"
+                },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )

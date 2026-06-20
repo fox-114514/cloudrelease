@@ -51,7 +51,6 @@ fun BindScreen(
     state: AppState,
 ) {
     val settings by state.app.secureSettings.settings.collectAsState()
-    val scope = androidx.compose.runtime.rememberCoroutineScope()
     var server by rememberSaveable(settings.serverBaseUrl) { mutableStateOf(settings.serverBaseUrl) }
     var code by rememberSaveable { mutableStateOf("") }
     var name by rememberSaveable(settings.deviceName) { mutableStateOf(settings.deviceName) }
@@ -135,7 +134,12 @@ fun BindScreen(
         Button(
             onClick = {
                 binding = true
-                state.bindDevice(server = server, code = code, name = name)
+                state.bindDevice(
+                    server = server,
+                    code = code,
+                    name = name,
+                    onComplete = { binding = false },
+                )
             },
             enabled = !binding && server.isNotBlank() && code.isNotBlank(),
             modifier = Modifier
@@ -147,7 +151,11 @@ fun BindScreen(
             ),
         ) {
             Text(
-                text = if (settings.deviceTokenAvailable) "重新绑定" else "绑定",
+                text = when {
+                    binding -> "绑定中…"
+                    settings.deviceTokenAvailable -> "重新绑定"
+                    else -> "绑定"
+                },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )

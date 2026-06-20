@@ -44,8 +44,12 @@ async function setupUploaderAndReceiver() {
   return { app, userToken, uploadDeviceId, uploadDeviceToken, receiveDeviceId, receiveDeviceToken };
 }
 
-async function uploadTestImage(app: Awaited<ReturnType<typeof buildApp>>, deviceToken: string) {
-  const { buffer, sha256 } = await createTestImage();
+async function uploadTestImage(
+  app: Awaited<ReturnType<typeof buildApp>>,
+  deviceToken: string,
+  color?: string,
+) {
+  const { buffer, sha256 } = await createTestImage({ color });
   const res = await app.inject({
     method: "POST",
     url: "/api/v1/images",
@@ -469,7 +473,7 @@ describe("GET /api/v1/images (admin list)", () => {
     const a = await uploadTestImage(app, uploadDeviceToken);
     expect(a.res.statusCode).toBe(201);
 
-    const b = await uploadTestImage(app, uploadDeviceToken);
+    const b = await uploadTestImage(app, uploadDeviceToken, "#00ff00");
     expect(b.res.statusCode).toBe(201);
 
     // Soft-delete a.

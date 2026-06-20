@@ -1,6 +1,6 @@
 # StudyShot Relay Protocol
 
-文档版本：2026-06-18
+文档版本：2026-06-21
 
 本文是客户端与后端对接的协议契约。安卓 App、桌面客户端和后续编码 agent 必须以本文为准；如果代码行为变化，必须同步更新本文。
 
@@ -330,6 +330,29 @@
   "success": true,
   "data": {
     "revokedAt": "2026-06-18T01:00:00.000Z"
+  }
+}
+```
+
+### `DELETE /api/v1/devices/{deviceId}`
+
+用途：从设备管理列表删除一个已经撤销的设备。
+
+鉴权：owner 用户 token 或 `canManageSpace` 设备 token。
+
+约束：
+
+- 必须先撤销设备；删除仍有效的设备返回 `409 DEVICE_NOT_REVOKED`。
+- 服务端采用软删除，保留历史图片、投递和审计关系。
+- 删除后设备不再出现在 `GET /devices`，设备 token 继续保持无效。
+
+成功响应：
+
+```json
+{
+  "success": true,
+  "data": {
+    "deletedAt": "2026-06-21T01:00:00.000Z"
   }
 }
 ```

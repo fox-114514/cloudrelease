@@ -5,191 +5,360 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
     />
     <title>StudyShot Relay</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <main class="app-shell">
+    <main class="app">
       <header class="topbar">
-        <div>
-          <h1>StudyShot Relay</h1>
-          <p id="deviceSummary">未绑定</p>
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true"></span>
+          <div class="brand-text">
+            <strong>StudyShot Relay</strong>
+            <span class="brand-sub" id="deviceSummary">未绑定</span>
+          </div>
         </div>
-        <div class="status-pill" id="connectionStatus">未连接</div>
+        <div class="topbar-right">
+          <span class="status-pill" id="connectionStatus" data-status="idle">未连接</span>
+          <button
+            type="button"
+            class="icon-button"
+            id="themeToggle"
+            aria-label="切换主题"
+            title="切换主题"
+          ></button>
+        </div>
       </header>
 
-      <section class="layout">
-        <aside class="side-panel">
-          <nav class="tabs" aria-label="主导航">
-            <button class="tab active" data-tab="status">状态</button>
-            <button class="tab" data-tab="settings">设置</button>
-            <button class="tab" data-tab="history">记录</button>
-            <button class="tab" data-tab="admin">管理</button>
-          </nav>
-        </aside>
+      <div class="layout">
+        <nav class="side" aria-label="主导航">
+          <button class="nav-item active" data-tab="status" type="button">状态</button>
+          <button class="nav-item" data-tab="receive" type="button">接收</button>
+          <button class="nav-item" data-tab="upload" type="button">上传</button>
+          <button class="nav-item" data-tab="history" type="button">记录</button>
+          <button class="nav-item" data-tab="admin" type="button">管理</button>
+        </nav>
 
-        <section class="content-panel">
+        <section class="content">
           <section class="view active" id="view-status">
-            <div class="section-heading">
-              <h2>连接</h2>
+            <div class="view-head">
+              <div>
+                <h1>运行状态</h1>
+                <p class="view-sub">查看当前连接、绑定信息和最近活动。</p>
+              </div>
               <div class="actions">
-                <button id="connectButton">连接</button>
-                <button id="disconnectButton" class="secondary">断开</button>
+                <button class="btn primary" id="connectButton">连接</button>
+                <button class="btn" id="disconnectButton">断开</button>
               </div>
             </div>
 
             <div class="metrics">
-              <div class="metric">
-                <span>服务器</span>
-                <strong id="serverValue">-</strong>
+              <article class="metric">
+                <span class="metric-label">服务器</span>
+                <strong class="metric-value" id="serverValue">-</strong>
+              </article>
+              <article class="metric">
+                <span class="metric-label">设备</span>
+                <strong class="metric-value" id="deviceValue">-</strong>
+              </article>
+              <article class="metric">
+                <span class="metric-label">上次连接</span>
+                <strong class="metric-value" id="lastConnectedValue">-</strong>
+              </article>
+              <article class="metric">
+                <span class="metric-label">最近接收</span>
+                <strong class="metric-value" id="lastDownloadValue">-</strong>
+              </article>
+            </div>
+
+            <div class="banner banner-error" id="errorLine" hidden></div>
+
+            <div class="card">
+              <header class="card-head">
+                <h2>设备绑定</h2>
+                <p class="card-sub">用主用户登录生成绑定码,或直接粘贴已有的码。</p>
+              </header>
+
+              <form id="bindForm" class="form-grid">
+                <label class="field">
+                  <span class="field-label">服务器地址</span>
+                  <input
+                    class="input"
+                    id="bindServerInput"
+                    name="server"
+                    placeholder="https://studyshot.example.com"
+                    autocomplete="url"
+                  />
+                </label>
+                <label class="field">
+                  <span class="field-label">绑定码</span>
+                  <input
+                    class="input"
+                    id="bindCodeInput"
+                    name="bindCode"
+                    autocomplete="one-time-code"
+                  />
+                </label>
+                <label class="field field-wide">
+                  <span class="field-label">设备名</span>
+                  <input class="input" id="bindDeviceNameInput" name="deviceName" />
+                </label>
+                <div class="form-actions">
+                  <button type="submit" class="btn primary">绑定设备</button>
+                </div>
+              </form>
+
+              <hr class="divider" />
+
+              <form id="ownerLoginForm" class="form-grid">
+                <label class="field">
+                  <span class="field-label">服务器地址</span>
+                  <input
+                    class="input"
+                    id="ownerServerInput"
+                    name="server"
+                    placeholder="https://studyshot.example.com"
+                    autocomplete="url"
+                  />
+                </label>
+                <label class="field">
+                  <span class="field-label">登录名</span>
+                  <input class="input" id="ownerLoginInput" name="login" autocomplete="username" />
+                </label>
+                <label class="field">
+                  <span class="field-label">密码</span>
+                  <input
+                    class="input"
+                    id="ownerPasswordInput"
+                    name="password"
+                    type="password"
+                    autocomplete="current-password"
+                  />
+                </label>
+                <div class="form-actions">
+                  <button type="submit" class="btn">生成绑定码</button>
+                </div>
+              </form>
+            </div>
+          </section>
+
+          <section class="view" id="view-receive">
+            <div class="view-head">
+              <div>
+                <h1>接收设置</h1>
+                <p class="view-sub">新图片到达后,本机的处理方式。</p>
               </div>
-              <div class="metric">
-                <span>设备</span>
-                <strong id="deviceValue">-</strong>
-              </div>
-              <div class="metric">
-                <span>上次连接</span>
-                <strong id="lastConnectedValue">-</strong>
-              </div>
-              <div class="metric">
-                <span>最近接收</span>
-                <strong id="lastDownloadValue">-</strong>
+              <div class="actions">
+                <button class="btn primary" id="saveSettingsButton">保存</button>
               </div>
             </div>
 
-            <div class="error-line" id="errorLine" hidden></div>
-
-            <div class="section-heading compact">
-              <h2>主用户登录</h2>
-            </div>
-            <form id="ownerLoginForm" class="form-grid">
-              <label>
-                <span>服务器地址</span>
-                <input id="ownerServerInput" name="server" placeholder="https://studyshot.example.com" />
-              </label>
-              <label>
-                <span>登录名</span>
-                <input id="ownerLoginInput" name="login" autocomplete="username" />
-              </label>
-              <label>
-                <span>密码</span>
-                <input id="ownerPasswordInput" name="password" type="password" autocomplete="current-password" />
-              </label>
-              <div class="form-actions">
-                <button type="submit">生成绑定码</button>
+            <form id="settingsForm" class="card">
+              <div class="form-grid">
+                <label class="field">
+                  <span class="field-label">服务器地址</span>
+                  <input class="input" id="serverInput" name="server" autocomplete="url" />
+                </label>
+                <label class="field">
+                  <span class="field-label">设备名</span>
+                  <input class="input" id="deviceNameInput" name="deviceName" />
+                </label>
+                <label class="field field-wide">
+                  <span class="field-label">下载目录</span>
+                  <div class="inline-input">
+                    <input class="input" id="downloadDirInput" name="downloadDir" />
+                    <button type="button" class="btn" id="chooseDirButton">选择</button>
+                    <button type="button" class="btn" id="openDirButton">打开</button>
+                  </div>
+                </label>
               </div>
-            </form>
 
-            <div class="section-heading compact">
-              <h2>设备绑定</h2>
-            </div>
-            <form id="bindForm" class="form-grid">
-              <label>
-                <span>服务器地址</span>
-                <input id="bindServerInput" name="server" placeholder="https://studyshot.example.com" />
-              </label>
-              <label>
-                <span>绑定码</span>
-                <input id="bindCodeInput" name="bindCode" autocomplete="one-time-code" />
-              </label>
-              <label>
-                <span>设备名</span>
-                <input id="bindDeviceNameInput" name="deviceName" />
-              </label>
-              <div class="form-actions">
-                <button type="submit">绑定设备</button>
+              <hr class="divider" />
+
+              <div class="toggle-list">
+                <label class="toggle">
+                  <input class="toggle-input" id="autoReceiveInput" type="checkbox" />
+                  <div class="toggle-body">
+                    <strong>自动接收</strong>
+                    <span>WebSocket 收到新图片后自动下载到本地。</span>
+                  </div>
+                </label>
+                <label class="toggle">
+                  <input class="toggle-input" id="copyInput" type="checkbox" />
+                  <div class="toggle-body">
+                    <strong>复制到剪贴板</strong>
+                    <span>下载成功后自动写入系统剪贴板,任意窗口可粘贴。</span>
+                  </div>
+                </label>
+                <label class="toggle">
+                  <input class="toggle-input" id="notificationInput" type="checkbox" />
+                  <div class="toggle-body">
+                    <strong>系统通知</strong>
+                    <span>每张图片下载完成时弹出桌面通知。</span>
+                  </div>
+                </label>
+                <label class="toggle">
+                  <input class="toggle-input" id="startAtLoginInput" type="checkbox" />
+                  <div class="toggle-body">
+                    <strong>开机自启</strong>
+                    <span>登录系统时自动启动并最小化到托盘。</span>
+                  </div>
+                </label>
               </div>
+
+              <div class="banner banner-warn" id="tokenWarning" hidden></div>
             </form>
           </section>
 
-          <section class="view" id="view-settings">
-            <div class="section-heading">
-              <h2>接收设置</h2>
-              <button id="saveSettingsButton">保存</button>
+          <section class="view" id="view-upload">
+            <div class="view-head">
+              <div>
+                <h1>上传设置</h1>
+                <p class="view-sub">监听一个本地目录,新图片自动上传到中转。</p>
+              </div>
             </div>
 
-            <form id="settingsForm" class="form-grid">
-              <label>
-                <span>服务器地址</span>
-                <input id="serverInput" name="server" />
-              </label>
-              <label>
-                <span>设备名</span>
-                <input id="deviceNameInput" name="deviceName" />
-              </label>
-              <label class="wide">
-                <span>下载目录</span>
-                <div class="inline-input">
-                  <input id="downloadDirInput" name="downloadDir" />
-                  <button type="button" id="chooseDirButton" class="secondary">选择</button>
-                  <button type="button" id="openDirButton" class="secondary">打开</button>
+            <div class="card">
+              <header class="card-head">
+                <h2>监听目录</h2>
+                <p class="card-sub">新增的 PNG / JPEG / WebP / GIF / BMP 会自动上传。</p>
+              </header>
+
+              <form id="watchForm" class="form-grid">
+                <label class="field field-wide">
+                  <span class="field-label">目录路径</span>
+                  <div class="inline-input">
+                    <input class="input" id="watchDirInput" name="watchDir" />
+                    <button type="button" class="btn" id="chooseWatchDirButton">选择</button>
+                    <button type="button" class="btn" id="openWatchDirButton">打开</button>
+                  </div>
+                </label>
+                <div class="form-actions">
+                  <button type="submit" class="btn">保存路径</button>
                 </div>
-              </label>
-              <label class="toggle">
-                <input id="autoReceiveInput" type="checkbox" />
-                <span>自动接收</span>
-              </label>
-              <label class="toggle">
-                <input id="copyInput" type="checkbox" />
-                <span>复制到剪贴板</span>
-              </label>
-              <label class="toggle">
-                <input id="notificationInput" type="checkbox" />
-                <span>系统通知</span>
-              </label>
-              <label class="toggle">
-                <input id="startAtLoginInput" type="checkbox" />
-                <span>开机自启</span>
-              </label>
-            </form>
-            <div class="warning-line" id="tokenWarning" hidden></div>
+              </form>
+
+              <div class="exclude-settings">
+                <div class="watch-status-head">
+                  <div>
+                    <strong>排除子文件夹</strong>
+                    <p class="card-sub">被排除文件夹及其所有后代中的图片不会上传。</p>
+                  </div>
+                  <button type="button" class="btn" id="addWatchExcludedDirButton">添加排除目录</button>
+                </div>
+                <ul class="excluded-dir-list" id="watchExcludedDirList"></ul>
+              </div>
+
+              <hr class="divider" />
+
+              <div class="watch-status">
+                <div class="watch-status-head">
+                  <div>
+                    <strong>自动上传</strong>
+                    <p class="card-sub" id="watchStatusText">未启用</p>
+                  </div>
+                  <span class="dot" id="watchStatusDot" data-state="off"></span>
+                </div>
+                <label class="toggle">
+                  <input class="toggle-input" id="autoUploadInput" type="checkbox" />
+                  <div class="toggle-body">
+                    <strong>启用监听</strong>
+                    <span>需要先完成设备绑定。绑定前开启不会真正启动。</span>
+                  </div>
+                </label>
+                <div class="banner banner-warn" id="watchErrorLine" hidden></div>
+              </div>
+            </div>
+
+            <div class="card">
+              <header class="card-head">
+                <h2>手动上传</h2>
+                <p class="card-sub">从本机选一张图片立即上传。</p>
+              </header>
+              <div class="actions">
+                <button class="btn primary" id="manualUploadButton">选择图片并上传</button>
+              </div>
+              <div class="banner banner-ok" id="manualUploadResult" hidden></div>
+            </div>
+
+            <div class="card">
+              <header class="card-head">
+                <h2>监听历史</h2>
+                <p class="card-sub">最近 30 条监听上传记录。</p>
+              </header>
+              <ul class="event-list" id="watchEventList"></ul>
+            </div>
           </section>
 
           <section class="view" id="view-history">
-            <div class="section-heading">
-              <h2>图片记录</h2>
+            <div class="view-head">
+              <div>
+                <h1>接收记录</h1>
+                <p class="view-sub">本机下载过的图片,可重新复制或定位文件。</p>
+              </div>
               <div class="actions">
-                <button id="manualUploadButton">手动上传</button>
-                <button id="fetchPendingButton" class="secondary">补收</button>
+                <button class="btn" id="fetchPendingButton">补收 pending</button>
               </div>
             </div>
-            <div class="upload-result" id="manualUploadResult" hidden></div>
-            <div class="history-list" id="historyList"></div>
+
+            <ul class="record-list" id="historyList"></ul>
           </section>
 
           <section class="view" id="view-admin">
-            <div class="section-heading">
-              <h2>设备管理</h2>
+            <div class="view-head">
+              <div>
+                <h1>设备管理</h1>
+                <p class="view-sub">以主用户身份登录,可查看和修改本空间内所有设备。</p>
+              </div>
               <div class="actions">
-                <button id="refreshDevicesButton" class="secondary">刷新</button>
-                <button id="adminLogoutButton" class="secondary">退出管理</button>
+                <button class="btn" id="refreshDevicesButton">刷新</button>
+                <button class="btn" id="adminLogoutButton" hidden>退出管理</button>
               </div>
             </div>
 
-            <form id="adminLoginForm" class="form-grid">
-              <label>
-                <span>服务器地址</span>
-                <input id="adminServerInput" name="server" placeholder="https://studyshot.example.com" />
-              </label>
-              <label>
-                <span>登录名</span>
-                <input id="adminLoginInput" name="login" autocomplete="username" />
-              </label>
-              <label>
-                <span>密码</span>
-                <input id="adminPasswordInput" name="password" type="password" autocomplete="current-password" />
-              </label>
-              <div class="form-actions">
-                <button type="submit">登录管理</button>
-              </div>
-            </form>
+            <div class="card" id="adminLoginCard">
+              <header class="card-head">
+                <h2>主用户登录</h2>
+                <p class="card-sub">登录后可以在此应用内管理设备。</p>
+              </header>
+              <form id="adminLoginForm" class="form-grid">
+                <label class="field">
+                  <span class="field-label">服务器地址</span>
+                  <input
+                    class="input"
+                    id="adminServerInput"
+                    name="server"
+                    placeholder="https://studyshot.example.com"
+                    autocomplete="url"
+                  />
+                </label>
+                <label class="field">
+                  <span class="field-label">登录名</span>
+                  <input class="input" id="adminLoginInput" name="login" autocomplete="username" />
+                </label>
+                <label class="field">
+                  <span class="field-label">密码</span>
+                  <input
+                    class="input"
+                    id="adminPasswordInput"
+                    name="password"
+                    type="password"
+                    autocomplete="current-password"
+                  />
+                </label>
+                <div class="form-actions">
+                  <button type="submit" class="btn primary">登录管理</button>
+                </div>
+              </form>
+              <div class="banner banner-error" id="adminLoginError" hidden></div>
+            </div>
 
             <div class="device-list" id="adminDeviceList"></div>
           </section>
         </section>
-      </section>
+      </div>
     </main>
 
     <script src="./renderer.js"></script>

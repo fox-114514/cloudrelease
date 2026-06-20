@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG_NAME="studyshot-relay-linux"
-VERSION="0.1.0"
+VERSION="0.4.0"
 ARCH="amd64"
 BUILD_DIR="${ROOT_DIR}/release/deb-build"
 DEB_FILE="${ROOT_DIR}/release/${PKG_NAME}_${VERSION}_${ARCH}.deb"

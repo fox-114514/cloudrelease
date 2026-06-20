@@ -42,7 +42,7 @@ export async function bindDevice(serverBaseUrl, bindCode, deviceName) {
             deviceName: deviceName.trim() || "Linux",
             platform: "linux",
             osVersion: `${process.platform} ${process.arch}`,
-            appVersion: "0.1.0",
+            appVersion: "0.4.0",
         }),
     });
     const body = (await response.json());

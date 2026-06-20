@@ -11,6 +11,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class ApiException(
     val statusCode: Int,
@@ -233,6 +235,20 @@ class StudyShotApiClient(
         executeJson(httpRequest)
     }
 
+    suspend fun deleteDevice(
+        serverBaseUrl: String,
+        accessToken: String,
+        deviceId: String,
+    ) {
+        val httpRequest = Request.Builder()
+            .url(apiUrl(serverBaseUrl, "/api/v1/devices/$deviceId"))
+            .header("Authorization", "Bearer $accessToken")
+            .delete()
+            .build()
+
+        executeJson(httpRequest)
+    }
+
     suspend fun uploadImage(
         serverBaseUrl: String,
         deviceToken: String,
@@ -298,7 +314,7 @@ class StudyShotApiClient(
         serverBaseUrl: String,
         deviceToken: String,
         imageId: String,
-    ): DownloadedImage {
+    ): DownloadedImage = withContext(Dispatchers.IO) {
         val httpRequest = Request.Builder()
             .url(apiUrl(serverBaseUrl, "/api/v1/images/$imageId/download"))
             .header("Authorization", "Bearer $deviceToken")
@@ -316,7 +332,7 @@ class StudyShotApiClient(
                     error?.optString("message") ?: response.message,
                 )
             }
-            return DownloadedImage(
+            return@withContext DownloadedImage(
                 bytes = response.body?.bytes() ?: throw IOException("Empty image response"),
                 mimeType = response.header("Content-Type")?.substringBefore(';') ?: "application/octet-stream",
             )
@@ -349,7 +365,7 @@ class StudyShotApiClient(
         executeJson(httpRequest)
     }
 
-    private fun executeJson(request: Request): JSONObject {
+    private suspend fun executeJson(request: Request): JSONObject = withContext(Dispatchers.IO) {
         client.newCall(request).execute().use { response ->
             val bodyText = response.body?.string().orEmpty()
             val envelope = when {
@@ -373,7 +389,7 @@ class StudyShotApiClient(
                     error?.optString("message") ?: response.message,
                 )
             }
-            return envelope.getJSONObject("data")
+            return@withContext envelope.getJSONObject("data")
         }
     }
 

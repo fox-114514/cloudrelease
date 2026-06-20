@@ -641,7 +641,7 @@ const ADMIN_HTML = String.raw`<!doctype html>
             '<td>' + (revoked ? '<span class="pill bad">已撤销</span>' : '<span class="pill ok">有效</span>') + '<br><span class="session">上次在线：' + fmt(device.lastSeenAt) + '</span></td>' +
             '<td><div class="permission-grid">' + permissionHtml + '</div></td>' +
             '<td><div class="scope-grid"><select data-action="scope" data-device="' + escapeHtml(device.id) + '" data-key="autoUploadScope"' + (revoked ? " disabled" : "") + '>' + uploadOptions + '</select><select data-action="scope" data-device="' + escapeHtml(device.id) + '" data-key="autoReceiveScope"' + (revoked ? " disabled" : "") + '>' + receiveOptions + '</select></div></td>' +
-            '<td><div class="actions"><input class="small-input" value="' + escapeHtml(device.name) + '" data-name-input="' + escapeHtml(device.id) + '"' + (revoked ? " disabled" : "") + '><button class="secondary" data-action="rename" data-device="' + escapeHtml(device.id) + '"' + (revoked ? " disabled" : "") + '>改名</button><button class="danger" data-action="revoke" data-device="' + escapeHtml(device.id) + '"' + (revoked ? " disabled" : "") + '>撤销</button></div></td>' +
+            '<td><div class="actions"><input class="small-input" value="' + escapeHtml(device.name) + '" data-name-input="' + escapeHtml(device.id) + '"' + (revoked ? " disabled" : "") + '><button class="secondary" data-action="rename" data-device="' + escapeHtml(device.id) + '"' + (revoked ? " disabled" : "") + '>改名</button>' + (revoked ? '<button class="danger" data-action="delete-device" data-device="' + escapeHtml(device.id) + '">删除</button>' : '<button class="danger" data-action="revoke" data-device="' + escapeHtml(device.id) + '">撤销</button>') + '</div></td>' +
             '</tr>';
         }).join("");
       }
@@ -792,6 +792,11 @@ const ADMIN_HTML = String.raw`<!doctype html>
             if (!confirm("确认撤销该设备？")) return;
             await api("/devices/" + target.dataset.device + "/revoke", { method: "POST" });
             showMessage("设备已撤销", "ok");
+            await refreshAll();
+          } else if (target.dataset.action === "delete-device") {
+            if (!confirm("确认删除这个已撤销设备？历史图片和审计记录会保留。")) return;
+            await api("/devices/" + target.dataset.device, { method: "DELETE" });
+            showMessage("已删除撤销设备", "ok");
             await refreshAll();
           } else if (target.dataset.action === "user-name") {
             const input = document.querySelector('[data-user-name="' + CSS.escape(target.dataset.user) + '"]');

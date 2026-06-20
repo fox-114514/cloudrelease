@@ -22,6 +22,7 @@ class MediaStoreScanner(
         sinceSeconds: Long,
         autoUploadScope: String,
         selectedAlbumPaths: List<String>,
+        excludedAlbumPaths: List<String> = emptyList(),
     ): List<CandidateImage> {
         val collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI
         val projection = buildList {
@@ -61,7 +62,13 @@ class MediaStoreScanner(
                 val name = cursor.getString(nameCol).orEmpty()
                 val path = cursor.getString(pathCol).orEmpty()
                 val dateAdded = cursor.getLong(dateAddedCol)
-                val sourceKind = sourceKindFor(path, name, autoUploadScope, selectedAlbumPaths) ?: continue
+                val sourceKind = sourceKindFor(
+                    path,
+                    name,
+                    autoUploadScope,
+                    selectedAlbumPaths,
+                    excludedAlbumPaths,
+                ) ?: continue
                 result += CandidateImage(
                     uri = ContentUris.withAppendedId(collection, id),
                     displayName = name,
@@ -152,10 +159,14 @@ class MediaStoreScanner(
             displayName: String,
             autoUploadScope: String,
             selectedAlbumPaths: List<String>,
+            excludedAlbumPaths: List<String>,
         ): String? {
             return when (autoUploadScope) {
                 "screenshot_only" -> if (isLikelyScreenshot(path, displayName)) "screenshot" else null
-                "selected_album" -> if (matchesSelectedAlbum(path, selectedAlbumPaths)) "selected_album" else null
+                "selected_album" -> if (
+                    matchesSelectedAlbum(path, selectedAlbumPaths) &&
+                    !matchesSelectedAlbum(path, excludedAlbumPaths)
+                ) "selected_album" else null
                 else -> null
             }
         }

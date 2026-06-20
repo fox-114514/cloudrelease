@@ -43,7 +43,7 @@ fun HelpAboutScreen(
             subtitle = "StudyShot Relay 是一个私有、低延迟的跨设备图片快传系统。",
         )
         HelpCallout(
-            text = "这是 0.1.0 早期版本，UI 与功能都会调整。如果遇到 bug，请把服务器日志一起提供。",
+            text = "当前版本 ${BuildConfig.VERSION_NAME}。如果遇到 bug，请把服务器日志一起提供。",
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
         )
         Spacer(Modifier.height(8.dp))

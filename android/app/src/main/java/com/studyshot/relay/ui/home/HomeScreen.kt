@@ -35,6 +35,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,8 +70,10 @@ fun HomeScreen(
     hasDeviceToken: Boolean,
 ) {
     val settings by state.app.secureSettings.settings.collectAsState()
-    val uploads by state.app.database.dao().observeUploadTasks(5).collectAsState(initial = emptyList())
-    val downloads by state.app.database.dao().observeDownloadRecords(5).collectAsState(initial = emptyList())
+    val uploadsFlow = remember(state.app.database) { state.app.database.dao().observeUploadTasks(5) }
+    val downloadsFlow = remember(state.app.database) { state.app.database.dao().observeDownloadRecords(5) }
+    val uploads by uploadsFlow.collectAsState(initial = emptyList())
+    val downloads by downloadsFlow.collectAsState(initial = emptyList())
     val adminSession by state.adminSession.collectAsState()
 
     LazyColumn(
@@ -134,7 +137,7 @@ fun HomeScreen(
                 QuickActionCard(
                     title = "监听图集",
                     description = if (settings.autoUploadScope == "selected_album") {
-                        "${settings.selectedAlbumPaths.size} 个目录"
+                        "${settings.selectedAlbumPaths.size} 个目录 · 排除 ${settings.excludedAlbumPaths.size} 个"
                     } else {
                         "默认只监听截图"
                     },

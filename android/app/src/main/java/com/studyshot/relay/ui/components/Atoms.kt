@@ -1,11 +1,5 @@
 package com.studyshot.relay.ui.components
 
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -32,10 +26,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -85,16 +77,6 @@ fun StatusPill(
     modifier: Modifier = Modifier,
 ) {
     val palette = toneColors(tone)
-    val transition = rememberInfiniteTransition(label = "pulse")
-    val scale by transition.animateFloat(
-        initialValue = 0.85f,
-        targetValue = 1.15f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1400, easing = LinearEasing),
-            repeatMode = RepeatMode.Reverse,
-        ),
-        label = "pulseScale",
-    )
     Surface(
         modifier = modifier,
         color = palette.container,
@@ -116,7 +98,6 @@ fun StatusPill(
                 Box(
                     modifier = Modifier
                         .size(8.dp)
-                        .scale(if (pulse) scale else 1f)
                         .background(palette.onContainer, CircleShape),
                 )
             }
@@ -142,32 +123,12 @@ fun ConnectionDot(
         ConnectionVisualState.Disconnected -> SlateMuted
         ConnectionVisualState.Error -> Rose700
     }
-    val transition = rememberInfiniteTransition(label = "ring")
-    val ringScale by transition.animateFloat(
-        initialValue = 1f,
-        targetValue = 1.9f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1800, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "ringScale",
-    )
-    val ringAlpha by transition.animateFloat(
-        initialValue = 0.6f,
-        targetValue = 0f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1800, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart,
-        ),
-        label = "ringAlpha",
-    )
     Box(modifier = modifier.size(14.dp), contentAlignment = Alignment.Center) {
         if (state == ConnectionVisualState.Connected || state == ConnectionVisualState.Connecting) {
             Box(
                 modifier = Modifier
-                    .size(14.dp)
-                    .scale(ringScale)
-                    .background(color.copy(alpha = ringAlpha), CircleShape),
+                    .size(12.dp)
+                    .background(color.copy(alpha = 0.18f), CircleShape),
             )
         }
         Box(

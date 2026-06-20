@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } from "electron";
+import os from "node:os";
 import path from "node:path";
 import { ConfigStore } from "./config-store";
 import { HistoryStore } from "./history-store";
@@ -12,12 +13,14 @@ import type {
   RegisterDeviceInput,
   SaveSettingsInput,
 } from "./shared";
+import { DirectoryWatcher } from "./watcher";
 
 let mainWindow: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let configStore: ConfigStore;
 let historyStore: HistoryStore;
 let relayClient: RelayClient;
+let directoryWatcher: DirectoryWatcher | null = null;
 let isQuitting = false;
 
 function rendererPath(file: string): string {
@@ -101,6 +104,88 @@ async function setAutoReceive(enabled: boolean): Promise<void> {
   broadcastState();
 }
 
+function buildWatcher(dir: string): DirectoryWatcher {
+  return new DirectoryWatcher({
+    watchDir: dir,
+    excludedDirs: configStore.watchExcludedDirs,
+    onLog: (message) => logInfo(`[watch] ${message}`),
+    onError: (message) => {
+      logError(`[watch] ${message}`);
+      relayClient?.updateWatchState({ lastError: message, active: false });
+    },
+    onFile: async (filePath) => {
+      if (!relayClient) return;
+      try {
+        const result = await relayClient.uploadScreenshotFromPath(filePath);
+        relayClient.appendWatchUpload({
+          fileName: result.fileName,
+          uploadedAt: new Date().toISOString(),
+          ok: true,
+        });
+        logInfo("Watch upload succeeded", { file: filePath, imageId: result.imageId });
+      } catch (err) {
+        const message = (err as Error).message || String(err);
+        relayClient.appendWatchUpload({
+          fileName: path.basename(filePath),
+          uploadedAt: new Date().toISOString(),
+          ok: false,
+          message,
+        });
+        throw err;
+      }
+    },
+  });
+}
+
+async function startDirectoryWatcher(): Promise<void> {
+  if (directoryWatcher) {
+    return;
+  }
+  if (!relayClient) return;
+  const dir = configStore.watchDir;
+  if (!dir) {
+    relayClient.updateWatchState({ active: false, lastError: "未配置监听目录" });
+    return;
+  }
+  directoryWatcher = buildWatcher(dir);
+  try {
+    await directoryWatcher.start();
+    relayClient.updateWatchState({
+      active: true,
+      dir,
+      lastError: undefined,
+    });
+  } catch (err) {
+    const message = (err as Error).message || String(err);
+    relayClient.updateWatchState({ active: false, lastError: message });
+    directoryWatcher = null;
+  }
+}
+
+async function stopDirectoryWatcher(): Promise<void> {
+  if (!directoryWatcher) return;
+  const w = directoryWatcher;
+  directoryWatcher = null;
+  await w.stop();
+  relayClient?.updateWatchState({ active: false });
+}
+
+async function applyWatcherConfig(): Promise<void> {
+  const enabled = configStore.autoUpload && configStore.settings.isBound;
+  relayClient?.updateWatchState({
+    enabled,
+    dir: configStore.watchDir,
+  });
+  if (enabled) {
+    if (!directoryWatcher || !directoryWatcher.matches(configStore.watchDir, configStore.watchExcludedDirs)) {
+      await stopDirectoryWatcher();
+      await startDirectoryWatcher();
+    }
+  } else {
+    await stopDirectoryWatcher();
+  }
+}
+
 function updateTrayMenu(): void {
   if (!tray || !relayClient) return;
 
@@ -133,6 +218,22 @@ function updateTrayMenu(): void {
         },
       },
       {
+        label: state.watch.active ? "停止监听目录" : "启动监听目录",
+        enabled: state.settings.isBound && Boolean(state.settings.watchDir),
+        click: async () => {
+          try {
+            if (state.watch.active) {
+              await stopDirectoryWatcher();
+            } else {
+              await startDirectoryWatcher();
+            }
+            broadcastState();
+          } catch (err) {
+            logError("Failed to toggle watcher from tray", { error: String(err) });
+          }
+        },
+      },
+      {
         label: "补收 pending",
         enabled: state.settings.isBound,
         click: () => {
@@ -141,13 +242,14 @@ function updateTrayMenu(): void {
           );
         },
       },
-      { label: "打开下载目录", click: () => shell.openPath(configStore.downloadDir) },
+      { label: "打开下载目录", click: () => shell.openPath(configStore.downloadDir || os.homedir()) },
       { type: "separator" },
       {
         label: "退出",
         click: () => {
           isQuitting = true;
           relayClient.disconnect();
+          stopDirectoryWatcher().catch(() => undefined);
           app.quit();
         },
       },
@@ -160,6 +262,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("device:register", async (_event, input: RegisterDeviceInput) => {
     await relayClient.registerDevice(input);
+    await applyWatcherConfig();
     broadcastState();
     return relayClient.getState();
   });
@@ -173,6 +276,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle("settings:save", async (_event, input: SaveSettingsInput) => {
     await configStore.saveSettings(input);
     await relayClient.handleSettingsChanged();
+    await applyWatcherConfig();
     broadcastState();
     return relayClient.getState();
   });
@@ -226,8 +330,66 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("downloadDir:open", async () => {
     const dir = configStore.downloadDir;
+    if (!dir) {
+      throw new Error("下载目录未配置");
+    }
     await shell.openPath(dir);
     return true;
+  });
+
+  ipcMain.handle("dialog:chooseWatchDir", async () => {
+    const options = {
+      title: "选择监听目录(自动上传新文件)",
+      properties: ["openDirectory", "createDirectory"] as Array<"openDirectory" | "createDirectory">,
+    };
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths[0]) {
+      return undefined;
+    }
+    return result.filePaths[0];
+  });
+
+  ipcMain.handle("dialog:chooseWatchExcludedDir", async () => {
+    const options = {
+      title: "选择要排除的子文件夹",
+      defaultPath: configStore.watchDir,
+      properties: ["openDirectory"] as Array<"openDirectory">,
+    };
+    const result = mainWindow
+      ? await dialog.showOpenDialog(mainWindow, options)
+      : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths[0]) {
+      return undefined;
+    }
+    const selected = path.resolve(result.filePaths[0]);
+    const root = path.resolve(configStore.watchDir);
+    const relative = path.relative(root, selected);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error("只能排除监听目录内的子文件夹");
+    }
+    return selected;
+  });
+
+  ipcMain.handle("watchDir:open", async () => {
+    const dir = configStore.watchDir;
+    if (dir) {
+      await shell.openPath(dir);
+    }
+    return true;
+  });
+
+  ipcMain.handle("watch:start", async () => {
+    await startDirectoryWatcher();
+    broadcastState();
+    return relayClient.getState();
+  });
+
+  ipcMain.handle("watch:stop", async () => {
+    await stopDirectoryWatcher();
+    broadcastState();
+    return relayClient.getState();
   });
 
   ipcMain.handle("history:copyToClipboard", async (_event, deliveryId: string) => {
@@ -299,6 +461,8 @@ async function start(): Promise<void> {
   if (configStore.autoReceive && configStore.settings.isBound) {
     relayClient.connect();
   }
+
+  await applyWatcherConfig();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

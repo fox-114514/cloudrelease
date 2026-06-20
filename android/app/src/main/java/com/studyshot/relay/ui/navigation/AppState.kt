@@ -7,11 +7,13 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import com.studyshot.relay.StudyShotApp
+import com.studyshot.relay.BuildConfig
 import com.studyshot.relay.data.SecureSettings
 import com.studyshot.relay.network.AdminSession
 import com.studyshot.relay.network.LibraryImage
 import com.studyshot.relay.network.ManagedDevice
 import com.studyshot.relay.network.RegisterDeviceRequest
+import com.studyshot.relay.upload.MediaStoreScanner
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,6 +21,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 @Stable
@@ -26,6 +30,7 @@ class AppState internal constructor(
     val app: StudyShotApp,
     val scope: CoroutineScope,
 ) {
+    private val settingsWriteMutex = Mutex()
     private val _transient = MutableStateFlow<TransientMessage?>(null)
     val transient: StateFlow<TransientMessage?> = _transient.asStateFlow()
 
@@ -61,15 +66,21 @@ class AppState internal constructor(
         wifiOnly: Boolean? = null,
         autoUploadScope: String? = null,
         selectedAlbumPaths: List<String>? = null,
+        excludedAlbumPaths: List<String>? = null,
     ) {
-        val current = app.secureSettings.settings.value
-        app.secureSettings.saveUploadSettings(
-            autoUploadEnabled = autoUploadEnabled ?: current.autoUploadEnabled,
-            realtimeModeEnabled = realtimeModeEnabled ?: current.realtimeModeEnabled,
-            wifiOnly = wifiOnly ?: current.wifiOnly,
-            autoUploadScope = autoUploadScope ?: current.autoUploadScope,
-            selectedAlbumPaths = selectedAlbumPaths ?: current.selectedAlbumPaths,
-        )
+        scope.launch(Dispatchers.IO) {
+            settingsWriteMutex.withLock {
+                val current = app.secureSettings.settings.value
+                app.secureSettings.saveUploadSettings(
+                    autoUploadEnabled = autoUploadEnabled ?: current.autoUploadEnabled,
+                    realtimeModeEnabled = realtimeModeEnabled ?: current.realtimeModeEnabled,
+                    wifiOnly = wifiOnly ?: current.wifiOnly,
+                    autoUploadScope = autoUploadScope ?: current.autoUploadScope,
+                    selectedAlbumPaths = selectedAlbumPaths ?: current.selectedAlbumPaths,
+                    excludedAlbumPaths = excludedAlbumPaths ?: current.excludedAlbumPaths,
+                )
+            }
+        }
     }
 
     fun saveReceiveSettings(
@@ -77,19 +88,27 @@ class AppState internal constructor(
         downloadNotificationEnabled: Boolean? = null,
         saveDownloadsToGallery: Boolean? = null,
     ) {
-        val current = app.secureSettings.settings.value
-        app.secureSettings.saveReceiveSettings(
-            autoReceiveEnabled = autoReceiveEnabled ?: current.autoReceiveEnabled,
-            downloadNotificationEnabled = downloadNotificationEnabled ?: current.downloadNotificationEnabled,
-            saveDownloadsToGallery = saveDownloadsToGallery ?: current.saveDownloadsToGallery,
-        )
+        scope.launch(Dispatchers.IO) {
+            settingsWriteMutex.withLock {
+                val current = app.secureSettings.settings.value
+                app.secureSettings.saveReceiveSettings(
+                    autoReceiveEnabled = autoReceiveEnabled ?: current.autoReceiveEnabled,
+                    downloadNotificationEnabled = downloadNotificationEnabled ?: current.downloadNotificationEnabled,
+                    saveDownloadsToGallery = saveDownloadsToGallery ?: current.saveDownloadsToGallery,
+                )
+            }
+        }
     }
 
     fun saveServerAndDeviceName(server: String, deviceName: String) {
-        app.secureSettings.saveServerAndDeviceName(
-            SecureSettings.normalizeBaseUrl(server),
-            deviceName,
-        )
+        scope.launch(Dispatchers.IO) {
+            settingsWriteMutex.withLock {
+                app.secureSettings.saveServerAndDeviceName(
+                    SecureSettings.normalizeBaseUrl(server),
+                    deviceName,
+                )
+            }
+        }
     }
 
     fun addAlbumPath(path: String) {
@@ -104,7 +123,33 @@ class AppState internal constructor(
     fun removeAlbumPath(path: String) {
         val current = app.secureSettings.settings.value
         val updated = current.selectedAlbumPaths.filterNot { it == path }
-        saveUploadSettings(selectedAlbumPaths = updated)
+        val remainingExclusions = current.excludedAlbumPaths.filter { excluded ->
+            updated.any { selected -> isSameOrDescendant(excluded, selected) }
+        }
+        saveUploadSettings(
+            selectedAlbumPaths = updated,
+            excludedAlbumPaths = remainingExclusions,
+        )
+    }
+
+    fun addExcludedAlbumPath(path: String) {
+        val normalized = MediaStoreScanner.normalizeAlbumPath(path) ?: return
+        val current = app.secureSettings.settings.value
+        val isInsideSelectedAlbum = current.selectedAlbumPaths.any { selected ->
+            isStrictDescendant(normalized, selected)
+        }
+        if (!isInsideSelectedAlbum) {
+            emit(TransientMessage("排除目录必须是已监听目录的子文件夹", StatusTone.Critical))
+            return
+        }
+        val updated = (current.excludedAlbumPaths + normalized).distinct().sorted()
+        saveUploadSettings(excludedAlbumPaths = updated)
+        emit(TransientMessage("已排除目录：$normalized", StatusTone.Positive))
+    }
+
+    fun removeExcludedAlbumPath(path: String) {
+        val current = app.secureSettings.settings.value
+        saveUploadSettings(excludedAlbumPaths = current.excludedAlbumPaths.filterNot { it == path })
     }
 
     fun bindDevice(server: String, code: String, name: String) {
@@ -130,15 +175,19 @@ class AppState internal constructor(
                         bindCode = code,
                         deviceName = finalName,
                         osVersion = "Android ${android.os.Build.VERSION.RELEASE}",
-                        appVersion = "0.1.0",
+                        appVersion = BuildConfig.VERSION_NAME,
                     ),
                 )
-                app.secureSettings.saveBinding(
-                    serverBaseUrl = normalized,
-                    deviceId = response.deviceId,
-                    deviceToken = response.deviceToken,
-                    deviceName = finalName,
-                )
+                withContext(Dispatchers.IO) {
+                    settingsWriteMutex.withLock {
+                        app.secureSettings.saveBinding(
+                            serverBaseUrl = normalized,
+                            deviceId = response.deviceId,
+                            deviceToken = response.deviceToken,
+                            deviceName = finalName,
+                        )
+                    }
+                }
                 emit(TransientMessage("绑定成功", StatusTone.Positive))
             } catch (err: Exception) {
                 emit(TransientMessage("绑定失败：${err.message ?: err.javaClass.simpleName}", StatusTone.Critical))
@@ -150,7 +199,9 @@ class AppState internal constructor(
         val wifiOnly = app.secureSettings.settings.value.wifiOnly
         scope.launch {
             try {
-                app.uploadRepository.enqueueManualUpload(uri, wifiOnly)
+                withContext(Dispatchers.IO) {
+                    app.uploadRepository.enqueueManualUpload(uri, wifiOnly)
+                }
                 emit(TransientMessage("已加入上传队列", StatusTone.Positive))
             } catch (err: Exception) {
                 emit(TransientMessage("加入队列失败：${err.message ?: err.javaClass.simpleName}", StatusTone.Critical))
@@ -167,7 +218,14 @@ class AppState internal constructor(
                 }
                 val session = AdminSession(response.accessToken, response.user)
                 _adminSession.value = session
-                app.secureSettings.saveServerAndDeviceName(normalized, app.secureSettings.settings.value.deviceName)
+                withContext(Dispatchers.IO) {
+                    settingsWriteMutex.withLock {
+                        app.secureSettings.saveServerAndDeviceName(
+                            normalized,
+                            app.secureSettings.settings.value.deviceName,
+                        )
+                    }
+                }
                 refreshDevices(session, normalized)
                 if (response.user.role == "owner") {
                     refreshImageLibrary(session, normalized, reset = true)
@@ -345,6 +403,18 @@ class AppState internal constructor(
                 emit(TransientMessage(err.message ?: "创建绑定码失败", StatusTone.Critical))
             }
         }
+    }
+
+    private fun isSameOrDescendant(candidate: String, parent: String): Boolean {
+        val normalizedCandidate = MediaStoreScanner.normalizeAlbumPath(candidate)?.lowercase() ?: return false
+        val normalizedParent = MediaStoreScanner.normalizeAlbumPath(parent)?.lowercase() ?: return false
+        return normalizedCandidate == normalizedParent || normalizedCandidate.startsWith("$normalizedParent/")
+    }
+
+    private fun isStrictDescendant(candidate: String, parent: String): Boolean {
+        val normalizedCandidate = MediaStoreScanner.normalizeAlbumPath(candidate)?.lowercase() ?: return false
+        val normalizedParent = MediaStoreScanner.normalizeAlbumPath(parent)?.lowercase() ?: return false
+        return normalizedCandidate.startsWith("$normalizedParent/")
     }
 }
 

@@ -30,6 +30,7 @@ class PowerSaveScanWorker(
             sinceSeconds = since,
             autoUploadScope = settings.autoUploadScope,
             selectedAlbumPaths = settings.selectedAlbumPaths,
+            excludedAlbumPaths = settings.excludedAlbumPaths,
         ).forEach { candidate ->
             repository.enqueueAutoUpload(
                 uri = candidate.uri,

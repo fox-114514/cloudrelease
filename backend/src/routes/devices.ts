@@ -146,7 +146,7 @@ export async function deviceRoutes(app: FastifyInstance): Promise<void> {
 
     await logAudit({
       ownerUserId: device.ownerUserId,
-      actorUserId: targetUser.id,
+      actorUserId: undefined,
       actorDeviceId: device.id,
       action: "device.registered",
       targetType: "device",

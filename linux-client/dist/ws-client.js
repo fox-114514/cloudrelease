@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import WebSocket from "ws";
@@ -119,13 +120,15 @@ export class WsReceiveClient {
         const deliveryId = msg.deliveryId;
         const image = (msg.image ?? {});
         const imageId = image.id;
-        if (!deliveryId || !imageId)
+        const sha256 = image.sha256;
+        if (!deliveryId || !imageId || !sha256)
             return null;
         return {
             deliveryId,
             imageId,
             mimeType: image.mimeType || "image/jpeg",
             createdAt: msg.createdAt || new Date().toISOString(),
+            expectedSha256: sha256,
         };
     }
     async fetchPending() {
@@ -137,6 +140,7 @@ export class WsReceiveClient {
                     imageId: raw.image.id,
                     mimeType: raw.image.mimeType,
                     createdAt: raw.createdAt,
+                    expectedSha256: raw.image.sha256,
                 };
                 if (this.processing.has(delivery.deliveryId))
                     continue;
@@ -179,9 +183,40 @@ export class WsReceiveClient {
         await ensureDir(downloadDir);
         const sourceName = sanitizeFilePart(this.options.device.deviceName);
         const fileName = `${formatTimestamp(delivery.createdAt)}_${sourceName}_${delivery.imageId.slice(0, 8)}${extensionForMime(delivery.mimeType)}`;
-        const filePath = await this.uniquePath(path.join(downloadDir, fileName));
+        const basePath = path.join(downloadDir, fileName);
         const stream = await this.api.downloadImage(delivery.imageId);
-        const handle = await fs.open(filePath, "w", 0o600);
+        const filePath = await this.writeImageWithUniqueSuffix(basePath, stream, delivery.expectedSha256);
+        await this.api.ackDelivery(delivery.deliveryId, "downloaded");
+        this.log("download", `Saved ${filePath}`);
+        this.options.onDownload?.(filePath, delivery.imageId);
+    }
+    // Streams the response body to disk at `basePath`, hashing as we go.
+    // Uses O_EXCL so two concurrent downloads of the same image can't stomp
+    // each other. If the path is taken, the suffix is bumped and we retry.
+    // On any error after a partial write, the partial file is unlinked.
+    async writeImageWithUniqueSuffix(basePath, stream, expectedSha256) {
+        const parsed = path.parse(basePath);
+        let lastError;
+        for (let index = 0; index < 1000; index += 1) {
+            const candidate = index === 0
+                ? basePath
+                : path.join(parsed.dir, `${parsed.name}-${String(index + 1).padStart(2, "0")}${parsed.ext}`);
+            try {
+                await this.writeImageExclusive(candidate, stream, expectedSha256);
+                return candidate;
+            }
+            catch (err) {
+                lastError = err;
+                if (err.code === "EEXIST")
+                    continue;
+                throw err;
+            }
+        }
+        throw lastError instanceof Error ? lastError : new Error("Unable to allocate a unique file name");
+    }
+    async writeImageExclusive(target, stream, expectedSha256) {
+        const handle = await fs.open(target, "wx", 0o600);
+        const hash = crypto.createHash("sha256");
         try {
             const reader = stream.getReader();
             while (true) {
@@ -189,29 +224,20 @@ export class WsReceiveClient {
                 if (done)
                     break;
                 await handle.write(value);
+                hash.update(value);
             }
         }
-        finally {
-            await handle.close();
+        catch (err) {
+            await handle.close().catch(() => undefined);
+            await fs.unlink(target).catch(() => undefined);
+            throw err;
         }
-        await this.api.ackDelivery(delivery.deliveryId, "downloaded");
-        this.log("download", `Saved ${filePath}`);
-        this.options.onDownload?.(filePath, delivery.imageId);
-    }
-    async uniquePath(basePath) {
-        const parsed = path.parse(basePath);
-        for (let index = 0; index < 1000; index += 1) {
-            const candidate = index === 0
-                ? basePath
-                : path.join(parsed.dir, `${parsed.name}-${String(index + 1).padStart(2, "0")}${parsed.ext}`);
-            try {
-                await fs.access(candidate);
-            }
-            catch {
-                return candidate;
-            }
+        await handle.close();
+        const actualSha256 = hash.digest("hex");
+        if (actualSha256 !== expectedSha256) {
+            await fs.unlink(target).catch(() => undefined);
+            throw new Error("下载图片 sha256 校验失败");
         }
-        throw new Error("Unable to allocate a unique file name");
     }
     shouldReconnect(closeCode) {
         // 1008 = policy violation (revoked, invalid token, etc.)

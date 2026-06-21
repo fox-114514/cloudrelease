@@ -7,7 +7,10 @@ import { prisma } from "../lib/prisma.js";
 interface WsClient {
   deviceId: string;
   socket: WebSocket.WebSocket;
-  lastPongAt: number;
+  // Wall-clock timestamp of the last inbound message we saw from this client.
+  // Updated on hello/ping (and ignored if the type is something else). The
+  // heartbeat sweeper uses this to decide which sockets are stale.
+  lastClientActivityAt: number;
 }
 
 const connections = new Map<string, WsClient>();
@@ -107,7 +110,7 @@ export const wsPlugin = fp(async (app: FastifyInstance) => {
     const client: WsClient = {
       deviceId: device.id,
       socket,
-      lastPongAt: Date.now(),
+      lastClientActivityAt: Date.now(),
     };
     connections.set(device.id, client);
 
@@ -127,7 +130,7 @@ export const wsPlugin = fp(async (app: FastifyInstance) => {
             })
           );
         } else if (msg.type === "ping") {
-          client.lastPongAt = Date.now();
+          client.lastClientActivityAt = Date.now();
           socket.send(JSON.stringify({ type: "pong" }));
         }
       } catch {
@@ -154,7 +157,7 @@ export const wsPlugin = fp(async (app: FastifyInstance) => {
   setInterval(() => {
     const now = Date.now();
     for (const [deviceId, client] of connections.entries()) {
-      if (now - client.lastPongAt > HEARTBEAT_TIMEOUT_MS) {
+      if (now - client.lastClientActivityAt > HEARTBEAT_TIMEOUT_MS) {
         client.socket.close(1001, "Heartbeat timeout");
         connections.delete(deviceId);
       }

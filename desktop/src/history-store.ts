@@ -1,5 +1,5 @@
 import { app } from "electron";
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { DownloadRecord } from "./shared";
 
@@ -9,6 +9,10 @@ const MAX_HISTORY = 100;
 export class HistoryStore {
   private readonly historyPath: string;
   private records: DownloadRecord[] = [];
+  // Serialize concurrent add()/update() so two writers can't both clobber the
+  // same tmp file mid-write. processDelivery() can fan in multiple calls
+  // from the same pending fetch + WS event.
+  private writeChain: Promise<void> = Promise.resolve();
 
   constructor() {
     this.historyPath = path.join(app.getPath("userData"), HISTORY_FILE);
@@ -35,27 +39,58 @@ export class HistoryStore {
   }
 
   async add(record: DownloadRecord): Promise<void> {
-    this.records = [
-      record,
-      ...this.records.filter((existing) => existing.deliveryId !== record.deliveryId),
-    ].slice(0, MAX_HISTORY);
-    await this.persist();
+    await this.enqueueWrite((records) => {
+      const next = [record, ...records.filter((e) => e.deliveryId !== record.deliveryId)].slice(
+        0,
+        MAX_HISTORY,
+      );
+      return { next, result: undefined };
+    });
   }
 
   async update(deliveryId: string, patch: Partial<DownloadRecord>): Promise<DownloadRecord | undefined> {
-    const index = this.records.findIndex((record) => record.deliveryId === deliveryId);
-    if (index === -1) return undefined;
-    const updated = { ...this.records[index], ...patch };
-    this.records[index] = updated;
-    await this.persist();
-    return updated;
+    let returned: DownloadRecord | undefined;
+    await this.enqueueWrite((records) => {
+      const index = records.findIndex((record) => record.deliveryId === deliveryId);
+      if (index === -1) return { next: records, result: undefined };
+      const updated = { ...records[index], ...patch };
+      const next = records.slice();
+      next[index] = updated;
+      returned = updated;
+      return { next, result: updated };
+    });
+    return returned;
   }
 
-  private async persist(): Promise<void> {
-    await mkdir(path.dirname(this.historyPath), { recursive: true });
-    await writeFile(this.historyPath, `${JSON.stringify(this.records, null, 2)}\n`, {
-      mode: 0o600,
+  private enqueueWrite(
+    mutate: (records: DownloadRecord[]) => { next: DownloadRecord[]; result: DownloadRecord | undefined }
+  ): Promise<void> {
+    // Serialize read-modify-write inside the chain. If two callers race on
+    // add(), each will see the previous call's committed state, not a stale
+    // snapshot, so records aren't lost.
+    const run = this.writeChain.catch(() => undefined).then(async () => {
+      const { next } = mutate(this.records);
+      await this.persist(next);
+      this.records = next;
     });
+    this.writeChain = run;
+    return run;
+  }
+
+  private async persist(next: DownloadRecord[]): Promise<void> {
+    // Write to a sibling temp file then rename so a crash mid-write can't leave
+    // a half-written history file that loses the entire list on next load.
+    // enqueueWrite() guarantees only one persist runs at a time, so the tmp
+    // filename only needs to be unique across restarts (pid is enough).
+    await mkdir(path.dirname(this.historyPath), { recursive: true });
+    const tmpPath = `${this.historyPath}.${process.pid}.tmp`;
+    await writeFile(tmpPath, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+    try {
+      await rename(tmpPath, this.historyPath);
+    } catch (err) {
+      await unlink(tmpPath).catch(() => undefined);
+      throw err;
+    }
     try {
       await chmod(this.historyPath, 0o600);
     } catch {

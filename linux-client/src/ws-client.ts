@@ -1,6 +1,8 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import WebSocket from "ws";
+import type { DeliveryPayload } from "./api.js";
 import { ApiClient } from "./api.js";
 import type { AppConfig, DeviceConfig } from "./config.js";
 import {
@@ -141,12 +143,14 @@ export class WsReceiveClient {
     const deliveryId = msg.deliveryId as string | undefined;
     const image = (msg.image ?? {}) as Record<string, unknown>;
     const imageId = image.id as string | undefined;
-    if (!deliveryId || !imageId) return null;
+    const sha256 = image.sha256 as string | undefined;
+    if (!deliveryId || !imageId || !sha256) return null;
     return {
       deliveryId,
       imageId,
       mimeType: (image.mimeType as string) || "image/jpeg",
       createdAt: (msg.createdAt as string) || new Date().toISOString(),
+      expectedSha256: sha256,
     };
   }
 
@@ -159,6 +163,7 @@ export class WsReceiveClient {
           imageId: raw.image.id,
           mimeType: raw.image.mimeType,
           createdAt: raw.createdAt,
+          expectedSha256: raw.image.sha256,
         };
         if (this.processing.has(delivery.deliveryId)) continue;
         this.processing.add(delivery.deliveryId);
@@ -203,40 +208,70 @@ export class WsReceiveClient {
       0,
       8,
     )}${extensionForMime(delivery.mimeType)}`;
-    const filePath = await this.uniquePath(path.join(downloadDir, fileName));
+    const basePath = path.join(downloadDir, fileName);
 
     const stream = await this.api.downloadImage(delivery.imageId);
-    const handle = await fs.open(filePath, "w", 0o600);
-    try {
-      const reader = stream.getReader();
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        await handle.write(value);
-      }
-    } finally {
-      await handle.close();
-    }
+    const filePath = await this.writeImageWithUniqueSuffix(basePath, stream, delivery.expectedSha256);
 
     await this.api.ackDelivery(delivery.deliveryId, "downloaded");
     this.log("download", `Saved ${filePath}`);
     this.options.onDownload?.(filePath, delivery.imageId);
   }
 
-  private async uniquePath(basePath: string): Promise<string> {
+  // Streams the response body to disk at `basePath`, hashing as we go.
+  // Uses O_EXCL so two concurrent downloads of the same image can't stomp
+  // each other. If the path is taken, the suffix is bumped and we retry.
+  // On any error after a partial write, the partial file is unlinked.
+  private async writeImageWithUniqueSuffix(
+    basePath: string,
+    stream: ReadableStream<Uint8Array>,
+    expectedSha256: string,
+  ): Promise<string> {
     const parsed = path.parse(basePath);
+    let lastError: unknown;
     for (let index = 0; index < 1000; index += 1) {
       const candidate =
         index === 0
           ? basePath
           : path.join(parsed.dir, `${parsed.name}-${String(index + 1).padStart(2, "0")}${parsed.ext}`);
       try {
-        await fs.access(candidate);
-      } catch {
+        await this.writeImageExclusive(candidate, stream, expectedSha256);
         return candidate;
+      } catch (err) {
+        lastError = err;
+        if ((err as NodeJS.ErrnoException).code === "EEXIST") continue;
+        throw err;
       }
     }
-    throw new Error("Unable to allocate a unique file name");
+    throw lastError instanceof Error ? lastError : new Error("Unable to allocate a unique file name");
+  }
+
+  private async writeImageExclusive(
+    target: string,
+    stream: ReadableStream<Uint8Array>,
+    expectedSha256: string,
+  ): Promise<void> {
+    const handle = await fs.open(target, "wx", 0o600);
+    const hash = crypto.createHash("sha256");
+    try {
+      const reader = stream.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        await handle.write(value);
+        hash.update(value);
+      }
+    } catch (err) {
+      await handle.close().catch(() => undefined);
+      await fs.unlink(target).catch(() => undefined);
+      throw err;
+    }
+    await handle.close();
+    const actualSha256 = hash.digest("hex");
+    if (actualSha256 !== expectedSha256) {
+      await fs.unlink(target).catch(() => undefined);
+      throw new Error("下载图片 sha256 校验失败");
+    }
   }
 
   private shouldReconnect(closeCode: number): boolean {
@@ -276,4 +311,5 @@ interface DeliveryLike {
   imageId: string;
   mimeType: string;
   createdAt: string;
+  expectedSha256: string;
 }

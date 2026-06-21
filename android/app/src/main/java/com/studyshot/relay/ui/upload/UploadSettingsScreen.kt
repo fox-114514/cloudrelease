@@ -100,7 +100,7 @@ fun UploadSettingsScreen(
             SettingsRow(
                 icon = Icons.Outlined.Bolt,
                 title = "实时学习模式",
-                subtitle = "前台服务直接监听并上传，后台也保持低延迟；常驻通知 + 耗电略高",
+                subtitle = "事件监听 + 每秒主动扫描并直传，避免厂商后台节流；常驻通知 + 耗电略高",
                 trailing = RowTrailing.SwitchControl(
                     checked = settings.realtimeModeEnabled,
                     onCheckedChange = { state.saveUploadSettings(realtimeModeEnabled = it) },

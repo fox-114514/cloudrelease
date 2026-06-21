@@ -27,7 +27,8 @@ export declare class WsReceiveClient {
     private fetchPending;
     private downloadWithRetries;
     private downloadOnce;
-    private uniquePath;
+    private writeImageWithUniqueSuffix;
+    private writeImageExclusive;
     private shouldReconnect;
     private scheduleReconnect;
     private clearReconnect;

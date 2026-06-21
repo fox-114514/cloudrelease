@@ -146,7 +146,7 @@ fun HomeScreen(
                 )
                 QuickActionCard(
                     title = if (adminSession != null) "管理：${adminSession?.user?.displayName ?: adminSession?.user?.emailOrLogin ?: ""}" else "登录管理",
-                    description = if (adminSession != null) "设备权限 / 图片库" else "owner 才能看图库、批量撤销",
+                    description = if (adminSession != null) "管理我的设备 / 查看可访问图片" else "成员可管理自己的设备和图片，owner 可管理全空间",
                     icon = Icons.Outlined.Security,
                     onClick = {
                         if (adminSession != null) {
@@ -185,9 +185,19 @@ fun HomeScreen(
 @Composable
 private fun HomeHeader(settings: AppSettings) {
     val isBound = settings.deviceTokenAvailable
-    val dotState = if (isBound && settings.autoUploadEnabled) ConnectionVisualState.Connected
+    val effectiveAutoUpload = settings.autoUploadEnabled && settings.serverAllowsAutoUpload()
+    val dotState = if (isBound && effectiveAutoUpload) ConnectionVisualState.Connected
     else if (isBound) ConnectionVisualState.Connecting
     else ConnectionVisualState.Disconnected
+    val identity = if (settings.boundUserDisplayName.isNotBlank() || settings.boundUserId.isNotBlank()) {
+        val who = settings.boundUserDisplayName.ifBlank { settings.boundUserId }
+        val role = when (settings.boundUserRole) {
+            "owner" -> "空间管理员"
+            "child" -> "成员"
+            else -> settings.boundUserRole
+        }
+        "$who · $role"
+    } else null
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -205,16 +215,31 @@ private fun HomeHeader(settings: AppSettings) {
                 ConnectionDot(state = dotState)
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = if (isBound) "已绑定 · ${settings.deviceName}" else "未绑定",
+                    text = if (isBound && identity != null) "已绑定 · $identity" else if (isBound) "已绑定 · ${settings.deviceName}" else "未绑定",
                     style = MaterialTheme.typography.bodyMedium,
+                    color = SlateMuted,
+                )
+            }
+            if (isBound && settings.lastKnownDeviceProfile.isNotBlank()) {
+                val profileLabel = when (settings.lastKnownDeviceProfile) {
+                    "manual_only" -> "只手动分享"
+                    "upload_only" -> "只上传截图"
+                    "receive_own" -> "只接收我的图片"
+                    "sync_own" -> "我的设备双向同步"
+                    "custom" -> "自定义(高级)"
+                    else -> settings.lastKnownDeviceProfile
+                }
+                Text(
+                    text = "设备用途:$profileLabel",
+                    style = MaterialTheme.typography.bodySmall,
                     color = SlateMuted,
                 )
             }
         }
         StatusPill(
-            text = if (settings.autoUploadEnabled) "上传开" else "上传关",
-            tone = if (settings.autoUploadEnabled) StatusTone.Positive else StatusTone.Neutral,
-            pulse = settings.autoUploadEnabled && settings.realtimeModeEnabled,
+            text = if (effectiveAutoUpload) "上传开" else "上传关",
+            tone = if (effectiveAutoUpload) StatusTone.Positive else StatusTone.Neutral,
+            pulse = effectiveAutoUpload && settings.realtimeModeEnabled,
         )
     }
 }
@@ -238,21 +263,22 @@ private fun StatusOverviewSection(settings: AppSettings) {
             MetricTile(
                 label = "上传",
                 value = when {
+                    !settings.serverAllowsAutoUpload() -> "服务端禁止"
                     !settings.autoUploadEnabled -> "关闭"
                     settings.realtimeModeEnabled -> "实时"
                     else -> "省电扫描"
                 },
                 icon = Icons.Outlined.CloudUpload,
-                tone = if (settings.autoUploadEnabled) StatusTone.Positive else StatusTone.Neutral,
+                tone = if (settings.autoUploadEnabled && settings.serverAllowsAutoUpload()) StatusTone.Positive else StatusTone.Neutral,
                 modifier = Modifier.weight(1f),
             )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             MetricTile(
                 label = "接收",
-                value = if (settings.autoReceiveEnabled) "自动" else "手动",
+                value = if (!settings.serverAllowsAutoReceive()) "服务端禁止" else if (settings.autoReceiveEnabled) "自动" else "手动",
                 icon = Icons.Outlined.WifiTethering,
-                tone = if (settings.autoReceiveEnabled) StatusTone.Positive else StatusTone.Neutral,
+                tone = if (settings.autoReceiveEnabled && settings.serverAllowsAutoReceive()) StatusTone.Positive else StatusTone.Neutral,
                 modifier = Modifier.weight(1f),
             )
             MetricTile(
@@ -351,6 +377,7 @@ private fun DownloadActivityRow(record: DownloadRecordEntity, modifier: Modifier
 private fun uploadSummary(settings: AppSettings, hasImagePermission: Boolean): String {
     return when {
         !hasImagePermission -> "需要授予图片权限"
+        !settings.serverAllowsAutoUpload() -> "服务端未允许自动上传"
         !settings.autoUploadEnabled -> "关闭 · 改为开启"
         settings.realtimeModeEnabled -> "实时监听中 · ${if (settings.wifiOnly) "仅 Wi-Fi" else "蜂窝数据也上传"}"
         else -> "省电扫描中 · ${settings.autoUploadScopeDisplay()}"
@@ -360,6 +387,7 @@ private fun uploadSummary(settings: AppSettings, hasImagePermission: Boolean): S
 private fun receiveSummary(settings: AppSettings): String {
     return when {
         !settings.deviceTokenAvailable -> "绑定后才能接收"
+        !settings.serverAllowsAutoReceive() -> "服务端未允许自动接收"
         !settings.autoReceiveEnabled -> "关闭 · 改为开启"
         settings.saveDownloadsToGallery -> "下载到相册并复制剪贴板"
         settings.downloadNotificationEnabled -> "下载后通知"

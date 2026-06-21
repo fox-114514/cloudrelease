@@ -68,6 +68,7 @@ import com.studyshot.relay.ui.receive.ReceiveSettingsScreen
 import com.studyshot.relay.ui.theme.SlateMuted
 import com.studyshot.relay.ui.upload.UploadSettingsScreen
 import com.studyshot.relay.ui.upload.WatchAlbumsScreen
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 @Composable
@@ -98,12 +99,20 @@ fun AppRoot(
 
     val permissionRefreshTick = rememberSaveable { mutableIntStateOf(0) }
 
+    LaunchedEffect(settings.deviceTokenAvailable, settings.deviceId) {
+        while (settings.deviceTokenAvailable) {
+            state.refreshSelfIdentity()
+            delay(5 * 60 * 1000L)
+        }
+    }
+
     LaunchedEffect(
         settings.autoUploadEnabled,
         settings.realtimeModeEnabled,
+        settings.lastKnownPermissionsJson,
         permissionRefreshTick.intValue,
     ) {
-        if (settings.autoUploadEnabled && settings.realtimeModeEnabled && hasImagePermission()) {
+        if (settings.autoUploadEnabled && settings.serverAllowsAutoUpload() && settings.realtimeModeEnabled && hasImagePermission()) {
             startRealtimeService()
         } else {
             stopRealtimeService()
@@ -117,17 +126,18 @@ fun AppRoot(
         settings.autoUploadScope,
         settings.selectedAlbumPaths,
         settings.excludedAlbumPaths,
+        settings.lastKnownPermissionsJson,
         permissionRefreshTick.intValue,
     ) {
-        if (settings.autoUploadEnabled && !settings.realtimeModeEnabled && hasImagePermission()) {
+        if (settings.autoUploadEnabled && settings.serverAllowsAutoUpload() && !settings.realtimeModeEnabled && hasImagePermission()) {
             state.app.uploadRepository.schedulePowerSaveScan(settings.wifiOnly)
         } else {
             state.app.uploadRepository.cancelPowerSaveScan()
         }
     }
 
-    LaunchedEffect(settings.autoReceiveEnabled, settings.deviceTokenAvailable) {
-        if (settings.autoReceiveEnabled && settings.deviceTokenAvailable) {
+    LaunchedEffect(settings.autoReceiveEnabled, settings.deviceTokenAvailable, settings.lastKnownPermissionsJson) {
+        if (settings.autoReceiveEnabled && settings.serverAllowsAutoReceive() && settings.deviceTokenAvailable) {
             startReceiveService()
         } else {
             stopReceiveService()

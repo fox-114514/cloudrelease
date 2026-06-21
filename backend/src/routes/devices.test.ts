@@ -213,7 +213,7 @@ describe("PATCH /api/v1/devices/:id/permissions", () => {
 
     expect(res.statusCode).toBe(403);
     const body = JSON.parse(res.payload);
-    expect(body.error.code).toBe("FORBIDDEN");
+    expect(body.error.code).toBe("OWNER_AUTH_REQUIRED_FOR_PRIVILEGED_PERMISSION");
   });
 });
 

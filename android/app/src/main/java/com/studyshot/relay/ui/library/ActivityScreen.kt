@@ -113,7 +113,7 @@ fun ActivityScreen(
             uploadsCount = uploads.size,
             downloadsCount = downloads.size,
             libraryCount = images.size,
-            isOwner = adminSession?.user?.role == "owner",
+            hasLibrarySession = adminSession != null,
             onPickImage = onPickImage,
         )
 
@@ -125,7 +125,7 @@ fun ActivityScreen(
         ) {
             ActivityTab.values().forEach { entry ->
                 val isActive = entry == tab
-                val enabled = entry != ActivityTab.Library || adminSession?.user?.role == "owner"
+                val enabled = entry != ActivityTab.Library || adminSession != null
                 FilterChip(
                     selected = isActive,
                     onClick = { if (enabled) tab = entry },
@@ -149,11 +149,11 @@ fun ActivityScreen(
             ActivityTab.Uploads -> UploadsLog(uploads)
             ActivityTab.Downloads -> DownloadsLog(downloads)
             ActivityTab.Library -> {
-                if (adminSession?.user?.role != "owner") {
+                if (adminSession == null) {
                     EmptyState(
                         icon = Icons.Outlined.Photo,
-                        title = "需要 owner 账号",
-                        description = "图片库只对 owner 可见。请先在「设置 → 管理」中登录 owner 账号。",
+                        title = "需要登录账号",
+                        description = "请先在「设置 → 管理」中登录。owner 查看空间全部图片，成员只查看自己的图片。",
                         modifier = Modifier.fillMaxSize(),
                     )
                 } else {
@@ -175,7 +175,7 @@ private fun ActivityHeader(
     uploadsCount: Int,
     downloadsCount: Int,
     libraryCount: Int,
-    isOwner: Boolean,
+    hasLibrarySession: Boolean,
     onPickImage: () -> Unit,
 ) {
     Row(
@@ -191,7 +191,7 @@ private fun ActivityHeader(
             )
             Spacer(Modifier.height(2.dp))
             Text(
-                text = "上传 $uploadsCount · 下载 $downloadsCount · ${if (isOwner) "图库 $libraryCount" else "图库仅 owner"}",
+                text = "上传 $uploadsCount · 下载 $downloadsCount · ${if (hasLibrarySession) "图库 $libraryCount" else "图库需登录"}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = SlateMuted,
             )
@@ -455,7 +455,6 @@ private fun ImageLibraryGrid(
                                 }
                             }
                         },
-                        onDelete = { state.deleteImage(image) },
                     )
                 }
             }
@@ -534,7 +533,6 @@ private fun ImageLibraryGrid(
 private fun ImageLibraryTile(
     image: LibraryImage,
     onClick: () -> Unit,
-    onDelete: () -> Unit,
 ) {
     SurfaceCard(
         onClick = onClick,

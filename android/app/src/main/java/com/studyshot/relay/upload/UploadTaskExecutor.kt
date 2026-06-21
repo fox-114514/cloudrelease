@@ -12,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 internal enum class UploadExecutionResult {
     Success,
@@ -49,10 +50,54 @@ internal class UploadTaskExecutor(context: Context) {
             "failed" -> return UploadExecutionResult.Failure
         }
 
-        val settings = secureSettings.settings.value
+        var settings = secureSettings.settings.value
         val token = secureSettings.getDeviceToken()
         if (settings.serverBaseUrl.isBlank() || token.isNullOrBlank()) {
             markFailed(taskId, task.sha256, task.fileSize, "Device is not bound")
+            return UploadExecutionResult.Failure
+        }
+        try {
+            val info = apiClient.getDeviceMe(settings.serverBaseUrl, token)
+            val permissionsJson = JSONObject()
+                .put("canAutoUpload", info.permissions.canAutoUpload)
+                .put("canManualUpload", info.permissions.canManualUpload)
+                .put("canAutoReceive", info.permissions.canAutoReceive)
+                .put("canManualDownload", info.permissions.canManualDownload)
+                .put("canManageSpace", info.permissions.canManageSpace)
+                .put("canCreateInvite", info.permissions.canCreateInvite)
+                .put("autoUploadScope", info.permissions.autoUploadScope)
+                .put("autoReceiveScope", info.permissions.autoReceiveScope)
+                .toString()
+            secureSettings.saveBinding(
+                serverBaseUrl = settings.serverBaseUrl,
+                deviceId = info.device.id,
+                deviceToken = token,
+                deviceName = info.device.name,
+                boundUserId = info.user.id,
+                boundOwnerUserId = info.user.ownerUserId,
+                boundUserDisplayName = info.user.displayName ?: "",
+                boundUserRole = info.user.role,
+                lastKnownDeviceProfile = info.profile,
+                lastKnownPermissionsJson = permissionsJson,
+            )
+            settings = secureSettings.settings.value
+        } catch (err: ApiException) {
+            if (err.statusCode == 401 || err.statusCode == 403) {
+                secureSettings.clearBinding()
+                markFailed(taskId, task.sha256, task.fileSize, "Device authorization was revoked")
+                return UploadExecutionResult.Failure
+            }
+            // Temporary server failures fall back to the last known permission snapshot.
+        } catch (_: Exception) {
+            // Network unavailable: keep the queued task governed by cached permissions.
+        }
+        val serverAllowsUpload = if (task.sourceKind == "manual_share") {
+            settings.serverAllowsManualUpload()
+        } else {
+            settings.serverAllowsAutoUpload()
+        }
+        if (!serverAllowsUpload) {
+            markFailed(taskId, task.sha256, task.fileSize, "Server permission does not allow this upload")
             return UploadExecutionResult.Failure
         }
 

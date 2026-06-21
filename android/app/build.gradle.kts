@@ -12,8 +12,8 @@ android {
         applicationId = "com.studyshot.relay"
         minSdk = 26
         targetSdk = 34
-        versionCode = 7
-        versionName = "0.4.3"
+        versionCode = 8
+        versionName = "0.5.0"
 
         vectorDrawables {
             useSupportLibrary = true

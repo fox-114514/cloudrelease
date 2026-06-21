@@ -290,11 +290,8 @@
 - Linux 客户端构建通过；
 - Android `:app:compileDebugKotlin --offline` 通过；
 - `git diff --check` 通过；
+- 后端 `npm test` 已在隔离数据库 `localhost:55432/studyshot_test` 上通过：5 项单元测试、88 项集成测试；
 - 静态追踪了用户/设备鉴权、绑定码、设备注册、上传、下载、投递、图库和管理路由。
-
-未完成：
-
-- 后端 40 个 Vitest 集成测试未实际执行到断言，因为本机 `localhost:55432` 没有测试 PostgreSQL；尝试启动项目 Docker 数据库时，本机没有 `postgres:16-alpine` 镜像，Docker Hub 访问超时。
 
 现有测试覆盖：
 

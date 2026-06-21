@@ -129,6 +129,7 @@ fun SettingsScreen(
 
 private fun uploadSummary(settings: com.studyshot.relay.data.AppSettings): String {
     return when {
+        !settings.serverAllowsAutoUpload() -> "服务端未允许"
         !settings.autoUploadEnabled -> "关闭"
         settings.realtimeModeEnabled -> "实时监听 · ${if (settings.wifiOnly) "仅 Wi-Fi" else "蜂窝数据也上传"}"
         else -> "省电扫描 · ${if (settings.autoUploadScope == "selected_album") "${settings.selectedAlbumPaths.size} 个图集" else "仅截图"}"
@@ -138,6 +139,7 @@ private fun uploadSummary(settings: com.studyshot.relay.data.AppSettings): Strin
 private fun receiveSummary(settings: com.studyshot.relay.data.AppSettings): String {
     return when {
         !settings.deviceTokenAvailable -> "未绑定"
+        !settings.serverAllowsAutoReceive() -> "服务端未允许"
         !settings.autoReceiveEnabled -> "关闭"
         settings.saveDownloadsToGallery -> "下载到相册"
         settings.downloadNotificationEnabled -> "下载后通知"

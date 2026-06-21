@@ -55,6 +55,16 @@ const ADMIN_HTML = String.raw`<!doctype html>
       .nav { display: grid; gap: 8px; }
       .nav button { width: 100%; text-align: left; background: transparent; color: #33404d; border: 1px solid transparent; justify-content: flex-start; }
       .nav button.active { background: #fff; border-color: var(--line); box-shadow: var(--shadow); }
+      .nav .role-tag {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 6px;
+        border-radius: 999px;
+        background: #e7edf2;
+        color: #2f3d49;
+        font-size: 11px;
+        font-weight: 700;
+      }
       .content { min-width: 0; padding: 24px 28px 32px; overflow: auto; }
       .topbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 18px; }
       .topbar h2 { margin: 0; font-size: 22px; }
@@ -74,6 +84,8 @@ const ADMIN_HTML = String.raw`<!doctype html>
       .metric strong { display: block; margin-top: 10px; font-size: 22px; overflow-wrap: anywhere; }
       .card { padding: 16px; margin-bottom: 14px; }
       .card h3 { margin: 0 0 12px; font-size: 17px; }
+      .card details { margin-top: 8px; }
+      .card details summary { cursor: pointer; color: var(--accent-2); font-weight: 700; }
       .form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: end; }
       .form-grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .field label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 12px; font-weight: 650; }
@@ -90,6 +102,7 @@ const ADMIN_HTML = String.raw`<!doctype html>
       .pill { display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; border-radius: 999px; background: #e7edf2; color: #2f3d49; font-size: 12px; font-weight: 700; }
       .pill.ok { background: #dcefe9; color: #0b5f53; }
       .pill.bad { background: #f4dfdf; color: var(--danger); }
+      .pill.admin { background: #fde9c2; color: #6b4514; }
       .permission-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; min-width: 260px; }
       .toggle { display: flex; align-items: center; gap: 7px; white-space: nowrap; }
       .toggle input { width: 16px; height: 16px; }
@@ -98,6 +111,18 @@ const ADMIN_HTML = String.raw`<!doctype html>
       .login-panel { max-width: 720px; margin: 48px auto; }
       .hidden { display: none !important; }
       .audit-meta { max-width: 360px; white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+      .source-list { display: grid; gap: 6px; margin-top: 6px; max-height: 180px; overflow: auto; }
+      .source-list label { display: flex; gap: 6px; align-items: center; font-size: 13px; }
+      .bind-target { font-weight: 700; color: var(--accent); }
+      .profile-card { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+      .profile-card button { background: #e8edf1; color: #26313c; border: 1px solid var(--line); text-align: left; padding: 10px 12px; min-height: 0; }
+      .profile-card button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+      .profile-card button strong { display: block; margin-bottom: 4px; }
+      .profile-card button span { font-size: 12px; opacity: 0.85; }
+      .cross-warn { background: #fff5e6; border: 1px solid #edd6a8; color: var(--warning); padding: 10px 12px; border-radius: 8px; font-size: 13px; }
+      .group-banner { background: #f1f5f8; border: 1px dashed var(--line); padding: 10px 12px; border-radius: 8px; color: var(--muted); font-size: 12px; }
+      .identity-banner { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; padding: 10px 14px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); }
+      .identity-banner span { font-size: 13px; }
       .image-grid {
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
@@ -305,11 +330,11 @@ const ADMIN_HTML = String.raw`<!doctype html>
         </div>
         <nav class="nav" aria-label="管理导航">
           <button class="active" data-view="dashboard">概览</button>
-          <button data-view="devices">设备</button>
-          <button data-view="users">用户</button>
-          <button data-view="groups">分组</button>
-          <button data-view="images">图片</button>
-          <button data-view="audit">审计</button>
+          <button data-view="devices" data-requires="any">设备</button>
+          <button data-view="users" data-requires="owner">成员</button>
+          <button data-view="groups" data-requires="owner">分组</button>
+          <button data-view="images" data-requires="any">图片</button>
+          <button data-view="audit" data-requires="owner">审计</button>
         </nav>
       </aside>
       <section class="content">
@@ -321,6 +346,7 @@ const ADMIN_HTML = String.raw`<!doctype html>
             <button class="secondary" id="logoutBtn">退出</button>
           </div>
         </div>
+        <div id="identityBanner" class="identity-banner hidden"></div>
         <div id="message" class="message hidden"></div>
 
         <div id="imageModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="图片预览">
@@ -356,16 +382,17 @@ const ADMIN_HTML = String.raw`<!doctype html>
         <section id="appPanel" class="hidden">
           <section id="view-dashboard" class="view active">
             <div class="grid metrics">
-              <div class="metric"><span>用户</span><strong id="metricUsers">-</strong></div>
+              <div class="metric"><span>成员</span><strong id="metricUsers">-</strong></div>
               <div class="metric"><span>设备</span><strong id="metricDevices">-</strong></div>
               <div class="metric"><span>有效设备</span><strong id="metricActiveDevices">-</strong></div>
               <div class="metric"><span>分组</span><strong id="metricGroups">-</strong></div>
             </div>
-            <div class="card">
+            <div class="card" id="quickBindCard">
               <h3>快速创建绑定码</h3>
+              <p class="session">绑定码归属必须显式选择目标成员,避免误绑。</p>
               <div class="form-grid">
                 <div class="field">
-                  <label>目标用户</label>
+                  <label>目标成员</label>
                   <select id="quickBindUser"></select>
                 </div>
                 <div class="field">
@@ -377,15 +404,23 @@ const ADMIN_HTML = String.raw`<!doctype html>
                 </div>
               </div>
             </div>
+            <div class="card" id="quickSelfBindCard">
+              <h3>给自己绑定一台设备</h3>
+              <p class="session">使用您当前的账号生成一个绑定码,新设备将归属您的成员身份。</p>
+              <div class="actions">
+                <button id="quickSelfBindBtn">生成我的绑定码</button>
+              </div>
+            </div>
             <div id="recentAudit"></div>
           </section>
 
           <section id="view-devices" class="view">
-            <div class="card">
-              <h3>创建设备绑定码</h3>
+            <div class="card" id="createBindCard">
+              <h3>为指定成员创建设备绑定码</h3>
+              <p class="session">新设备将绑定到所选成员名下,绑定码生成后会显示目标成员。</p>
               <div class="form-grid">
                 <div class="field">
-                  <label>目标用户</label>
+                  <label>目标成员</label>
                   <select id="bindUserSelect"></select>
                 </div>
                 <div class="field">
@@ -397,23 +432,31 @@ const ADMIN_HTML = String.raw`<!doctype html>
                 </div>
               </div>
             </div>
-            <div class="table-wrap"><table><thead><tr><th>设备</th><th>用户</th><th>状态</th><th>权限</th><th>范围</th><th>操作</th></tr></thead><tbody id="deviceRows"></tbody></table></div>
+            <div class="card" id="createSelfBindCard">
+              <h3>给自己绑定一台设备</h3>
+              <p class="session">将生成一个仅绑定您本人的一次性绑定码。</p>
+              <div class="actions">
+                <button id="createSelfBindBtn">生成我的绑定码</button>
+              </div>
+            </div>
+            <div class="table-wrap"><table><thead><tr><th>设备</th><th>成员</th><th>状态</th><th>用途预设</th><th>权限</th><th>范围</th><th>操作</th></tr></thead><tbody id="deviceRows"></tbody></table></div>
           </section>
 
           <section id="view-users" class="view">
             <div class="card">
-              <h3>创建子用户</h3>
+              <h3>创建成员</h3>
               <div class="form-grid">
                 <div class="field"><label>登录名</label><input id="newUserLogin" /></div>
                 <div class="field"><label>显示名</label><input id="newUserName" /></div>
                 <div class="field"><label>密码</label><input id="newUserPassword" type="password" /></div>
-                <div class="actions"><button id="createUserBtn">创建用户</button></div>
+                <div class="actions"><button id="createUserBtn">创建成员</button></div>
               </div>
             </div>
-            <div class="table-wrap"><table><thead><tr><th>用户</th><th>角色</th><th>设备数</th><th>状态</th><th>操作</th></tr></thead><tbody id="userRows"></tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th>成员</th><th>角色</th><th>设备数</th><th>状态</th><th>操作</th></tr></thead><tbody id="userRows"></tbody></table></div>
           </section>
 
           <section id="view-groups" class="view">
+            <div class="group-banner">分组当前仅作组织标签,不影响图片共享或投递规则。本期不提供按分组的共享策略。</div>
             <div class="card">
               <h3>创建分组</h3>
               <div class="form-grid two">
@@ -449,6 +492,12 @@ const ADMIN_HTML = String.raw`<!doctype html>
                     <option value="month">最近 30 天</option>
                   </select>
                 </div>
+                <div class="field" id="imageUserFilterField">
+                  <label>按成员筛选</label>
+                  <select id="imageUserFilter">
+                    <option value="">全部成员</option>
+                  </select>
+                </div>
                 <div class="field">
                   <label>&nbsp;</label>
                   <div class="actions">
@@ -476,6 +525,46 @@ const ADMIN_HTML = String.raw`<!doctype html>
     </main>
 
     <script>
+      const ROLE_LABELS = { owner: "空间管理员", child: "成员" };
+      const ROLE_BADGE_CLASS = { owner: "pill admin", child: "pill" };
+      const PROFILE_LABELS = {
+        manual_only: "只手动分享",
+        upload_only: "只上传截图",
+        receive_own: "只接收我的图片",
+        sync_own: "我的设备双向同步",
+        custom: "自定义(高级)",
+      };
+      const PROFILE_DESCRIPTIONS = {
+        manual_only: "可手动分享图片到空间,不自动上传或接收。",
+        upload_only: "把本设备的截图自动发到空间,不自动接收。",
+        receive_own: "接收我名下其他设备上传的图片,不自动上传。",
+        sync_own: "自动上传本设备的截图,并接收我名下其他设备上传的图片。",
+      };
+      const UPLOAD_SCOPE_LABELS = {
+        screenshot_only: "仅截图",
+        selected_album: "选定相册",
+        manual_share_only: "仅手动分享",
+        all_images: "全部图片",
+      };
+      const RECEIVE_SCOPE_LABELS = {
+        disabled: "不接收",
+        same_user_only: "仅接收我的设备",
+        selected_devices: "接收指定设备",
+        all_authorized_sources: "接收空间全部设备",
+      };
+      const RECEIVE_SCOPE_WARNINGS = {
+        all_authorized_sources: "此选项会让本设备收到其他成员上传的图片,请确认你接受跨成员共享。",
+        selected_devices: "请在下方至少勾选一个来源设备,否则本设备将收不到任何图片。",
+      };
+      const PERMISSION_LABELS = {
+        canAutoUpload: "自动上传",
+        canManualUpload: "手动上传",
+        canAutoReceive: "自动接收",
+        canManualDownload: "手动下载",
+        canManageSpace: "管理空间(高级)",
+        canCreateInvite: "从此设备添加我的其他设备",
+      };
+
       const state = {
         token: localStorage.getItem("studyshot_admin_token") || "",
         user: JSON.parse(localStorage.getItem("studyshot_admin_user") || "null"),
@@ -486,6 +575,7 @@ const ADMIN_HTML = String.raw`<!doctype html>
         images: [],
         imageCursor: null,
         imageFilter: "all",
+        imageUserFilter: "",
         imageLoaded: false,
         previewBlobUrls: {},
         selectMode: false,
@@ -493,17 +583,11 @@ const ADMIN_HTML = String.raw`<!doctype html>
       };
 
       const $ = (id) => document.getElementById(id);
-      const titleMap = { dashboard: "概览", devices: "设备", users: "用户", groups: "分组", images: "图片库", audit: "审计" };
-      const permissionLabels = {
-        canAutoUpload: "自动上传",
-        canManualUpload: "手动上传",
-        canAutoReceive: "自动接收",
-        canManualDownload: "手动下载",
-        canManageSpace: "管理空间",
-        canCreateInvite: "创建邀请"
-      };
-      const uploadScopes = ["screenshot_only", "selected_album", "manual_share_only", "all_images"];
-      const receiveScopes = ["disabled", "all_authorized_sources", "same_user_only", "selected_devices"];
+      const titleMap = { dashboard: "概览", devices: "设备", users: "成员", groups: "分组", images: "图片库", audit: "审计" };
+
+      function isOwner() {
+        return Boolean(state.user) && state.user.role === "owner";
+      }
 
       function escapeHtml(value) {
         return String(value == null ? "" : value).replace(/[&<>"']/g, (ch) => ({
@@ -537,6 +621,44 @@ const ADMIN_HTML = String.raw`<!doctype html>
         return body.data || {};
       }
 
+      function renderIdentityBanner() {
+        const banner = $("identityBanner");
+        if (!state.user) {
+          banner.classList.add("hidden");
+          banner.innerHTML = "";
+          return;
+        }
+        const roleLabel = ROLE_LABELS[state.user.role] || state.user.role;
+        banner.classList.remove("hidden");
+        banner.innerHTML =
+          '<span>当前身份:<strong>' + escapeHtml(state.user.displayName || state.user.emailOrLogin) + '</strong></span>' +
+          '<span class="pill ' + (ROLE_BADGE_CLASS[state.user.role] || "pill") + '">' + escapeHtml(roleLabel) + '</span>' +
+          '<span class="session">空间:' + escapeHtml(state.user.ownerUserId.slice(0, 8)) + '…</span>';
+      }
+
+      function applyRoleVisibility() {
+        const owner = isOwner();
+        document.querySelectorAll(".nav button[data-view]").forEach((btn) => {
+          const requires = btn.dataset.requires;
+          if (requires === "owner" && !owner) {
+            btn.classList.add("hidden");
+          } else {
+            btn.classList.remove("hidden");
+          }
+        });
+
+        // Card-level visibility based on role.
+        const ownerOnlyCards = ["quickBindCard", "createBindCard"];
+        ownerOnlyCards.forEach((id) => {
+          const el = $(id);
+          if (el) el.classList.toggle("hidden", !owner);
+        });
+
+        // The "by member" image filter only matters for owners.
+        const userFilterField = $("imageUserFilterField");
+        if (userFilterField) userFilterField.classList.toggle("hidden", !owner);
+      }
+
       function setSession() {
         const loggedIn = Boolean(state.token);
         $("loginPanel").classList.toggle("hidden", loggedIn);
@@ -544,8 +666,10 @@ const ADMIN_HTML = String.raw`<!doctype html>
         $("refreshBtn").disabled = !loggedIn;
         $("logoutBtn").disabled = !loggedIn;
         $("sessionText").textContent = state.user
-          ? (state.user.emailOrLogin + " · " + state.user.role)
+          ? (state.user.emailOrLogin + " · " + (ROLE_LABELS[state.user.role] || state.user.role))
           : "未登录";
+        renderIdentityBanner();
+        applyRoleVisibility();
       }
 
       async function login() {
@@ -591,14 +715,16 @@ const ADMIN_HTML = String.raw`<!doctype html>
       async function refreshAll() {
         if (!state.token) return;
         showMessage("", "ok");
-        const results = await Promise.all([
-          api("/users"),
+        const owner = isOwner();
+        const requests = [
           api("/devices"),
-          api("/groups"),
-          api("/audit-logs?limit=50")
-        ]);
-        state.users = results[0].users || [];
-        state.devices = results[1].devices || [];
+          owner ? api("/users") : Promise.resolve({ users: [] }),
+          owner ? api("/groups") : Promise.resolve({ groups: [] }),
+          owner ? api("/audit-logs?limit=50") : Promise.resolve({ logs: [] }),
+        ];
+        const results = await Promise.all(requests);
+        state.devices = results[0].devices || [];
+        state.users = results[1].users || [];
         state.groups = results[2].groups || [];
         state.logs = results[3].logs || [];
         renderAll();
@@ -608,53 +734,125 @@ const ADMIN_HTML = String.raw`<!doctype html>
         renderMetrics();
         renderUserSelects();
         renderDevices();
-        renderUsers();
-        renderGroups();
-        renderAudit();
+        if (isOwner()) {
+          renderUsers();
+          renderGroups();
+          renderAudit();
+        } else {
+          $("userRows").innerHTML = "";
+          $("groupRows").innerHTML = "";
+          $("auditRows").innerHTML = "";
+        }
       }
 
       function renderMetrics() {
-        $("metricUsers").textContent = state.users.length;
+        $("metricUsers").textContent = isOwner() ? state.users.length : "—";
         $("metricDevices").textContent = state.devices.length;
         $("metricActiveDevices").textContent = state.devices.filter((d) => !d.revokedAt).length;
-        $("metricGroups").textContent = state.groups.length;
-        $("recentAudit").innerHTML = '<div class="card"><h3>最近审计</h3>' + auditTable(state.logs.slice(0, 5)) + '</div>';
+        $("metricGroups").textContent = isOwner() ? state.groups.length : "—";
+        $("recentAudit").innerHTML = isOwner()
+          ? '<div class="card"><h3>最近审计</h3>' + auditTable(state.logs.slice(0, 5)) + '</div>'
+          : "";
       }
 
       function renderUserSelects() {
-        const options = state.users.map((u) => '<option value="' + escapeHtml(u.id) + '">' + escapeHtml(u.displayName || u.emailOrLogin) + " · " + escapeHtml(u.role) + '</option>').join("");
-        $("bindUserSelect").innerHTML = options;
-        $("quickBindUser").innerHTML = options;
+        const me = state.user ? state.user.id : null;
+        const list = isOwner() ? state.users : state.users.filter((u) => u.id === me);
+        const options = list.map((u) => {
+          const role = ROLE_LABELS[u.role] || u.role;
+          return '<option value="' + escapeHtml(u.id) + '">' + escapeHtml(u.displayName || u.emailOrLogin) + " · " + escapeHtml(role) + '</option>';
+        }).join("");
+        if ($("bindUserSelect")) $("bindUserSelect").innerHTML = options;
+        if ($("quickBindUser")) $("quickBindUser").innerHTML = options;
+
+        const imageUserFilter = $("imageUserFilter");
+        if (imageUserFilter) {
+          imageUserFilter.innerHTML =
+            '<option value="">全部成员</option>' +
+            state.users.map((u) =>
+              '<option value="' + escapeHtml(u.id) + '">' + escapeHtml(u.displayName || u.emailOrLogin) + '</option>'
+            ).join("");
+          imageUserFilter.value = state.imageUserFilter;
+        }
       }
 
       function renderDevices() {
         $("deviceRows").innerHTML = state.devices.map((device) => {
           const revoked = Boolean(device.revokedAt);
-          const permissionHtml = Object.keys(permissionLabels).map((key) => {
-            return '<label class="toggle"><input type="checkbox" data-action="perm" data-device="' + escapeHtml(device.id) + '" data-key="' + key + '"' + (device.permissions && device.permissions[key] ? " checked" : "") + (revoked ? " disabled" : "") + '><span>' + permissionLabels[key] + '</span></label>';
-          }).join("");
-          const uploadOptions = uploadScopes.map((scope) => '<option value="' + scope + '"' + (device.permissions && device.permissions.autoUploadScope === scope ? " selected" : "") + ">" + scope + "</option>").join("");
-          const receiveOptions = receiveScopes.map((scope) => '<option value="' + scope + '"' + (device.permissions && device.permissions.autoReceiveScope === scope ? " selected" : "") + ">" + scope + "</option>").join("");
+          const profile = device.profile || "custom";
+          const profileLabel = PROFILE_LABELS[profile] || profile;
+
+          const permissionHtml = isOwner()
+            ? Object.keys(PERMISSION_LABELS).map((key) => {
+                return '<label class="toggle"><input type="checkbox" data-action="perm" data-device="' + escapeHtml(device.id) + '" data-key="' + key + '"' + (device.permissions && device.permissions[key] ? " checked" : "") + (revoked ? " disabled" : "") + '><span>' + PERMISSION_LABELS[key] + '</span></label>';
+              }).join("")
+            : '<span class="session">成员只能使用安全用途预设；高级权限由空间管理员设置。</span>';
+          const uploadOptions = Object.keys(UPLOAD_SCOPE_LABELS).map((scope) =>
+            '<option value="' + scope + '"' + (device.permissions && device.permissions.autoUploadScope === scope ? " selected" : "") + ">" + UPLOAD_SCOPE_LABELS[scope] + "</option>"
+          ).join("");
+          const receiveOptions = Object.keys(RECEIVE_SCOPE_LABELS).filter((scope) => isOwner() || scope !== "all_authorized_sources").map((scope) =>
+            '<option value="' + scope + '"' + (device.permissions && device.permissions.autoReceiveScope === scope ? " selected" : "") + ">" + RECEIVE_SCOPE_LABELS[scope] + "</option>"
+          ).join("");
+
           return '<tr>' +
             '<td><strong>' + escapeHtml(device.name) + '</strong><br><span class="session">' + escapeHtml(device.platform) + " · " + escapeHtml(device.id) + '</span></td>' +
-            '<td>' + escapeHtml(device.userDisplayName || device.userId) + '</td>' +
+            '<td>' + escapeHtml(device.userDisplayName || device.userId) + '<br><span class="session">' + escapeHtml(ROLE_LABELS[device.userRole] || device.userRole) + '</span></td>' +
             '<td>' + (revoked ? '<span class="pill bad">已撤销</span>' : '<span class="pill ok">有效</span>') + '<br><span class="session">上次在线：' + fmt(device.lastSeenAt) + '</span></td>' +
+            '<td><div class="profile-card" data-device="' + escapeHtml(device.id) + '">' +
+              ['manual_only', 'upload_only', 'receive_own', 'sync_own'].map((p) =>
+                '<button data-action="profile" data-device="' + escapeHtml(device.id) + '" data-profile="' + p + '"' +
+                (profile === p ? ' class="active"' : '') + (revoked ? ' disabled' : '') +
+                '><strong>' + PROFILE_LABELS[p] + '</strong><span>' + (PROFILE_DESCRIPTIONS[p] || "高级自定义") + '</span></button>'
+              ).join("") +
+              (profile === "custom" ? '<div class="session">当前为自定义高级配置。选择上方任一预设即可安全重置运行权限。</div>' : '') +
+            '</div></td>' +
             '<td><div class="permission-grid">' + permissionHtml + '</div></td>' +
-            '<td><div class="scope-grid"><select data-action="scope" data-device="' + escapeHtml(device.id) + '" data-key="autoUploadScope"' + (revoked ? " disabled" : "") + '>' + uploadOptions + '</select><select data-action="scope" data-device="' + escapeHtml(device.id) + '" data-key="autoReceiveScope"' + (revoked ? " disabled" : "") + '>' + receiveOptions + '</select></div></td>' +
+            '<td><div class="scope-grid">' +
+              (isOwner() ? '<select data-action="scope" data-device="' + escapeHtml(device.id) + '" data-key="autoUploadScope"' + (revoked ? " disabled" : "") + '>' + uploadOptions + '</select>' : '') +
+              '<select data-action="receive-config" data-device="' + escapeHtml(device.id) + '"' + (revoked ? " disabled" : "") + '>' + receiveOptions + '</select>' +
+              '<div data-source-list="' + escapeHtml(device.id) + '" class="source-list hidden"></div>' +
+            '</div></td>' +
             '<td><div class="actions"><input class="small-input" value="' + escapeHtml(device.name) + '" data-name-input="' + escapeHtml(device.id) + '"' + (revoked ? " disabled" : "") + '><button class="secondary" data-action="rename" data-device="' + escapeHtml(device.id) + '"' + (revoked ? " disabled" : "") + '>改名</button>' + (revoked ? '<button class="danger" data-action="delete-device" data-device="' + escapeHtml(device.id) + '">删除</button>' : '<button class="danger" data-action="revoke" data-device="' + escapeHtml(device.id) + '">撤销</button>') + '</div></td>' +
             '</tr>';
         }).join("");
+
+        // After rendering, render source pickers for selected_devices rows.
+        state.devices.forEach((d) => {
+          const list = document.querySelector('[data-source-list="' + CSS.escape(d.id) + '"]');
+          if (!list) return;
+          if (d.permissions && d.permissions.autoReceiveScope === "selected_devices") {
+            renderSourceList(d, list);
+          } else {
+            list.classList.add("hidden");
+          }
+        });
+      }
+
+      function renderSourceList(device, container) {
+        const sameUser = state.devices.filter((d) => d.id !== device.id && !d.revokedAt && d.userId === device.userId);
+        const candidates = isOwner() ? state.devices.filter((d) => d.id !== device.id && !d.revokedAt) : sameUser;
+        if (candidates.length === 0) {
+          container.innerHTML = '<span class="session">当前成员名下没有可作为来源的设备。</span>';
+          container.classList.remove("hidden");
+          return;
+        }
+        const selected = new Set(device.receiveSourceDeviceIds || []);
+        container.innerHTML = candidates.map((d) => {
+          return '<label><input type="checkbox" data-action="source" data-target="' + escapeHtml(device.id) + '" data-source="' + escapeHtml(d.id) + '"' + (selected.has(d.id) ? ' checked' : '') + '><span>' + escapeHtml(d.name) + (d.userId !== device.userId ? " (" + escapeHtml(d.userDisplayName || d.userId) + ")" : "") + '</span></label>';
+        }).join("");
+        container.classList.remove("hidden");
       }
 
       function renderUsers() {
         $("userRows").innerHTML = state.users.map((user) => {
           const disabled = Boolean(user.disabledAt);
+          const role = ROLE_LABELS[user.role] || user.role;
           return '<tr>' +
             '<td><strong>' + escapeHtml(user.displayName || "-") + '</strong><br><span class="session">' + escapeHtml(user.emailOrLogin) + " · " + escapeHtml(user.id) + '</span></td>' +
-            '<td><span class="pill">' + escapeHtml(user.role) + '</span></td>' +
+            '<td><span class="' + (ROLE_BADGE_CLASS[user.role] || "pill") + '">' + escapeHtml(role) + '</span></td>' +
             '<td>' + escapeHtml(user.deviceCount) + '</td>' +
             '<td>' + (disabled ? '<span class="pill bad">已禁用</span>' : '<span class="pill ok">正常</span>') + '</td>' +
-            '<td><div class="actions"><input class="small-input" value="' + escapeHtml(user.displayName || "") + '" data-user-name="' + escapeHtml(user.id) + '"><button class="secondary" data-action="user-name" data-user="' + escapeHtml(user.id) + '">保存名称</button><button class="secondary" data-action="user-toggle" data-user="' + escapeHtml(user.id) + '" data-disabled="' + (!disabled) + '"' + (user.role === "owner" ? " disabled" : "") + '>' + (disabled ? "启用" : "禁用") + '</button></div></td>' +
+            '<td><div class="actions"><input class="small-input" value="' + escapeHtml(user.displayName || "") + '" data-user-name="' + escapeHtml(user.id) + '"><button class="secondary" data-action="user-name" data-user="' + escapeHtml(user.id) + '">保存名称</button>' + (user.role === "owner" ? "" : '<button class="secondary" data-action="user-toggle" data-user="' + escapeHtml(user.id) + '" data-disabled="' + (!disabled) + '">' + (disabled ? "启用" : "禁用") + '</button>') + '</div></td>' +
             '</tr>';
         }).join("");
       }
@@ -702,16 +900,50 @@ const ADMIN_HTML = String.raw`<!doctype html>
       }
 
       async function createBindCode(userSelectId, hintInputId) {
+        const userId = $(userSelectId).value;
         const data = await api("/bind-codes", {
           method: "POST",
           body: JSON.stringify({
             purpose: "bind_device",
-            userId: $(userSelectId).value || undefined,
+            userId,
             deviceNameHint: $(hintInputId).value || undefined,
             expiresInSeconds: 600
           })
         });
-        showMessage("绑定码：" + data.bindCode + "，有效期至 " + fmt(data.expiresAt), "ok");
+        const target = data.targetUser || {};
+        showMessage(
+          "绑定码 " + data.bindCode + " 将绑定到 " + (target.displayName || target.id || "目标成员") +
+          " · 有效期至 " + fmt(data.expiresAt),
+          "ok"
+        );
+      }
+
+      async function createSelfBindCode() {
+        if (!state.user) return;
+        const data = await api("/bind-codes", {
+          method: "POST",
+          body: JSON.stringify({ purpose: "bind_device", expiresInSeconds: 600 })
+        });
+        const target = data.targetUser || {};
+        showMessage(
+          "绑定码 " + data.bindCode + " 将绑定到您本人(" + (target.displayName || target.id) +
+          ") · 有效期至 " + fmt(data.expiresAt),
+          "ok"
+        );
+      }
+
+      async function setDeviceProfile(deviceId, profile) {
+        await api("/devices/" + deviceId + "/profile", {
+          method: "PATCH",
+          body: JSON.stringify({ profile }),
+        });
+      }
+
+      async function setReceiveConfig(deviceId, mode, sourceDeviceIds) {
+        return api("/devices/" + deviceId + "/receive-config", {
+          method: "PUT",
+          body: JSON.stringify({ mode, sourceDeviceIds }),
+        });
       }
 
       async function createUser() {
@@ -724,7 +956,7 @@ const ADMIN_HTML = String.raw`<!doctype html>
           })
         });
         $("newUserPassword").value = "";
-        showMessage("用户已创建", "ok");
+        showMessage("成员已创建", "ok");
         await refreshAll();
       }
 
@@ -738,6 +970,7 @@ const ADMIN_HTML = String.raw`<!doctype html>
       document.querySelector(".nav").addEventListener("click", (event) => {
         const button = event.target.closest("button[data-view]");
         if (!button) return;
+        if (button.classList.contains("hidden")) return;
         document.querySelectorAll(".nav button").forEach((b) => b.classList.remove("active"));
         document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
         button.classList.add("active");
@@ -766,6 +999,48 @@ const ADMIN_HTML = String.raw`<!doctype html>
             });
             await refreshAll();
           }
+          if (target.dataset.action === "receive-config") {
+            const deviceId = target.dataset.device;
+            const mode = target.value;
+            if (RECEIVE_SCOPE_WARNINGS[mode]) {
+              if (!confirm(RECEIVE_SCOPE_WARNINGS[mode] + "\n确认继续吗?")) {
+                await refreshAll();
+                return;
+              }
+            }
+            let sourceDeviceIds = [];
+            if (mode === "selected_devices") {
+              const device = state.devices.find((item) => item.id === deviceId);
+              const container = document.querySelector('[data-source-list="' + CSS.escape(deviceId) + '"]');
+              if (device && container) renderSourceList(device, container);
+              const list = document.querySelectorAll('input[data-action="source"][data-target="' + CSS.escape(deviceId) + '"]:checked');
+              sourceDeviceIds = Array.from(list).map((el) => el.dataset.source);
+              if (sourceDeviceIds.length === 0) {
+                showMessage("请在下方勾选至少一个来源设备；勾选后会立即保存。", "warn");
+                return;
+              }
+            }
+            await setReceiveConfig(deviceId, mode, sourceDeviceIds);
+            await refreshAll();
+          }
+          if (target.dataset.action === "source") {
+            const targetId = target.dataset.target;
+            const sourceIds = Array.from(document.querySelectorAll('input[data-action="source"][data-target="' + CSS.escape(targetId) + '"]:checked'))
+              .map((el) => el.dataset.source);
+            if (sourceIds.length === 0) {
+              showMessage("至少保留一个来源设备；如需停止接收，请选择“不接收”。", "warn");
+              await refreshAll();
+              return;
+            }
+            try {
+              await setReceiveConfig(targetId, "selected_devices", sourceIds);
+              showMessage("来源已更新", "ok");
+              await refreshAll();
+            } catch (err) {
+              showMessage(err.message || String(err), "error");
+              await refreshAll();
+            }
+          }
         } catch (err) {
           showMessage(err.message || String(err), "error");
           await refreshAll();
@@ -781,31 +1056,37 @@ const ADMIN_HTML = String.raw`<!doctype html>
           else if (target.id === "refreshBtn" || target.id === "refreshAuditBtn") await refreshAll();
           else if (target.id === "quickBindBtn") await createBindCode("quickBindUser", "quickBindHint");
           else if (target.id === "createBindBtn") await createBindCode("bindUserSelect", "bindDeviceHint");
+          else if (target.id === "quickSelfBindBtn" || target.id === "createSelfBindBtn") await createSelfBindCode();
           else if (target.id === "createUserBtn") await createUser();
           else if (target.id === "createGroupBtn") await createGroup();
+          else if (target.dataset.action === "profile") {
+            await setDeviceProfile(target.dataset.device, target.dataset.profile);
+            showMessage("设备用途已更新", "ok");
+            await refreshAll();
+          }
           else if (target.dataset.action === "rename") {
             const input = document.querySelector('[data-name-input="' + CSS.escape(target.dataset.device) + '"]');
             await api("/devices/" + target.dataset.device, { method: "PATCH", body: JSON.stringify({ name: input.value }) });
             showMessage("设备名称已保存", "ok");
             await refreshAll();
           } else if (target.dataset.action === "revoke") {
-            if (!confirm("确认撤销该设备？")) return;
+            if (!confirm("确认撤销该设备?")) return;
             await api("/devices/" + target.dataset.device + "/revoke", { method: "POST" });
             showMessage("设备已撤销", "ok");
             await refreshAll();
           } else if (target.dataset.action === "delete-device") {
-            if (!confirm("确认删除这个已撤销设备？历史图片和审计记录会保留。")) return;
+            if (!confirm("确认删除这个已撤销设备?历史图片和审计记录会保留。")) return;
             await api("/devices/" + target.dataset.device, { method: "DELETE" });
             showMessage("已删除撤销设备", "ok");
             await refreshAll();
           } else if (target.dataset.action === "user-name") {
             const input = document.querySelector('[data-user-name="' + CSS.escape(target.dataset.user) + '"]');
             await api("/users/" + target.dataset.user, { method: "PATCH", body: JSON.stringify({ displayName: input.value }) });
-            showMessage("用户名称已保存", "ok");
+            showMessage("成员名称已保存", "ok");
             await refreshAll();
           } else if (target.dataset.action === "user-toggle") {
             await api("/users/" + target.dataset.user, { method: "PATCH", body: JSON.stringify({ disabled: target.dataset.disabled === "true" }) });
-            showMessage("用户状态已更新", "ok");
+            showMessage("成员状态已更新", "ok");
             await refreshAll();
           } else if (target.dataset.action === "group-add") {
             const select = document.querySelector('[data-group-select="' + CSS.escape(target.dataset.group) + '"]');
@@ -869,7 +1150,6 @@ const ADMIN_HTML = String.raw`<!doctype html>
         }
         grid.innerHTML = state.images.map(buildCardHtml).join("");
         $("imageLoadMore").classList.toggle("hidden", !state.imageCursor);
-        // Lazy-load preview thumbnails; cached ones update DOM in place.
         state.images.forEach((img) => { loadImagePreview(img.id); });
         updateSelectionBar();
       }
@@ -888,7 +1168,6 @@ const ADMIN_HTML = String.raw`<!doctype html>
         const card = findCardPreview(imageId);
         const cachedUrl = state.previewBlobUrls[imageId];
         if (cachedUrl) {
-          // Restore DOM from cache without re-fetching.
           if (card && !card.querySelector("img")) {
             card.innerHTML = '<img src="' + cachedUrl + '" alt="预览" />';
           }
@@ -1001,6 +1280,9 @@ const ADMIN_HTML = String.raw`<!doctype html>
           const params = new URLSearchParams();
           params.set("limit", "50");
           params.set("filter", state.imageFilter);
+          if (isOwner() && state.imageUserFilter) {
+            params.set("userId", state.imageUserFilter);
+          }
           if (!reset && state.imageCursor) {
             params.set("before", state.imageCursor);
           }
@@ -1013,7 +1295,6 @@ const ADMIN_HTML = String.raw`<!doctype html>
                 revokePreview(id);
               }
             });
-            // Drop selected IDs that are no longer visible (e.g., deleted in another tab).
             state.selectedImageIds.forEach((id) => {
               if (!keep.has(id)) state.selectedImageIds.delete(id);
             });
@@ -1038,9 +1319,9 @@ const ADMIN_HTML = String.raw`<!doctype html>
           if (shouldBeSelected === isSelected) return;
           card.classList.toggle("is-selected", shouldBeSelected);
           const checkbox = card.querySelector(".image-card-checkbox");
-          if (checkbox) checkbox.textContent = shouldBeSelected ? "✓" : "";
+          if (checkbox) checkbox.textContent = shouldBeSelected ? '✓' : "";
           const hint = card.querySelector(".image-card-selected-hint");
-          if (hint) hint.textContent = shouldBeSelected ? "已选中" : "点击选中";
+          if (hint) hint.textContent = shouldBeSelected ? '已选中' : '点击选中';
         });
       }
 
@@ -1082,7 +1363,7 @@ const ADMIN_HTML = String.raw`<!doctype html>
       }
 
       async function deleteImage(imageId) {
-        if (!confirm("确认删除该图片？相关未完成的接收将被标记为过期，操作不可撤销。")) return;
+        if (!confirm("确认删除该图片?相关未完成的接收将被标记为过期,操作不可撤销。")) return;
         showMessage("", "ok");
         try {
           await api("/images/" + encodeURIComponent(imageId), { method: "DELETE" });
@@ -1102,7 +1383,7 @@ const ADMIN_HTML = String.raw`<!doctype html>
       async function deleteSelectedImages() {
         const ids = Array.from(state.selectedImageIds);
         if (!ids.length) return;
-        if (!confirm("确认删除所选 " + ids.length + " 张图片？操作不可撤销。")) return;
+        if (!confirm("确认删除所选 " + ids.length + " 张图片?操作不可撤销。")) return;
         showMessage("", "ok");
         const results = await Promise.allSettled(
           ids.map((id) => api("/images/" + encodeURIComponent(id), { method: "DELETE" }))
@@ -1124,8 +1405,6 @@ const ADMIN_HTML = String.raw`<!doctype html>
           removeCardFromDom(id);
         });
         failed.forEach((entry) => state.selectedImageIds.delete(entry.id));
-        // Reconcile DOM visual state with selectedImageIds so cards whose
-        // selection was just cleared no longer show as selected.
         syncSelectionVisual();
         showEmptyIfNeeded();
         updateSelectionBar();
@@ -1133,7 +1412,7 @@ const ADMIN_HTML = String.raw`<!doctype html>
         if (failed.length === 0) {
           msg = "已删除 " + succeeded.length + " 张图片";
         } else {
-          msg = "已删除 " + succeeded.length + " 张，失败 " + failed.length + " 张";
+          msg = "已删除 " + succeeded.length + " 张,失败 " + failed.length + " 张";
           console.error("Batch delete failures:", failed);
         }
         showMessage(msg, failed.length === 0 ? "ok" : "warn");
@@ -1167,6 +1446,13 @@ const ADMIN_HTML = String.raw`<!doctype html>
 
       $("imageFilter").addEventListener("change", (event) => {
         state.imageFilter = event.target.value;
+        state.imageCursor = null;
+        state.selectedImageIds.clear();
+        loadImages(true);
+      });
+
+      $("imageUserFilter").addEventListener("change", (event) => {
+        state.imageUserFilter = event.target.value;
         state.imageCursor = null;
         state.selectedImageIds.clear();
         loadImages(true);

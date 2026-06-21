@@ -82,6 +82,12 @@ fun UploadSettingsScreen(
                 onAction = onRequestPermission,
             )
         }
+        if (settings.deviceTokenAvailable && !settings.serverAllowsAutoUpload()) {
+            HelpCallout(
+                text = "服务端当前未允许本设备自动上传；本地开关不会启动监听。",
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+        }
 
         Spacer(Modifier.height(8.dp))
 
@@ -95,7 +101,7 @@ fun UploadSettingsScreen(
                     onCheckedChange = { state.saveUploadSettings(autoUploadEnabled = it) },
                 ),
                 isLast = false,
-                enabled = hasImagePermission,
+                enabled = hasImagePermission && settings.serverAllowsAutoUpload(),
             )
             SettingsRow(
                 icon = Icons.Outlined.Bolt,
@@ -106,7 +112,7 @@ fun UploadSettingsScreen(
                     onCheckedChange = { state.saveUploadSettings(realtimeModeEnabled = it) },
                 ),
                 isLast = false,
-                enabled = settings.autoUploadEnabled,
+                enabled = settings.autoUploadEnabled && settings.serverAllowsAutoUpload(),
             )
             SettingsRow(
                 icon = Icons.Outlined.Schedule,
@@ -119,7 +125,7 @@ fun UploadSettingsScreen(
                     },
                 ),
                 isLast = false,
-                enabled = settings.autoUploadEnabled,
+                enabled = settings.autoUploadEnabled && settings.serverAllowsAutoUpload(),
             )
             SettingsRow(
                 icon = Icons.Outlined.Wifi,

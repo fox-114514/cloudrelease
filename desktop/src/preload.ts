@@ -1,9 +1,11 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   AdminLoginInput,
+  BindCodePreview,
   CreateBindCodeInput,
-  CreateBindCodeResult,
   DevicePermissions,
+  DeviceProfile,
+  DeviceSelfInfo,
   ManualUploadResult,
   RegisterDeviceInput,
   RendererState,
@@ -14,8 +16,20 @@ const api = {
   getState: (): Promise<RendererState> => ipcRenderer.invoke("state:get"),
   registerDevice: (input: RegisterDeviceInput): Promise<RendererState> =>
     ipcRenderer.invoke("device:register", input),
-  createBindCodeWithLogin: (input: CreateBindCodeInput): Promise<CreateBindCodeResult> =>
-    ipcRenderer.invoke("bindCode:createWithLogin", input),
+  previewBindCode: (serverBaseUrl: string, bindCode: string): Promise<BindCodePreview> =>
+    ipcRenderer.invoke("bindCode:preview", serverBaseUrl, bindCode),
+  getDeviceMe: (): Promise<DeviceSelfInfo> => ipcRenderer.invoke("device:me"),
+  refreshEffectivePermissions: (): Promise<DeviceSelfInfo | undefined> =>
+    ipcRenderer.invoke("device:refreshPermissions"),
+  updateDeviceProfile: (profile: DeviceProfile): Promise<RendererState> =>
+    ipcRenderer.invoke("device:updateProfile", profile),
+  updateReceiveConfig: (
+    mode: "disabled" | "same_user_only" | "selected_devices" | "all_authorized_sources",
+    sourceDeviceIds: string[]
+  ): Promise<RendererState> =>
+    ipcRenderer.invoke("device:updateReceiveConfig", mode, sourceDeviceIds),
+  bindWithLogin: (input: CreateBindCodeInput): Promise<DeviceSelfInfo> =>
+    ipcRenderer.invoke("bind:login", input),
   saveSettings: (input: SaveSettingsInput): Promise<RendererState> =>
     ipcRenderer.invoke("settings:save", input),
   connect: (): Promise<RendererState> => ipcRenderer.invoke("connection:connect"),
@@ -42,6 +56,14 @@ const api = {
     deviceId: string,
     permissions: Partial<DevicePermissions>
   ): Promise<RendererState> => ipcRenderer.invoke("admin:updatePermissions", deviceId, permissions),
+  adminUpdateProfile: (deviceId: string, profile: DeviceProfile): Promise<RendererState> =>
+    ipcRenderer.invoke("admin:updateProfile", deviceId, profile),
+  adminUpdateReceiveConfig: (
+    deviceId: string,
+    mode: "disabled" | "same_user_only" | "selected_devices" | "all_authorized_sources",
+    sourceDeviceIds: string[],
+  ): Promise<RendererState> =>
+    ipcRenderer.invoke("admin:updateReceiveConfig", deviceId, mode, sourceDeviceIds),
   adminRenameDevice: (deviceId: string, name: string): Promise<RendererState> =>
     ipcRenderer.invoke("admin:renameDevice", deviceId, name),
   adminRevokeDevice: (deviceId: string): Promise<RendererState> =>

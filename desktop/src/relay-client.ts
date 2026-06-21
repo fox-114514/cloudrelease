@@ -12,10 +12,16 @@ import { logError, logInfo, logWarn } from "./logger";
 import type {
   AdminLoginInput,
   AdminState,
+  BindCodePreview,
+  BindCodeTargetUser,
+  BoundUserInfo,
   ConnectionState,
   CreateBindCodeInput,
   CreateBindCodeResult,
   DeliveryPayload,
+  DevicePermissions,
+  DeviceProfile,
+  DeviceSelfInfo,
   DownloadRecord,
   ImageCreatedEvent,
   ManualUploadResult,
@@ -39,19 +45,26 @@ interface ApiEnvelope<T> {
 interface RegisterDeviceResponse {
   deviceId: string;
   deviceToken: string;
+  profile?: DeviceProfile;
+  permissions: DevicePermissions;
+  user: BoundUserInfo;
 }
 
 interface LoginResponse {
   accessToken: string;
   user: {
-    emailOrLogin?: string;
+    id: string;
+    ownerUserId: string;
     role: string;
+    emailOrLogin?: string;
+    displayName?: string;
   };
 }
 
 interface CreateBindCodeResponse {
   bindCode: string;
   expiresAt: string;
+  targetUser?: BindCodeTargetUser;
 }
 
 interface PendingDeliveriesResponse {
@@ -311,7 +324,7 @@ export class RelayClient {
     };
   }
 
-  async registerDevice(input: RegisterDeviceInput): Promise<void> {
+  async registerDevice(input: RegisterDeviceInput): Promise<DeviceSelfInfo> {
     const serverBaseUrl = normalizeBaseUrl(input.serverBaseUrl);
     if (!serverBaseUrl) {
       throw new Error("服务器地址不能为空");
@@ -320,16 +333,20 @@ export class RelayClient {
       throw new Error("绑定码不能为空");
     }
 
+    const body: Record<string, unknown> = {
+      bindCode: input.bindCode.trim(),
+      deviceName: input.deviceName.trim() || os.hostname(),
+      platform: currentPlatform(),
+      osVersion: `${os.type()} ${os.release()}`,
+      appVersion: "0.5.0",
+    };
+    if (input.profile) {
+      body.profile = input.profile;
+    }
     const response = await fetch(apiUrl(serverBaseUrl, "/api/v1/devices/register"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        bindCode: input.bindCode.trim(),
-        deviceName: input.deviceName.trim() || os.hostname(),
-        platform: currentPlatform(),
-        osVersion: `${os.type()} ${os.release()}`,
-        appVersion: "0.4.1",
-      }),
+      body: JSON.stringify(body),
     });
 
     const data = await parseEnvelope<RegisterDeviceResponse>(response);
@@ -338,12 +355,138 @@ export class RelayClient {
       deviceId: data.deviceId,
       deviceToken: data.deviceToken,
       deviceName: input.deviceName.trim() || os.hostname(),
+      boundUser: data.user,
+      lastKnownProfile: data.profile ?? "custom",
+      lastKnownPermissions: data.permissions,
     });
     logInfo("Device registered", { serverBaseUrl, deviceId: data.deviceId });
     this.emitState();
 
     if (this.config.autoReceive) {
       this.connect();
+    }
+
+    return {
+      device: {
+        id: data.deviceId,
+        name: input.deviceName.trim() || os.hostname(),
+        platform: currentPlatform(),
+        appVersion: "0.5.0",
+        osVersion: `${os.type()} ${os.release()}`,
+        createdAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+      },
+      user: data.user,
+      profile: data.profile ?? "custom",
+      permissions: data.permissions,
+    };
+  }
+
+  async previewBindCode(serverBaseUrl: string, bindCode: string): Promise<BindCodePreview> {
+    const normalized = normalizeBaseUrl(serverBaseUrl);
+    if (!normalized) {
+      throw new Error("服务器地址不能为空");
+    }
+    if (!bindCode.trim()) {
+      throw new Error("绑定码不能为空");
+    }
+    const response = await fetch(apiUrl(normalized, "/api/v1/bind-codes/preview"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bindCode: bindCode.trim() }),
+    });
+    return parseEnvelope<BindCodePreview>(response);
+  }
+
+  async getDeviceMe(): Promise<DeviceSelfInfo> {
+    const token = this.config.getDeviceToken();
+    const serverBaseUrl = this.config.serverBaseUrl;
+    if (!token || !serverBaseUrl) {
+      throw new Error("设备未绑定");
+    }
+    const response = await fetch(apiUrl(serverBaseUrl, "/api/v1/devices/me"), {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await parseEnvelope<DeviceSelfInfo>(response);
+    await this.config.saveSettings({
+      boundUser: data.user,
+      lastKnownProfile: data.profile,
+      lastKnownPermissions: data.permissions,
+      permissionsFetchedAt: new Date().toISOString(),
+    });
+    if (!data.permissions.canAutoReceive) {
+      this.disconnect();
+    }
+    this.emitState();
+    return data;
+  }
+
+  async refreshEffectivePermissions(): Promise<DeviceSelfInfo | undefined> {
+    if (!this.config.serverBaseUrl || !this.config.getDeviceToken()) {
+      return undefined;
+    }
+    try {
+      return await this.getDeviceMe();
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        // Auth failure likely means the device was revoked or disabled; the
+        // UI should stop the watcher/receiver and prompt for rebind.
+        this.disconnect();
+        await this.config.clearBinding();
+        this.emitState();
+      }
+      throw err;
+    }
+  }
+
+  async updateDeviceProfile(profile: DeviceProfile): Promise<void> {
+    await this.adminUpdateDeviceProfile(this.requireDeviceId(), profile);
+  }
+
+  async adminUpdateDeviceProfile(deviceId: string, profile: DeviceProfile): Promise<void> {
+    const token = this.requireAdminToken();
+    if (!this.config.serverBaseUrl) throw new Error("服务器地址不能为空");
+    const response = await fetch(
+      apiUrl(this.config.serverBaseUrl, `/api/v1/devices/${deviceId}/profile`),
+      {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ profile }),
+      },
+    );
+    await parseEnvelope<unknown>(response);
+    await this.adminRefreshDevices();
+    if (deviceId === this.config.settings.deviceId) {
+      await this.refreshEffectivePermissions();
+    }
+  }
+
+  async updateReceiveConfig(
+    mode: "disabled" | "same_user_only" | "selected_devices" | "all_authorized_sources",
+    sourceDeviceIds: string[] = []
+  ): Promise<void> {
+    await this.adminUpdateReceiveConfig(this.requireDeviceId(), mode, sourceDeviceIds);
+  }
+
+  async adminUpdateReceiveConfig(
+    deviceId: string,
+    mode: "disabled" | "same_user_only" | "selected_devices" | "all_authorized_sources",
+    sourceDeviceIds: string[] = []
+  ): Promise<void> {
+    const token = this.requireAdminToken();
+    if (!this.config.serverBaseUrl) throw new Error("服务器地址不能为空");
+    const response = await fetch(
+      apiUrl(this.config.serverBaseUrl, `/api/v1/devices/${deviceId}/receive-config`),
+      {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ mode, sourceDeviceIds }),
+      },
+    );
+    await parseEnvelope<unknown>(response);
+    await this.adminRefreshDevices();
+    if (deviceId === this.config.settings.deviceId) {
+      await this.refreshEffectivePermissions();
     }
   }
 
@@ -388,6 +531,62 @@ export class RelayClient {
     return bindData;
   }
 
+  async bindWithLogin(input: CreateBindCodeInput): Promise<DeviceSelfInfo> {
+    const serverBaseUrl = normalizeBaseUrl(input.serverBaseUrl);
+    if (!serverBaseUrl) {
+      throw new Error("服务器地址不能为空");
+    }
+    if (!input.login.trim() || !input.password) {
+      throw new Error("成员账号和密码不能为空");
+    }
+    const loginResponse = await fetch(apiUrl(serverBaseUrl, "/api/v1/auth/login"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ login: input.login.trim(), password: input.password }),
+    });
+    const loginData = await parseEnvelope<LoginResponse>(loginResponse);
+
+    const bindResponse = await fetch(apiUrl(serverBaseUrl, "/api/v1/bind-codes"), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${loginData.accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        purpose: "bind_device",
+        deviceNameHint: input.deviceNameHint,
+        expiresInSeconds: 600,
+      }),
+    });
+    const bindData = await parseEnvelope<CreateBindCodeResponse>(bindResponse);
+
+    if (bindData.targetUser && bindData.targetUser.id !== loginData.user.id) {
+      throw new Error("服务端返回的绑定码不属于当前账号，已中止绑定");
+    }
+
+    const preview = await this.previewBindCode(serverBaseUrl, bindData.bindCode);
+    if (preview.targetUser.id !== loginData.user.id) {
+      throw new Error("绑定码预览身份与当前账号不一致，已中止绑定");
+    }
+
+    const self = await this.registerDevice({
+      serverBaseUrl,
+      bindCode: bindData.bindCode,
+      deviceName: input.deviceNameHint ?? os.hostname(),
+      profile: input.profile,
+    });
+    logInfo("Member bind-with-login succeeded", { userId: loginData.user.id });
+    return self;
+  }
+
+  private requireDeviceId(): string {
+    const id = this.config.settings.deviceId;
+    if (!id) {
+      throw new Error("设备未绑定");
+    }
+    return id;
+  }
+
   async adminLogin(input: AdminLoginInput): Promise<void> {
     const serverBaseUrl = normalizeBaseUrl(input.serverBaseUrl);
     if (!serverBaseUrl) {
@@ -411,6 +610,12 @@ export class RelayClient {
     this.admin = {
       isLoggedIn: true,
       login: data.user.emailOrLogin ?? input.login.trim(),
+      user: {
+        id: data.user.id,
+        ownerUserId: data.user.ownerUserId,
+        role: data.user.role,
+        displayName: data.user.displayName,
+      },
       devices: [],
     };
     await this.adminRefreshDevices();
@@ -493,6 +698,10 @@ export class RelayClient {
       this.setConnection({ status: "stopped" });
       return;
     }
+    if (this.config.settings.lastKnownPermissions?.canAutoReceive === false) {
+      this.setConnection({ status: "stopped", lastError: "服务端未允许本设备自动接收" });
+      return;
+    }
 
     this.closeSocket();
     this.setConnection({ status: "connecting" });
@@ -536,7 +745,7 @@ export class RelayClient {
         return;
       }
 
-      if (this.config.autoReceive) {
+      if (this.config.autoReceive && this.config.settings.lastKnownPermissions?.canAutoReceive !== false) {
         this.scheduleReconnect(reasonText);
       } else {
         this.setConnection({ status: "stopped" });
@@ -582,6 +791,13 @@ export class RelayClient {
     if (!this.config.serverBaseUrl) {
       throw new Error("服务器地址不能为空");
     }
+    const permissions = this.config.settings.lastKnownPermissions;
+    const allowed = sourceKind === "manual_share"
+      ? permissions?.canManualUpload !== false
+      : permissions?.canAutoUpload !== false;
+    if (!allowed) {
+      throw new Error(sourceKind === "manual_share" ? "服务端未允许本设备手动上传" : "服务端未允许本设备自动上传");
+    }
 
     const buffer = await readFile(filePath);
     const mimeType = detectImageMimeType(buffer);
@@ -618,7 +834,11 @@ export class RelayClient {
 
   async handleSettingsChanged(): Promise<void> {
     this.emitState();
-    if (this.config.autoReceive && this.config.settings.isBound) {
+    if (
+      this.config.autoReceive &&
+      this.config.settings.isBound &&
+      this.config.settings.lastKnownPermissions?.canAutoReceive !== false
+    ) {
       this.connect();
       return;
     }

@@ -6,7 +6,16 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { bindDevice, loadConfig, saveConfig, unbind } from "../config.js";
+import {
+  bindDevice,
+  bindWithLogin,
+  loadConfig,
+  previewBindCode,
+  refreshDeviceIdentity,
+  saveConfig,
+  serverAllows,
+  unbind,
+} from "../config.js";
 import { startWatcher } from "../watcher.js";
 import { WsReceiveClient } from "../ws-client.js";
 import { ensureAllowedDir, isAllowedDir, normalizeBaseUrl } from "../utils.js";
@@ -31,6 +40,11 @@ async function startReceive(): Promise<void> {
   if (services.receiveClient) return;
   const config = await loadConfig();
   if (!config.device) throw new Error("Not bound");
+  config.device = await refreshDeviceIdentity(config.device);
+  await saveConfig(config);
+  if (!serverAllows(config.device, "canAutoReceive")) {
+    throw new Error("服务端未允许本设备自动接收");
+  }
   const client = new WsReceiveClient({
     device: config.device,
     config,
@@ -67,7 +81,12 @@ async function startWatch(): Promise<void> {
   if (services.watcher) return;
   const config = await loadConfig();
   if (!config.device) throw new Error("Not bound");
+  config.device = await refreshDeviceIdentity(config.device);
+  await saveConfig(config);
   if (!config.watchDir) throw new Error("Watch directory not configured");
+  if (!serverAllows(config.device, "canAutoUpload")) {
+    throw new Error("服务端未允许本设备自动上传");
+  }
   services.watcher = startWatcher({
     device: config.device,
     watchDir: config.watchDir,
@@ -105,6 +124,16 @@ export function recordRecentDelivery(entry: RecentDelivery): void {
 
 export async function startWebServer(port = 0): Promise<{ url: string; close: () => Promise<void> }> {
   const app: FastifyInstance = fastify({ logger: false });
+  const permissionTimer = setInterval(() => {
+    void (async () => {
+      const config = await loadConfig();
+      if (!config.device) return;
+      config.device = await refreshDeviceIdentity(config.device);
+      await saveConfig(config);
+      if (!serverAllows(config.device, "canAutoUpload")) await stopWatch();
+      if (!serverAllows(config.device, "canAutoReceive")) await stopReceive();
+    })().catch((err) => broadcastLog(`定时刷新服务端权限失败：${(err as Error).message}`, "warn"));
+  }, 5 * 60 * 1000);
 
   await app.register(fastifyStatic, {
     root: __dirname,
@@ -113,6 +142,14 @@ export async function startWebServer(port = 0): Promise<{ url: string; close: ()
 
   app.get("/api/config", async (_req, reply) => {
     const config = await loadConfig();
+    if (config.device) {
+      try {
+        config.device = await refreshDeviceIdentity(config.device);
+        await saveConfig(config);
+      } catch (err) {
+        broadcastLog(`刷新服务端权限失败：${(err as Error).message}`, "warn");
+      }
+    }
     return reply.send(config);
   });
 
@@ -143,8 +180,18 @@ export async function startWebServer(port = 0): Promise<{ url: string; close: ()
       return reply.status(400).send({ success: false, error: { message: (err as Error).message } });
     }
 
-    if (body.autoUpload !== undefined) config.autoUpload = body.autoUpload;
-    if (body.autoReceive !== undefined) config.autoReceive = body.autoReceive;
+    if (body.autoUpload !== undefined) {
+      if (body.autoUpload && config.device && !serverAllows(config.device, "canAutoUpload")) {
+        return reply.status(403).send({ success: false, error: { message: "服务端未允许本设备自动上传" } });
+      }
+      config.autoUpload = body.autoUpload;
+    }
+    if (body.autoReceive !== undefined) {
+      if (body.autoReceive && config.device && !serverAllows(config.device, "canAutoReceive")) {
+        return reply.status(403).send({ success: false, error: { message: "服务端未允许本设备自动接收" } });
+      }
+      config.autoReceive = body.autoReceive;
+    }
 
     const dirChanged =
       (body.watchDir !== undefined && config.watchDir !== oldConfig.watchDir) ||
@@ -173,13 +220,56 @@ export async function startWebServer(port = 0): Promise<{ url: string; close: ()
     return reply.send({ success: true });
   });
 
-  app.post("/api/bind", async (req: FastifyRequest<{ Body: { serverBaseUrl: string; bindCode: string; deviceName?: string } }>, reply) => {
-    const { serverBaseUrl, bindCode, deviceName } = req.body;
-    const device = await bindDevice(serverBaseUrl, bindCode, deviceName || "Linux");
+  app.post("/api/bind/preview", async (req: FastifyRequest<{ Body: { serverBaseUrl: string; bindCode: string } }>, reply) => {
+    const preview = await previewBindCode(req.body.serverBaseUrl, req.body.bindCode);
+    return reply.send({ success: true, data: preview });
+  });
+
+  app.post("/api/bind", async (req: FastifyRequest<{ Body: {
+    serverBaseUrl: string;
+    bindCode: string;
+    deviceName?: string;
+    profile?: string;
+    confirmedTargetUserId?: string;
+  } }>, reply) => {
+    const { serverBaseUrl, bindCode, deviceName, profile, confirmedTargetUserId } = req.body;
+    const preview = await previewBindCode(serverBaseUrl, bindCode);
+    if (!confirmedTargetUserId || confirmedTargetUserId !== preview.targetUser.id) {
+      return reply.status(409).send({
+        success: false,
+        error: { message: "请先预览并确认绑定目标" },
+      });
+    }
+    const device = await bindDevice(serverBaseUrl, bindCode, deviceName || "Linux", profile);
     const config = await loadConfig();
     config.device = device;
     await saveConfig(config);
-    return reply.send({ success: true });
+    return reply.send({ success: true, data: device });
+  });
+
+  app.post("/api/bind-login", async (req: FastifyRequest<{ Body: {
+    serverBaseUrl: string;
+    login: string;
+    password: string;
+    deviceName?: string;
+    profile?: string;
+  } }>, reply) => {
+    const { serverBaseUrl, login, password, deviceName, profile } = req.body;
+    const device = await bindWithLogin(serverBaseUrl, login, password, deviceName || "Linux", profile);
+    const config = await loadConfig();
+    config.device = device;
+    await saveConfig(config);
+    return reply.send({ success: true, data: device });
+  });
+
+  app.post("/api/permissions/refresh", async (_req, reply) => {
+    const config = await loadConfig();
+    if (!config.device) return reply.status(400).send({ success: false, error: { message: "Not bound" } });
+    config.device = await refreshDeviceIdentity(config.device);
+    await saveConfig(config);
+    if (!serverAllows(config.device, "canAutoUpload")) await stopWatch();
+    if (!serverAllows(config.device, "canAutoReceive")) await stopReceive();
+    return reply.send({ success: true, data: config.device });
   });
 
   app.post("/api/unbind", async (_req, reply) => {
@@ -344,6 +434,7 @@ export async function startWebServer(port = 0): Promise<{ url: string; close: ()
   return {
     url,
     close: async () => {
+      clearInterval(permissionTimer);
       await stopReceive();
       await stopWatch();
       await app.close();

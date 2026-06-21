@@ -75,10 +75,27 @@
 
             <div class="banner banner-error" id="errorLine" hidden></div>
 
+            <div class="card" id="identityCard" hidden>
+              <header class="card-head">
+                <h2>当前绑定身份</h2>
+                <p class="card-sub" id="boundUserValue">-</p>
+              </header>
+              <div class="metrics">
+                <article class="metric">
+                  <span class="metric-label">设备用途</span>
+                  <strong class="metric-value" id="profileValue">-</strong>
+                </article>
+                <article class="metric">
+                  <span class="metric-label">有效权限</span>
+                  <strong class="metric-value" id="effectivePermissionsValue">-</strong>
+                </article>
+              </div>
+            </div>
+
             <div class="card">
               <header class="card-head">
                 <h2>设备绑定</h2>
-                <p class="card-sub">用主用户登录生成绑定码,或直接粘贴已有的码。</p>
+                <p class="card-sub">可以用自己的成员账号直接绑定，或预览并确认已有绑定码的目标成员。</p>
               </header>
 
               <form id="bindForm" class="form-grid">
@@ -105,8 +122,17 @@
                   <span class="field-label">设备名</span>
                   <input class="input" id="bindDeviceNameInput" name="deviceName" />
                 </label>
+                <label class="field">
+                  <span class="field-label">设备用途</span>
+                  <select class="select" id="bindProfileInput">
+                    <option value="manual_only">只手动分享</option>
+                    <option value="upload_only">只上传截图</option>
+                    <option value="receive_own">只接收我的图片</option>
+                    <option value="sync_own" selected>我的设备双向同步</option>
+                  </select>
+                </label>
                 <div class="form-actions">
-                  <button type="submit" class="btn primary">绑定设备</button>
+                  <button type="submit" class="btn primary">预览并绑定</button>
                 </div>
               </form>
 
@@ -137,8 +163,17 @@
                     autocomplete="current-password"
                   />
                 </label>
+                <label class="field">
+                  <span class="field-label">设备用途</span>
+                  <select class="select" id="loginProfileInput">
+                    <option value="manual_only">只手动分享</option>
+                    <option value="upload_only">只上传截图</option>
+                    <option value="receive_own">只接收我的图片</option>
+                    <option value="sync_own" selected>我的设备双向同步</option>
+                  </select>
+                </label>
                 <div class="form-actions">
-                  <button type="submit" class="btn">生成绑定码</button>
+                  <button type="submit" class="btn">使用账号绑定本设备</button>
                 </div>
               </form>
             </div>
@@ -310,7 +345,7 @@
             <div class="view-head">
               <div>
                 <h1>设备管理</h1>
-                <p class="view-sub">以主用户身份登录,可查看和修改本空间内所有设备。</p>
+                <p class="view-sub">owner 可管理空间全部设备，成员只能管理自己名下的设备。</p>
               </div>
               <div class="actions">
                 <button class="btn" id="refreshDevicesButton">刷新</button>
@@ -320,8 +355,8 @@
 
             <div class="card" id="adminLoginCard">
               <header class="card-head">
-                <h2>主用户登录</h2>
-                <p class="card-sub">登录后可以在此应用内管理设备。</p>
+                <h2>账号登录</h2>
+                <p class="card-sub">登录后按当前账号角色显示可执行的设备操作。</p>
               </header>
               <form id="adminLoginForm" class="form-grid">
                 <label class="field">

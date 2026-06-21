@@ -5,7 +5,7 @@ export async function healthRoutes(app: FastifyInstance): Promise<void> {
     return {
       status: "ok",
       service: "studyshot-relay-backend",
-      version: "0.4.1",
+      version: "0.5.0",
       timestamp: new Date().toISOString(),
     };
   });

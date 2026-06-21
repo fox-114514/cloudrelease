@@ -63,6 +63,7 @@ class MainActivity : ComponentActivity() {
             @Suppress("DEPRECATION")
             intent.getParcelableExtra(Intent.EXTRA_STREAM)
         } ?: return
+        if (!app.secureSettings.settings.value.serverAllowsManualUpload()) return
         lifecycleScope.launch(Dispatchers.IO) {
             app.uploadRepository.enqueueManualUpload(
                 uri,

@@ -1,6 +1,6 @@
 {
   "name": "studyshot-relay-desktop",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "StudyShot Relay desktop receiver",
   "main": "dist/main.js",
   "author": "StudyShot <relay@studyshot.local>",

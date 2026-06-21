@@ -2,7 +2,13 @@ import { app, safeStorage } from "electron";
 import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { RendererSettings, SaveSettingsInput } from "./shared";
+import type {
+  BoundUserInfo,
+  DevicePermissions,
+  DeviceProfile,
+  RendererSettings,
+  SaveSettingsInput,
+} from "./shared";
 
 interface StoredConfig {
   serverBaseUrl: string;
@@ -19,6 +25,10 @@ interface StoredConfig {
   encryptedDeviceToken?: string;
   plainDeviceToken?: string;
   tokenStorage: "safeStorage" | "plainFile" | "none";
+  boundUser?: BoundUserInfo;
+  lastKnownProfile?: DeviceProfile;
+  lastKnownPermissions?: DevicePermissions;
+  permissionsFetchedAt?: string;
 }
 
 const CONFIG_FILE = "config.json";
@@ -103,8 +113,12 @@ export class ConfigStore {
       tokenStorage: this.config.tokenStorage,
       tokenStorageWarning:
         this.config.tokenStorage === "plainFile"
-          ? "系统加密不可用，设备 token 暂存在受限本地配置文件中。"
+          ? "系统加密不可用，设备 token 暂存于受限本地配置文件中。"
           : undefined,
+      boundUser: this.config.boundUser,
+      lastKnownProfile: this.config.lastKnownProfile,
+      lastKnownPermissions: this.config.lastKnownPermissions,
+      permissionsFetchedAt: this.config.permissionsFetchedAt,
     };
   }
 
@@ -176,7 +190,7 @@ export class ConfigStore {
     if (input.watchExcludedDirs !== undefined) {
       const normalized = normalizeExcludedDirs(this.config.watchDir, input.watchExcludedDirs);
       if (normalized.length !== input.watchExcludedDirs.length) {
-        throw new Error("排除目录必须位于监听目录内部，且不能等于监听目录");
+        throw new Error("排除目录必须位于监听目录内部,且不能等于监听目录");
       }
       this.config.watchExcludedDirs = normalized;
     }
@@ -196,6 +210,18 @@ export class ConfigStore {
       this.config.startAtLogin = input.startAtLogin;
       app.setLoginItemSettings({ openAtLogin: input.startAtLogin });
     }
+    if (input.boundUser !== undefined) {
+      this.config.boundUser = input.boundUser;
+    }
+    if (input.lastKnownProfile !== undefined) {
+      this.config.lastKnownProfile = input.lastKnownProfile;
+    }
+    if (input.lastKnownPermissions !== undefined) {
+      this.config.lastKnownPermissions = input.lastKnownPermissions;
+    }
+    if (input.permissionsFetchedAt !== undefined) {
+      this.config.permissionsFetchedAt = input.permissionsFetchedAt;
+    }
     await this.persist();
   }
 
@@ -204,11 +230,18 @@ export class ConfigStore {
     deviceId: string;
     deviceToken: string;
     deviceName: string;
+    boundUser?: BoundUserInfo;
+    lastKnownProfile?: DeviceProfile;
+    lastKnownPermissions?: DevicePermissions;
   }): Promise<void> {
     this.config.serverBaseUrl = normalizeBaseUrl(input.serverBaseUrl);
     this.config.deviceId = input.deviceId;
     this.config.deviceName = input.deviceName.trim() || defaultDeviceName();
     this.setDeviceToken(input.deviceToken);
+    if (input.boundUser) this.config.boundUser = input.boundUser;
+    if (input.lastKnownProfile) this.config.lastKnownProfile = input.lastKnownProfile;
+    if (input.lastKnownPermissions) this.config.lastKnownPermissions = input.lastKnownPermissions;
+    if (input.lastKnownPermissions) this.config.permissionsFetchedAt = new Date().toISOString();
     await this.persist();
   }
 
@@ -216,6 +249,10 @@ export class ConfigStore {
     delete this.config.deviceId;
     delete this.config.encryptedDeviceToken;
     delete this.config.plainDeviceToken;
+    delete this.config.boundUser;
+    delete this.config.lastKnownProfile;
+    delete this.config.lastKnownPermissions;
+    delete this.config.permissionsFetchedAt;
     this.config.tokenStorage = "none";
     await this.persist();
   }

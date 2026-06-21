@@ -6,12 +6,15 @@ data class RegisterDeviceRequest(
     val platform: String = "android",
     val osVersion: String,
     val appVersion: String,
+    val profile: String? = null,
 )
 
 data class RegisterDeviceResponse(
     val deviceId: String,
     val deviceToken: String,
+    val profile: String?,
     val permissions: DevicePermissions,
+    val user: UserSummary,
 )
 
 data class LoginResponse(
@@ -27,9 +30,60 @@ data class UserInfo(
     val emailOrLogin: String?,
 )
 
+/** Compact summary returned to clients when registering or refreshing self. */
+data class UserSummary(
+    val id: String,
+    val ownerUserId: String,
+    val role: String,
+    val displayName: String?,
+)
+
+data class CreateBindCodeRequest(
+    val purpose: String = "bind_device",
+    val userId: String? = null,
+    val deviceNameHint: String? = null,
+    val expiresInSeconds: Int = 600,
+)
+
 data class CreateBindCodeResponse(
     val bindCode: String,
     val expiresAt: String,
+    val targetUser: BindCodeTargetUser?,
+)
+
+data class BindCodeTargetUser(
+    val id: String,
+    val role: String,
+    val displayName: String?,
+)
+
+data class BindCodePreview(
+    val expiresAt: String,
+    val space: BindCodeSpace,
+    val targetUser: BindCodeTargetUser,
+)
+
+data class BindCodeSpace(
+    val ownerUserId: String,
+    val displayName: String,
+)
+
+data class DeviceSelfInfo(
+    val device: DeviceSelfDevice,
+    val user: UserSummary,
+    val profile: String,
+    val permissions: DevicePermissions,
+)
+
+data class DeviceSelfDevice(
+    val id: String,
+    val name: String,
+    val platform: String,
+    val appVersion: String,
+    val osVersion: String,
+    val createdAt: String,
+    val lastSeenAt: String?,
+    val revokedAt: String?,
 )
 
 data class DevicePermissions(
@@ -85,10 +139,12 @@ data class DownloadedImage(
 data class ManagedDevice(
     val id: String,
     val userId: String,
+    val userRole: String?,
     val userDisplayName: String?,
     val name: String,
     val platform: String,
     val revokedAt: String?,
+    val profile: String?,
     val permissions: DevicePermissions,
 )
 

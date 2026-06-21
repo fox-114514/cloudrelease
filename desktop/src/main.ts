@@ -3,12 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { ConfigStore } from "./config-store";
 import { HistoryStore } from "./history-store";
-import { logError, logInfo } from "./logger";
+import { logError, logInfo, logWarn } from "./logger";
 import { RelayClient } from "./relay-client";
 import type {
   AdminLoginInput,
   CreateBindCodeInput,
   DevicePermissions,
+  DeviceProfile,
   ManualUploadResult,
   RegisterDeviceInput,
   SaveSettingsInput,
@@ -21,6 +22,7 @@ let configStore: ConfigStore;
 let historyStore: HistoryStore;
 let relayClient: RelayClient;
 let directoryWatcher: DirectoryWatcher | null = null;
+let permissionRefreshTimer: NodeJS.Timeout | undefined;
 let isQuitting = false;
 
 function rendererPath(file: string): string {
@@ -142,6 +144,10 @@ async function startDirectoryWatcher(): Promise<void> {
     return;
   }
   if (!relayClient) return;
+  if (configStore.settings.lastKnownPermissions?.canAutoUpload === false) {
+    relayClient.updateWatchState({ active: false, lastError: "服务端未允许本设备自动上传" });
+    return;
+  }
   const dir = configStore.watchDir;
   if (!dir) {
     relayClient.updateWatchState({ active: false, lastError: "未配置监听目录" });
@@ -171,7 +177,10 @@ async function stopDirectoryWatcher(): Promise<void> {
 }
 
 async function applyWatcherConfig(): Promise<void> {
-  const enabled = configStore.autoUpload && configStore.settings.isBound;
+  const enabled =
+    configStore.autoUpload &&
+    configStore.settings.isBound &&
+    configStore.settings.lastKnownPermissions?.canAutoUpload !== false;
   relayClient?.updateWatchState({
     enabled,
     dir: configStore.watchDir,
@@ -184,6 +193,14 @@ async function applyWatcherConfig(): Promise<void> {
   } else {
     await stopDirectoryWatcher();
   }
+}
+
+async function refreshPermissionsAndApply(): Promise<void> {
+  if (!configStore.settings.isBound) return;
+  await relayClient.refreshEffectivePermissions();
+  await relayClient.handleSettingsChanged();
+  await applyWatcherConfig();
+  broadcastState();
 }
 
 function updateTrayMenu(): void {
@@ -267,8 +284,42 @@ function registerIpcHandlers(): void {
     return relayClient.getState();
   });
 
-  ipcMain.handle("bindCode:createWithLogin", async (_event, input: CreateBindCodeInput) => {
-    const result = await relayClient.createBindCodeWithLogin(input);
+  ipcMain.handle("bindCode:preview", async (_event, serverBaseUrl: string, bindCode: string) => {
+    return relayClient.previewBindCode(serverBaseUrl, bindCode);
+  });
+
+  ipcMain.handle("device:me", async () => {
+    return relayClient.getDeviceMe();
+  });
+
+  ipcMain.handle("device:refreshPermissions", async () => {
+    try {
+      const result = await relayClient.refreshEffectivePermissions();
+      await relayClient.handleSettingsChanged();
+      await applyWatcherConfig();
+      broadcastState();
+      return result;
+    } catch (err) {
+      logWarn("Failed to refresh effective permissions", { error: String(err) });
+      return undefined;
+    }
+  });
+
+  ipcMain.handle("device:updateProfile", async (_event, profile) => {
+    await relayClient.updateDeviceProfile(profile);
+    broadcastState();
+    return relayClient.getState();
+  });
+
+  ipcMain.handle("device:updateReceiveConfig", async (_event, mode, sourceDeviceIds) => {
+    await relayClient.updateReceiveConfig(mode, sourceDeviceIds);
+    broadcastState();
+    return relayClient.getState();
+  });
+
+  ipcMain.handle("bind:login", async (_event, input: CreateBindCodeInput) => {
+    const result = await relayClient.bindWithLogin(input);
+    await applyWatcherConfig();
     broadcastState();
     return result;
   });
@@ -431,6 +482,27 @@ function registerIpcHandlers(): void {
     return relayClient.getState();
   });
 
+  ipcMain.handle("admin:updateProfile", async (_event, deviceId: string, profile: DeviceProfile) => {
+    await relayClient.adminUpdateDeviceProfile(deviceId, profile);
+    await applyWatcherConfig();
+    broadcastState();
+    return relayClient.getState();
+  });
+
+  ipcMain.handle(
+    "admin:updateReceiveConfig",
+    async (
+      _event,
+      deviceId: string,
+      mode: "disabled" | "same_user_only" | "selected_devices" | "all_authorized_sources",
+      sourceDeviceIds: string[],
+    ) => {
+      await relayClient.adminUpdateReceiveConfig(deviceId, mode, sourceDeviceIds);
+      broadcastState();
+      return relayClient.getState();
+    },
+  );
+
   ipcMain.handle("admin:renameDevice", async (_event, deviceId: string, name: string) => {
     await relayClient.adminRenameDevice(deviceId, name);
     broadcastState();
@@ -458,11 +530,31 @@ async function start(): Promise<void> {
   createWindow();
   createTray();
 
-  if (configStore.autoReceive && configStore.settings.isBound) {
+  if (configStore.settings.isBound) {
+    try {
+      await relayClient.refreshEffectivePermissions();
+    } catch (err) {
+      logWarn("Unable to refresh effective permissions at startup; using cached permissions", {
+        error: String(err),
+      });
+    }
+  }
+
+  if (
+    configStore.autoReceive &&
+    configStore.settings.isBound &&
+    configStore.settings.lastKnownPermissions?.canAutoReceive !== false
+  ) {
     relayClient.connect();
   }
 
   await applyWatcherConfig();
+
+  permissionRefreshTimer = setInterval(() => {
+    refreshPermissionsAndApply().catch((err) => {
+      logWarn("Periodic effective-permission refresh failed", { error: String(err) });
+    });
+  }, 5 * 60 * 1000);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -475,6 +567,11 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin" && isQuitting) {
     app.quit();
   }
+});
+
+app.on("before-quit", () => {
+  if (permissionRefreshTimer) clearInterval(permissionRefreshTimer);
+  permissionRefreshTimer = undefined;
 });
 
 start().catch((err) => {

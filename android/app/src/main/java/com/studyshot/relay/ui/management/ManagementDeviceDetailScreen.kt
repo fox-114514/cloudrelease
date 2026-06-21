@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Block
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.CloudUpload
+import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.HelpOutline
 import androidx.compose.material.icons.outlined.Inventory
@@ -49,6 +50,7 @@ fun ManagementDeviceDetailScreen(
     onBack: () -> Unit,
 ) {
     val devices by state.adminDevices.collectAsState()
+    val session by state.adminSession.collectAsState()
     val device = remember(devices, deviceId) { devices.firstOrNull { it.id == deviceId } }
     Column(
         modifier = Modifier
@@ -71,8 +73,45 @@ fun ManagementDeviceDetailScreen(
             }
             return
         }
-        DevicePermissionsSection(state = state, device = device)
+        DeviceProfileSection(state = state, device = device)
+        if (session?.user?.role == "owner") {
+            DevicePermissionsSection(state = state, device = device)
+        } else {
+            HelpCallout(
+                text = "成员只能使用安全用途预设；管理空间等高级权限由空间管理员设置。",
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+        }
         DeviceRevokeSection(state = state, device = device, onDeleted = onBack)
+    }
+}
+
+@Composable
+private fun DeviceProfileSection(
+    state: AppState,
+    device: ManagedDevice,
+) {
+    val revoked = !device.revokedAt.isNullOrBlank()
+    val profiles = listOf(
+        "manual_only" to "只手动分享",
+        "upload_only" to "只上传截图",
+        "receive_own" to "只接收我的图片",
+        "sync_own" to "我的设备双向同步",
+    )
+    SettingsGroup(
+        title = "设备用途",
+        footer = if (device.profile == "custom") "当前为自定义高级配置；选择预设会安全重置运行权限。" else "用途预设不会授予管理空间等高危权限。",
+    ) {
+        profiles.forEachIndexed { index, (profile, label) ->
+            SettingsRow(
+                icon = Icons.Outlined.Devices,
+                title = label,
+                value = if (device.profile == profile) "当前" else null,
+                isLast = index == profiles.lastIndex,
+                enabled = !revoked,
+                onClick = { state.updateDeviceProfile(device.id, profile) },
+            )
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "studyshot-relay-backend",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "StudyShot Relay backend server",
   "type": "module",
   "scripts": {
@@ -9,6 +9,8 @@
     "start": "node dist/index.js",
     "test": "npm run test:unit && vitest run",
     "test:unit": "vitest run --config vitest.unit.config.ts",
+    "audit:multi-user": "tsx src/scripts/audit-multi-user-config.ts",
+    "audit:multi-user:apply": "tsx src/scripts/audit-multi-user-config.ts --apply-safe-fixes",
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
     "db:generate": "prisma generate",

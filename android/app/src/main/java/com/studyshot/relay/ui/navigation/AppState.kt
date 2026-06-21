@@ -10,11 +10,15 @@ import com.studyshot.relay.StudyShotApp
 import com.studyshot.relay.BuildConfig
 import com.studyshot.relay.data.SecureSettings
 import com.studyshot.relay.network.AdminSession
+import com.studyshot.relay.network.ApiException
+import com.studyshot.relay.network.CreateBindCodeRequest
 import com.studyshot.relay.network.CreateBindCodeResponse
+import com.studyshot.relay.network.DeviceSelfInfo
 import com.studyshot.relay.network.LibraryImage
 import com.studyshot.relay.network.ManagedDevice
 import com.studyshot.relay.network.RegisterDeviceRequest
 import com.studyshot.relay.upload.MediaStoreScanner
+import org.json.JSONObject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -72,6 +76,10 @@ class AppState internal constructor(
         selectedAlbumPaths: List<String>? = null,
         excludedAlbumPaths: List<String>? = null,
     ) {
+        if (autoUploadEnabled == true && !app.secureSettings.settings.value.serverAllowsAutoUpload()) {
+            emit(TransientMessage("服务端未允许本设备自动上传", StatusTone.Critical))
+            return
+        }
         scope.launch(Dispatchers.IO) {
             settingsWriteMutex.withLock {
                 val current = app.secureSettings.settings.value
@@ -92,6 +100,10 @@ class AppState internal constructor(
         downloadNotificationEnabled: Boolean? = null,
         saveDownloadsToGallery: Boolean? = null,
     ) {
+        if (autoReceiveEnabled == true && !app.secureSettings.settings.value.serverAllowsAutoReceive()) {
+            emit(TransientMessage("服务端未允许本设备自动接收", StatusTone.Critical))
+            return
+        }
         scope.launch(Dispatchers.IO) {
             settingsWriteMutex.withLock {
                 val current = app.secureSettings.settings.value
@@ -160,6 +172,7 @@ class AppState internal constructor(
         server: String,
         code: String,
         name: String,
+        profile: String? = null,
         onComplete: () -> Unit = {},
     ) {
         val normalized = SecureSettings.normalizeBaseUrl(server)
@@ -189,6 +202,7 @@ class AppState internal constructor(
                         deviceName = finalName,
                         osVersion = "Android ${android.os.Build.VERSION.RELEASE}",
                         appVersion = BuildConfig.VERSION_NAME,
+                        profile = profile,
                     ),
                 )
                 withContext(Dispatchers.IO) {
@@ -198,6 +212,12 @@ class AppState internal constructor(
                             deviceId = response.deviceId,
                             deviceToken = response.deviceToken,
                             deviceName = finalName,
+                            boundUserId = response.user.id,
+                            boundOwnerUserId = response.user.ownerUserId,
+                            boundUserDisplayName = response.user.displayName ?: "",
+                            boundUserRole = response.user.role,
+                            lastKnownDeviceProfile = response.profile ?: "custom",
+                            lastKnownPermissionsJson = serializePermissions(response.permissions),
                         )
                     }
                 }
@@ -210,7 +230,159 @@ class AppState internal constructor(
         }
     }
 
+    /**
+     * Self-service bind: log in with the user account, ask the server to mint
+     * a bind code targeted at the same user (server enforces identity), then
+     * register the device. The temporary user JWT is discarded after register.
+     */
+    fun bindWithLogin(
+        server: String,
+        login: String,
+        password: String,
+        deviceName: String,
+        profile: String,
+        onComplete: () -> Unit = {},
+    ) {
+        val normalized = SecureSettings.normalizeBaseUrl(server)
+        if (normalized.isBlank()) {
+            emit(TransientMessage("服务器地址不能为空", StatusTone.Critical))
+            onComplete()
+            return
+        }
+        val finalName = deviceName.ifBlank { android.os.Build.MODEL }
+        scope.launch {
+            try {
+                val loginResp = withContext(Dispatchers.IO) {
+                    app.apiClient.login(normalized, login, password)
+                }
+                // Server enforces that the bind code is for the same user when
+                // we omit userId. We never send a different userId here.
+                val bindResp = withContext(Dispatchers.IO) {
+                    app.apiClient.createBindCode(
+                        serverBaseUrl = normalized,
+                        accessToken = loginResp.accessToken,
+                        request = CreateBindCodeRequest(
+                            purpose = "bind_device",
+                            deviceNameHint = finalName,
+                            expiresInSeconds = 600,
+                        ),
+                    )
+                }
+                val targetUser = bindResp.targetUser
+                if (targetUser != null && targetUser.id != loginResp.user.id) {
+                    emit(TransientMessage("服务返回的绑定码不属于当前账号，已中止", StatusTone.Critical))
+                    return@launch
+                }
+                val preview = withContext(Dispatchers.IO) {
+                    app.apiClient.previewBindCode(normalized, bindResp.bindCode)
+                }
+                if (preview.targetUser.id != loginResp.user.id) {
+                    emit(TransientMessage("绑定码预览身份与当前账号不一致，已中止", StatusTone.Critical))
+                    return@launch
+                }
+                val registerResp = withContext(Dispatchers.IO) {
+                    app.apiClient.registerDevice(
+                        serverBaseUrl = normalized,
+                        request = RegisterDeviceRequest(
+                            bindCode = bindResp.bindCode,
+                            deviceName = finalName,
+                            osVersion = "Android ${android.os.Build.VERSION.RELEASE}",
+                            appVersion = BuildConfig.VERSION_NAME,
+                            profile = profile,
+                        ),
+                    )
+                }
+                withContext(Dispatchers.IO) {
+                    settingsWriteMutex.withLock {
+                        app.secureSettings.saveBinding(
+                            serverBaseUrl = normalized,
+                            deviceId = registerResp.deviceId,
+                            deviceToken = registerResp.deviceToken,
+                            deviceName = finalName,
+                            boundUserId = registerResp.user.id,
+                            boundOwnerUserId = registerResp.user.ownerUserId,
+                            boundUserDisplayName = registerResp.user.displayName ?: "",
+                            boundUserRole = registerResp.user.role,
+                            lastKnownDeviceProfile = registerResp.profile ?: "custom",
+                            lastKnownPermissionsJson = serializePermissions(registerResp.permissions),
+                        )
+                    }
+                }
+                emit(TransientMessage("账号绑定成功", StatusTone.Positive))
+            } catch (err: Exception) {
+                emit(TransientMessage("账号绑定失败：${err.message ?: err.javaClass.simpleName}", StatusTone.Critical))
+            } finally {
+                onComplete()
+            }
+        }
+    }
+
+    /**
+     * Refresh this device's identity from the server. Should be called after
+     * registration, on app start (if already bound), and after 403 responses
+     * to pick up revoked / disabled / permission changes.
+     */
+    fun refreshSelfIdentity() {
+        val settings = app.secureSettings.settings.value
+        val token = app.secureSettings.getDeviceToken() ?: return
+        val server = settings.serverBaseUrl
+        if (server.isBlank()) return
+        scope.launch {
+            try {
+                val info = withContext(Dispatchers.IO) {
+                    app.apiClient.getDeviceMe(server, token)
+                }
+                withContext(Dispatchers.IO) {
+                    settingsWriteMutex.withLock {
+                        app.secureSettings.saveBinding(
+                            serverBaseUrl = server,
+                            deviceId = info.device.id,
+                            deviceToken = token,
+                            deviceName = info.device.name,
+                            boundUserId = info.user.id,
+                            boundOwnerUserId = info.user.ownerUserId,
+                            boundUserDisplayName = info.user.displayName ?: "",
+                            boundUserRole = info.user.role,
+                            lastKnownDeviceProfile = info.profile,
+                            lastKnownPermissionsJson = serializePermissions(info.permissions),
+                        )
+                    }
+                }
+                if (info.device.revokedAt != null) {
+                    emit(TransientMessage("本设备已被撤销，请重新绑定", StatusTone.Critical))
+                }
+            } catch (err: ApiException) {
+                if (err.apiCode == "DEVICE_AUTH_REQUIRED" || err.apiCode == "DEVICE_REVOKED" || err.apiCode == "USER_DISABLED" || err.statusCode == 401 || err.statusCode == 403) {
+                    withContext(Dispatchers.IO) {
+                        settingsWriteMutex.withLock { app.secureSettings.clearBinding() }
+                    }
+                    emit(TransientMessage("服务端已不再接受本设备 token，请重新绑定", StatusTone.Critical))
+                }
+            } catch (_: Exception) {
+                // Silent failure: we don't want to spam errors on startup if
+                // the server is briefly unavailable.
+            }
+        }
+    }
+
+    private fun serializePermissions(permissions: com.studyshot.relay.network.DevicePermissions): String {
+        return JSONObject()
+            .put("canAutoUpload", permissions.canAutoUpload)
+            .put("canManualUpload", permissions.canManualUpload)
+            .put("canAutoReceive", permissions.canAutoReceive)
+            .put("canManualDownload", permissions.canManualDownload)
+            .put("canManageSpace", permissions.canManageSpace)
+            .put("canCreateInvite", permissions.canCreateInvite)
+            .put("autoUploadScope", permissions.autoUploadScope)
+            .put("autoReceiveScope", permissions.autoReceiveScope)
+            .toString()
+    }
+
     fun pickManualUpload(uri: Uri) {
+        if (!app.secureSettings.settings.value.serverAllowsManualUpload()) {
+            emit(TransientMessage("服务端未允许本设备手动上传", StatusTone.Critical))
+            return
+        }
         val wifiOnly = app.secureSettings.settings.value.wifiOnly
         scope.launch {
             try {
@@ -247,12 +419,7 @@ class AppState internal constructor(
                     }
                 }
                 refreshDevices(session, normalized)
-                if (response.user.role == "owner") {
-                    refreshImageLibrary(session, normalized, reset = true)
-                } else {
-                    _libraryImages.value = emptyList()
-                    _imageCursor.value = null
-                }
+                refreshImageLibrary(session, normalized, reset = true)
                 emit(TransientMessage("管理登录成功", StatusTone.Positive))
             } catch (err: Exception) {
                 emit(TransientMessage(err.message ?: "管理登录失败", StatusTone.Critical))
@@ -321,11 +488,6 @@ class AppState internal constructor(
     }
 
     private fun refreshImageLibrary(session: AdminSession, server: String, reset: Boolean) {
-        if (session.user.role != "owner") {
-            _libraryImages.value = emptyList()
-            _imageCursor.value = null
-            return
-        }
         _imageLoading.value = true
         scope.launch {
             try {
@@ -386,6 +548,26 @@ class AppState internal constructor(
         }
     }
 
+    fun updateDeviceProfile(deviceId: String, profile: String) {
+        val session = _adminSession.value ?: return
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    app.apiClient.updateDeviceProfile(
+                        app.secureSettings.settings.value.serverBaseUrl,
+                        session.accessToken,
+                        deviceId,
+                        profile,
+                    )
+                }
+                refreshDevices(session, app.secureSettings.settings.value.serverBaseUrl)
+                emit(TransientMessage("设备用途已更新", StatusTone.Positive))
+            } catch (err: Exception) {
+                emit(TransientMessage(err.message ?: "用途更新失败", StatusTone.Critical))
+            }
+        }
+    }
+
     fun revokeDevice(deviceId: String) {
         val session = _adminSession.value ?: return
         scope.launch {
@@ -428,8 +610,31 @@ class AppState internal constructor(
         }
     }
 
-    fun createBindCode(
+    fun previewBindCode(
+        server: String,
+        bindCode: String,
+        onResult: (Result<com.studyshot.relay.network.BindCodePreview>) -> Unit,
+    ) {
+        val normalized = SecureSettings.normalizeBaseUrl(server)
+        if (normalized.isBlank() || bindCode.isBlank()) {
+            onResult(Result.failure(IllegalArgumentException("服务器地址或绑定码为空")))
+            return
+        }
+        scope.launch {
+            try {
+                val preview = withContext(Dispatchers.IO) {
+                    app.apiClient.previewBindCode(normalized, bindCode.trim())
+                }
+                onResult(Result.success(preview))
+            } catch (err: Throwable) {
+                onResult(Result.failure(err))
+            }
+        }
+    }
+
+fun createBindCode(
         hint: String,
+        targetUserId: String? = null,
         onComplete: () -> Unit = {},
     ) {
         val session = _adminSession.value
@@ -442,9 +647,14 @@ class AppState internal constructor(
             try {
                 val response = withContext(Dispatchers.IO) {
                     app.apiClient.createBindCode(
-                        app.secureSettings.settings.value.serverBaseUrl,
-                        session.accessToken,
-                        hint,
+                        serverBaseUrl = app.secureSettings.settings.value.serverBaseUrl,
+                        accessToken = session.accessToken,
+                        request = CreateBindCodeRequest(
+                            purpose = "bind_device",
+                            userId = targetUserId,
+                            deviceNameHint = hint,
+                            expiresInSeconds = 600,
+                        ),
                     )
                 }
                 _generatedBindCode.value = response

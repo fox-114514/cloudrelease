@@ -7,6 +7,10 @@ const els = {
   deviceValue: document.getElementById("deviceValue"),
   lastConnectedValue: document.getElementById("lastConnectedValue"),
   lastDownloadValue: document.getElementById("lastDownloadValue"),
+  identityCard: document.getElementById("identityCard"),
+  boundUserValue: document.getElementById("boundUserValue"),
+  profileValue: document.getElementById("profileValue"),
+  effectivePermissionsValue: document.getElementById("effectivePermissionsValue"),
   errorLine: document.getElementById("errorLine"),
   ownerLoginForm: document.getElementById("ownerLoginForm"),
   ownerServerInput: document.getElementById("ownerServerInput"),
@@ -16,6 +20,8 @@ const els = {
   bindServerInput: document.getElementById("bindServerInput"),
   bindCodeInput: document.getElementById("bindCodeInput"),
   bindDeviceNameInput: document.getElementById("bindDeviceNameInput"),
+  bindProfileInput: document.getElementById("bindProfileInput"),
+  loginProfileInput: document.getElementById("loginProfileInput"),
   serverInput: document.getElementById("serverInput"),
   deviceNameInput: document.getElementById("deviceNameInput"),
   downloadDirInput: document.getElementById("downloadDirInput"),
@@ -87,6 +93,21 @@ const RECEIVE_SCOPES = [
   "same_user_only",
   "selected_devices",
 ];
+
+const PROFILE_LABELS = {
+  manual_only: "只手动分享",
+  upload_only: "只上传截图",
+  receive_own: "只接收我的图片",
+  sync_own: "我的设备双向同步",
+  custom: "自定义(高级)",
+};
+
+const RECEIVE_SCOPE_LABELS = {
+  disabled: "不接收",
+  same_user_only: "仅接收我的设备",
+  selected_devices: "接收指定设备",
+  all_authorized_sources: "接收空间全部设备",
+};
 
 const THEME_KEY = "studyshot.theme";
 let currentState = null;
@@ -325,6 +346,7 @@ function renderAdminDevices(admin) {
     return;
   }
 
+  const isOwner = admin.user && admin.user.role === "owner";
   for (const device of admin.devices) {
     const card = document.createElement("article");
     card.className = "device-card";
@@ -384,9 +406,44 @@ function renderAdminDevices(admin) {
     });
     rename.append(renameInput, renameBtn);
 
+    const profileItem = document.createElement("label");
+    profileItem.className = "permission-item";
+    const profileLabel = document.createElement("span");
+    profileLabel.className = "permission-label";
+    profileLabel.textContent = "安全用途预设";
+    const profileSelect = document.createElement("select");
+    profileSelect.className = "select";
+    for (const value of ["manual_only", "upload_only", "receive_own", "sync_own"]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = PROFILE_LABELS[value];
+      option.selected = device.profile === value;
+      profileSelect.append(option);
+    }
+    if (device.profile === "custom") {
+      const option = document.createElement("option");
+      option.value = "custom";
+      option.textContent = PROFILE_LABELS.custom;
+      option.selected = true;
+      option.disabled = true;
+      profileSelect.prepend(option);
+    }
+    profileSelect.disabled = Boolean(device.revokedAt);
+    profileSelect.addEventListener("change", async () => {
+      try {
+        const state = await window.studyshot.adminUpdateProfile(device.id, profileSelect.value);
+        renderState(state);
+      } catch (err) {
+        showAdminError(err.message || String(err));
+        renderState(currentState);
+      }
+    });
+    profileItem.append(profileLabel, profileSelect);
+
     const permGrid = document.createElement("div");
     permGrid.className = "permission-grid";
-    for (const key of Object.keys(PERMISSION_LABELS)) {
+    permGrid.append(profileItem);
+    if (isOwner) for (const key of Object.keys(PERMISSION_LABELS)) {
       const item = document.createElement("label");
       item.className = "permission-item";
       const label = document.createElement("span");
@@ -451,29 +508,97 @@ function renderAdminDevices(admin) {
     receiveScopeLabel.textContent = "接收范围";
     const receiveSelect = document.createElement("select");
     receiveSelect.className = "select";
-    for (const v of RECEIVE_SCOPES) {
+    for (const v of RECEIVE_SCOPES.filter((scope) => isOwner || scope !== "all_authorized_sources")) {
       const opt = document.createElement("option");
       opt.value = v;
-      opt.textContent = v;
+      opt.textContent = RECEIVE_SCOPE_LABELS[v];
       opt.selected = device.permissions.autoReceiveScope === v;
       receiveSelect.append(opt);
     }
     receiveSelect.disabled = Boolean(device.revokedAt);
-    receiveSelect.addEventListener("change", async () => {
-      try {
-        const state = await window.studyshot.adminUpdatePermissions(device.id, {
-          autoReceiveScope: receiveSelect.value,
+    receiveScopeItem.append(receiveScopeLabel, receiveSelect);
+
+    if (isOwner) permGrid.append(uploadScopeItem);
+
+    const sourceList = document.createElement("div");
+    sourceList.className = "permission-grid";
+    const selectedSources = new Set(device.receiveSourceDeviceIds || []);
+    const sourceCandidates = admin.devices.filter((candidate) =>
+      candidate.id !== device.id && !candidate.revokedAt && (isOwner || candidate.userId === device.userId)
+    );
+    const renderSources = () => {
+      sourceList.replaceChildren();
+      sourceList.hidden = receiveSelect.value !== "selected_devices";
+      if (sourceList.hidden) return;
+      if (!sourceCandidates.length) {
+        sourceList.textContent = "没有可用的来源设备。";
+        return;
+      }
+      for (const source of sourceCandidates) {
+        const label = document.createElement("label");
+        label.className = "permission-item";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = selectedSources.has(source.id);
+        checkbox.disabled = Boolean(device.revokedAt);
+        const text = document.createElement("span");
+        text.textContent = source.userId === device.userId
+          ? source.name
+          : `${source.name} (${source.userDisplayName || source.userId})`;
+        checkbox.addEventListener("change", async () => {
+          checkbox.checked ? selectedSources.add(source.id) : selectedSources.delete(source.id);
+          if (!selectedSources.size) {
+            showAdminError("至少保留一个来源设备；如需停止接收，请选择“不接收”。");
+            checkbox.checked = true;
+            selectedSources.add(source.id);
+            return;
+          }
+          try {
+            const state = await window.studyshot.adminUpdateReceiveConfig(
+              device.id,
+              "selected_devices",
+              Array.from(selectedSources),
+            );
+            renderState(state);
+          } catch (err) {
+            showAdminError(err.message || String(err));
+            renderState(currentState);
+          }
         });
+        label.append(checkbox, text);
+        sourceList.append(label);
+      }
+    };
+
+    receiveSelect.addEventListener("change", async () => {
+      if (receiveSelect.value === "selected_devices" && !selectedSources.size) {
+        renderSources();
+        showAdminError("请先选择至少一个来源设备，勾选后会立即保存。");
+        return;
+      }
+      if (
+        receiveSelect.value === "all_authorized_sources" &&
+        !confirm("此设置会接收其他成员上传的图片，确认继续吗？")
+      ) {
+        renderState(currentState);
+        return;
+      }
+      try {
+        const state = await window.studyshot.adminUpdateReceiveConfig(
+          device.id,
+          receiveSelect.value,
+          receiveSelect.value === "selected_devices" ? Array.from(selectedSources) : [],
+        );
         renderState(state);
       } catch (err) {
         showAdminError(err.message || String(err));
+        renderState(currentState);
       }
     });
-    receiveScopeItem.append(receiveScopeLabel, receiveSelect);
+    permGrid.append(receiveScopeItem);
+    renderSources();
 
-    permGrid.append(uploadScopeItem, receiveScopeItem);
-
-    card.append(head, rename, permGrid);
+    card.append(head, rename, permGrid, sourceList);
     els.adminDeviceList.append(card);
   }
 }
@@ -490,6 +615,24 @@ function renderState(state) {
   els.deviceValue.textContent = settings.isBound ? settings.deviceName : "-";
   els.lastConnectedValue.textContent = formatDate(connection.lastConnectedAt);
   els.lastDownloadValue.textContent = latest ? formatDate(latest.receivedAt) : "-";
+  els.identityCard.hidden = !settings.isBound;
+  if (settings.isBound) {
+    const user = settings.boundUser;
+    const role = user && user.role === "owner" ? "空间管理员" : "成员";
+    els.boundUserValue.textContent = user
+      ? `${user.displayName || user.id} · ${role}`
+      : "等待从服务器刷新身份";
+    els.profileValue.textContent = PROFILE_LABELS[settings.lastKnownProfile] || settings.lastKnownProfile || "-";
+    const permissions = settings.lastKnownPermissions;
+    els.effectivePermissionsValue.textContent = permissions
+      ? [
+          permissions.canAutoUpload ? "自动上传" : null,
+          permissions.canManualUpload ? "手动上传" : null,
+          permissions.canAutoReceive ? "自动接收" : null,
+          permissions.canManualDownload ? "手动下载" : null,
+        ].filter(Boolean).join("、") || "无运行权限"
+      : "尚未同步";
+  }
 
   const status = connection.status || "idle";
   els.connectionStatus.textContent = STATUS_TEXT[status] || status;
@@ -513,6 +656,7 @@ function renderState(state) {
   els.watchDirInput.value = settings.watchDir || "";
   renderWatchExcludedDirs(settings.watchExcludedDirs || []);
   els.autoUploadInput.checked = Boolean(settings.autoUpload);
+  const permissions = settings.lastKnownPermissions;
   const watchActive = Boolean(watch && watch.active);
   const watchEnabled = Boolean(watch && watch.enabled);
   let statusLabel;
@@ -521,6 +665,9 @@ function renderState(state) {
     els.watchStatusDot.dataset.state = "off";
   } else if (!settings.isBound) {
     statusLabel = "等待设备绑定";
+    els.watchStatusDot.dataset.state = "off";
+  } else if (permissions && !permissions.canAutoUpload) {
+    statusLabel = "服务端未允许自动上传";
     els.watchStatusDot.dataset.state = "off";
   } else if (!settings.autoUpload) {
     statusLabel = "已暂停";
@@ -539,11 +686,12 @@ function renderState(state) {
   renderWatchEvents(watch && watch.recentUploads ? watch.recentUploads : []);
 
   els.connectButton.disabled =
-    !settings.isBound || status === "connected" || status === "connecting";
+    !settings.isBound || permissions?.canAutoReceive === false || status === "connected" || status === "connecting";
   els.disconnectButton.disabled = status === "stopped" || status === "idle";
-  els.fetchPendingButton.disabled = !settings.isBound;
-  els.manualUploadButton.disabled = !settings.isBound;
-  els.autoUploadInput.disabled = !settings.isBound || !settings.watchDir;
+  els.fetchPendingButton.disabled = !settings.isBound || permissions?.canAutoReceive === false;
+  els.manualUploadButton.disabled = !settings.isBound || permissions?.canManualUpload === false;
+  els.autoReceiveInput.disabled = !settings.isBound || permissions?.canAutoReceive === false;
+  els.autoUploadInput.disabled = !settings.isBound || !settings.watchDir || permissions?.canAutoUpload === false;
 
   renderHistory(state.recentDownloads);
   renderAdminDevices(state.admin);
@@ -564,14 +712,13 @@ els.ownerLoginForm.addEventListener("submit", async (event) => {
   setBusy(submit, true);
   showError("");
   try {
-    const result = await window.studyshot.createBindCodeWithLogin({
+    await window.studyshot.bindWithLogin({
       serverBaseUrl: els.ownerServerInput.value,
       login: els.ownerLoginInput.value,
       password: els.ownerPasswordInput.value,
       deviceNameHint: els.bindDeviceNameInput.value,
+      profile: els.loginProfileInput.value,
     });
-    els.bindServerInput.value = els.ownerServerInput.value;
-    els.bindCodeInput.value = result.bindCode;
     els.ownerPasswordInput.value = "";
     await loadState();
   } catch (err) {
@@ -587,10 +734,20 @@ els.bindForm.addEventListener("submit", async (event) => {
   setBusy(submit, true);
   showError("");
   try {
+    const preview = await window.studyshot.previewBindCode(
+      els.bindServerInput.value,
+      els.bindCodeInput.value,
+    );
+    const target = preview.targetUser.displayName || preview.targetUser.id;
+    const role = preview.targetUser.role === "owner" ? "空间管理员" : "成员";
+    if (!confirm(`绑定目标：${target}（${role}）\n空间：${preview.space.displayName}\n确认绑定到这个成员吗？`)) {
+      return;
+    }
     const state = await window.studyshot.registerDevice({
       serverBaseUrl: els.bindServerInput.value,
       bindCode: els.bindCodeInput.value,
       deviceName: els.bindDeviceNameInput.value,
+      profile: els.bindProfileInput.value,
     });
     els.bindCodeInput.value = "";
     renderState(state);

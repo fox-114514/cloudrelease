@@ -308,9 +308,32 @@
               设备名称
               <input type="text" id="cfgName" placeholder="LinuxPC">
             </label>
+            <label>
+              设备用途
+              <select id="cfgProfile">
+                <option value="manual_only">只手动分享</option>
+                <option value="upload_only">只上传截图</option>
+                <option value="receive_own">只接收我的图片</option>
+                <option value="sync_own">我的设备双向同步</option>
+              </select>
+            </label>
             <div class="actions">
-              <button id="btnBind">绑定</button>
+              <button id="btnBind">预览并绑定</button>
               <button id="btnUnbind" class="danger">解绑</button>
+            </div>
+            <hr>
+            <h3>使用成员账号绑定</h3>
+            <label>
+              登录名
+              <input type="text" id="cfgLogin" autocomplete="username">
+            </label>
+            <label>
+              密码
+              <input type="password" id="cfgPassword" autocomplete="current-password">
+            </label>
+            <div class="actions">
+              <button id="btnBindLogin">登录并绑定本设备</button>
+              <button id="btnRefreshPermissions">刷新身份与权限</button>
             </div>
           </div>
         </div>
@@ -428,6 +451,7 @@
     const $ = id => document.getElementById(id);
     let adminJwt = localStorage.getItem('ssr_admin_jwt') || '';
     let eventSource;
+    let currentConfig;
 
     function showMessage(text, type) {
       const el = $('message');
@@ -446,7 +470,7 @@
     }
 
     function escapeHtml(s) {
-      return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+      return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
     }
 
     async function api(method, path, body) {
@@ -463,12 +487,18 @@
 
     async function loadConfig() {
       const cfg = await api('GET', '/api/config');
+      currentConfig = cfg;
       $('cfgServer').value = cfg.device?.serverBaseUrl || '';
       $('cfgName').value = cfg.device?.deviceName || '';
+      if (cfg.device?.profile && cfg.device.profile !== 'custom') $('cfgProfile').value = cfg.device.profile;
       $('cfgWatchDir').value = cfg.watchDir || '';
       $('cfgDownloadDir').value = cfg.downloadDir || '';
       $('cfgAutoUpload').checked = cfg.autoUpload;
       $('cfgAutoReceive').checked = cfg.autoReceive;
+      $('cfgAutoUpload').disabled = Boolean(cfg.device && cfg.device.permissions && !cfg.device.permissions.canAutoUpload);
+      $('cfgAutoReceive').disabled = Boolean(cfg.device && cfg.device.permissions && !cfg.device.permissions.canAutoReceive);
+      $('btnStartWatch').disabled = $('cfgAutoUpload').disabled;
+      $('btnStartReceive').disabled = $('cfgAutoReceive').disabled;
       renderDeviceInfo(cfg);
     }
 
@@ -532,6 +562,10 @@
         <p><strong>服务器：</strong>${escapeHtml(cfg.device.serverBaseUrl)}</p>
         <p><strong>设备 ID：</strong>${cfg.device.deviceId}</p>
         <p><strong>设备名：</strong>${escapeHtml(cfg.device.deviceName)}</p>
+        <p><strong>绑定成员：</strong>${escapeHtml(cfg.device.user?.displayName || cfg.device.user?.id || '未知')} · ${escapeHtml(cfg.device.user?.role || '')}</p>
+        <p><strong>设备用途：</strong>${escapeHtml(cfg.device.profile || '未知')}</p>
+        <p><strong>有效权限：</strong>${escapeHtml(JSON.stringify(cfg.device.permissions || {}))}</p>
+        <p><strong>权限刷新：</strong>${escapeHtml(fmtTime(cfg.device.permissionsFetchedAt))}</p>
         <p><strong>监听目录：</strong>${escapeHtml(cfg.watchDir || '未设置')}</p>
         <p><strong>接收目录：</strong>${escapeHtml(cfg.downloadDir || '默认')}</p>
       `;
@@ -539,16 +573,53 @@
 
     async function bindDevice() {
       try {
+        const previewResponse = await api('POST', '/api/bind/preview', {
+          serverBaseUrl: $('cfgServer').value,
+          bindCode: $('cfgCode').value
+        });
+        const preview = previewResponse.data;
+        const target = preview.targetUser.displayName || preview.targetUser.id;
+        if (!confirm(`绑定目标：${target}（${preview.targetUser.role}）\n空间：${preview.space.displayName}\n确认继续吗？`)) return;
         const body = {
           serverBaseUrl: $('cfgServer').value,
           bindCode: $('cfgCode').value,
-          deviceName: $('cfgName').value
+          deviceName: $('cfgName').value,
+          profile: $('cfgProfile').value,
+          confirmedTargetUserId: preview.targetUser.id
         };
         await api('POST', '/api/bind', body);
         showMessage('绑定成功', 'success');
         await loadConfig();
       } catch (err) {
         showMessage('绑定失败：' + err.message, 'error');
+      }
+    }
+
+    async function bindWithLogin() {
+      try {
+        await api('POST', '/api/bind-login', {
+          serverBaseUrl: $('cfgServer').value,
+          login: $('cfgLogin').value,
+          password: $('cfgPassword').value,
+          deviceName: $('cfgName').value,
+          profile: $('cfgProfile').value
+        });
+        $('cfgPassword').value = '';
+        showMessage('账号绑定成功', 'success');
+        await loadConfig();
+      } catch (err) {
+        showMessage('账号绑定失败：' + err.message, 'error');
+      }
+    }
+
+    async function refreshPermissions() {
+      try {
+        await api('POST', '/api/permissions/refresh');
+        showMessage('身份与权限已刷新', 'success');
+        await loadConfig();
+        await loadServiceStatus();
+      } catch (err) {
+        showMessage('刷新失败：' + err.message, 'error');
       }
     }
 
@@ -1046,6 +1117,8 @@
     });
 
     $('btnBind').addEventListener('click', bindDevice);
+    $('btnBindLogin').addEventListener('click', bindWithLogin);
+    $('btnRefreshPermissions').addEventListener('click', refreshPermissions);
     $('btnUnbind').addEventListener('click', unbind);
     $('btnSaveConfig').addEventListener('click', saveConfig);
     $('btnAdminLogin').addEventListener('click', adminLogin);

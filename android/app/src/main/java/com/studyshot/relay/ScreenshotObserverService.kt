@@ -103,7 +103,7 @@ class ScreenshotObserverService : Service() {
     private suspend fun scanRecentBatch() {
         val app = application as StudyShotApp
         val settings = app.secureSettings.settings.value
-        if (!settings.autoUploadEnabled || !settings.realtimeModeEnabled) return
+        if (!settings.autoUploadEnabled || !settings.serverAllowsAutoUpload() || !settings.realtimeModeEnabled) return
         if (settings.autoUploadScope !in setOf("screenshot_only", "selected_album")) return
 
         val batchStartAt = System.currentTimeMillis()

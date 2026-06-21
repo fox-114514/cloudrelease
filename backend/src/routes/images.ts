@@ -15,6 +15,13 @@ import {
   getImageDimensions,
   storeImage,
 } from "../services/storage.js";
+import {
+  canDeleteImage,
+  canReadImage,
+  requireAnyAuth,
+  requireDeviceAuth,
+  resolveImageListFilter,
+} from "../services/authorization.js";
 
 const uploadImageSchema = z.object({
   sha256: z.string().length(64),
@@ -29,6 +36,7 @@ const listImagesSchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(50),
   before: z.string().datetime().optional(),
   filter: z.enum(["all", "active", "expired", "today", "week", "month"]).default("all"),
+  userId: z.string().uuid().optional(),
 });
 
 function isManualSource(sourceKind: string): boolean {
@@ -42,13 +50,8 @@ function isAdminAuthorized(request: FastifyRequest): boolean {
 }
 
 export async function imageRoutes(app: FastifyInstance): Promise<void> {
-  // Upload image.
   app.post("/images", async (request, reply) => {
-    if (!request.device) {
-      throw new AppError("UNAUTHORIZED", "Device authentication required", 401);
-    }
-
-    const device = request.device;
+    const deviceAuth = requireDeviceAuth(request);
     const data = await request.file({ limits: { fileSize: request.server?.initialConfig.bodyLimit } });
     if (!data) {
       throw new AppError("MISSING_FILE", "No image file provided", 400);
@@ -63,12 +66,11 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
 
     const meta = uploadImageSchema.parse(fields);
 
-    // Permission check based on upload mode.
     const manual = isManualSource(meta.sourceKind);
-    if (manual && !device.permissions.canManualUpload) {
+    if (manual && !deviceAuth.permissions?.canManualUpload) {
       throw new AppError("FORBIDDEN", "Device does not have manual upload permission", 403);
     }
-    if (!manual && !device.permissions.canAutoUpload) {
+    if (!manual && !deviceAuth.permissions?.canAutoUpload) {
       throw new AppError("FORBIDDEN", "Device does not have auto upload permission", 403);
     }
 
@@ -78,7 +80,6 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
     const stored = await storeImage(imageId, data.file, data.mimetype);
 
     if (stored.sha256 !== meta.sha256) {
-      // Clean up stored file on hash mismatch.
       const abs = getAbsolutePath(stored.storageKey);
       try {
         await import("fs").then((fs) => fs.promises.unlink(abs));
@@ -88,7 +89,6 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
       throw new AppError("HASH_MISMATCH", "Client sha256 does not match server sha256", 400);
     }
 
-    // Validate origin_image_id loop risk before any further processing.
     if (meta.originImageId) {
       try {
         await import("fs").then((fs) => fs.promises.unlink(stored.absolutePath));
@@ -100,19 +100,17 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
 
     const dimensions = await getImageDimensions(stored.absolutePath);
 
-    // Deduplication: same owner space, same upload device, same sha256 within last hour.
     const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
     const existing = await prisma.image.findFirst({
       where: {
-        ownerUserId: device.ownerUserId,
-        uploadDeviceId: device.deviceId,
+        ownerUserId: deviceAuth.ownerUserId,
+        uploadDeviceId: deviceAuth.deviceId,
         sha256: stored.sha256,
         createdAt: { gte: oneHourAgo },
       },
     });
 
     if (existing) {
-      // Clean up the just-stored duplicate file.
       try {
         await import("fs").then((fs) => fs.promises.unlink(stored.absolutePath));
       } catch {
@@ -120,9 +118,9 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
       }
 
       await logAudit({
-        ownerUserId: device.ownerUserId,
-        actorUserId: device.userId,
-        actorDeviceId: device.deviceId,
+        ownerUserId: deviceAuth.ownerUserId,
+        actorUserId: deviceAuth.userId,
+        actorDeviceId: deviceAuth.deviceId,
         action: "image.upload_deduplicated",
         targetType: "image",
         targetId: existing.id,
@@ -146,9 +144,9 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
       const created = await tx.image.create({
         data: {
           id: imageId,
-          ownerUserId: device.ownerUserId,
-          uploadUserId: device.userId,
-          uploadDeviceId: device.deviceId,
+          ownerUserId: deviceAuth.ownerUserId,
+          uploadUserId: deviceAuth.userId,
+          uploadDeviceId: deviceAuth.deviceId,
           originImageId: meta.originImageId ?? null,
           sha256: stored.sha256,
           mimeType: stored.mimeType,
@@ -168,16 +166,15 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
     });
 
     await logAudit({
-      ownerUserId: device.ownerUserId,
-      actorUserId: device.userId,
-      actorDeviceId: device.deviceId,
+      ownerUserId: deviceAuth.ownerUserId,
+      actorUserId: deviceAuth.userId,
+      actorDeviceId: deviceAuth.deviceId,
       action: "image.uploaded",
       targetType: "image",
       targetId: image.id,
       metadata: { sha256: stored.sha256, sourceKind: meta.sourceKind, fileSize: stored.fileSize },
     });
 
-    // Notify online target devices.
     const { notifyDevicesForImage } = await import("../plugins/ws.js");
     notifyDevicesForImage(image.id);
 
@@ -192,20 +189,14 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  // Download image.
   app.get("/images/:imageId/download", async (request, reply) => {
-    const isAdmin = isAdminAuthorized(request);
-    if (!request.device && !isAdmin) {
-      throw new AppError("UNAUTHORIZED", "Authentication required", 401);
-    }
-
+    const actor = requireAnyAuth(request);
     const { imageId } = request.params as { imageId: string };
-    const ownerUserId = request.user?.ownerUserId ?? request.device!.ownerUserId;
 
     const image = await prisma.image.findFirst({
       where: {
         id: imageId,
-        ownerUserId,
+        ownerUserId: actor.ownerUserId,
         deletedAt: null,
         expiresAt: { gt: new Date() },
       },
@@ -215,22 +206,25 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
       throw new AppError("NOT_FOUND", "Image not found or expired", 404);
     }
 
-    // Authorization:
-    // - Admin (owner user or canManageSpace device): always allowed.
-    // - Device: must have a pending/notified/downloaded delivery, or have manual download permission.
-    if (!isAdmin && request.device) {
-      const device = request.device;
+    // For devices, check for an active delivery; for users, just check the
+    // actor matrix. canManualDownload no longer extends reach across
+    // members (spec §6.10).
+    let deliveryExists = false;
+    if (actor.deviceId) {
       const delivery = await prisma.delivery.findFirst({
         where: {
           imageId,
-          targetDeviceId: device.deviceId,
+          targetDeviceId: actor.deviceId,
           status: { in: ["pending", "notified", "downloaded"] },
         },
+        select: { id: true },
       });
+      deliveryExists = Boolean(delivery);
+    }
 
-      if (!delivery && !device.permissions.canManualDownload) {
-        throw new AppError("FORBIDDEN", "Device is not authorized to download this image", 403);
-      }
+    if (!canReadImage(actor, image, deliveryExists)) {
+      // Always 404 to avoid leaking the existence of other members' images.
+      throw new AppError("NOT_FOUND", "Image not found", 404);
     }
 
     const stream = createImageReadStream(image.storageKey);
@@ -239,12 +233,9 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
     return reply.send(stream);
   });
 
-  // List images (admin only).
   app.get("/images", async (request, reply) => {
-    if (!request.user && !request.device) {
-      throw new AppError("UNAUTHORIZED", "Authentication required", 401);
-    }
-    if (!isAdminAuthorized(request)) {
+    const actor = requireAnyAuth(request);
+    if (!isAdminAuthorized(request) && !request.user) {
       throw new AppError(
         "FORBIDDEN",
         "Manage permission required to list images",
@@ -253,19 +244,34 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const query = listImagesSchema.parse(request.query);
-    const ownerUserId = request.user?.ownerUserId ?? request.device!.ownerUserId;
     const now = new Date();
 
-    // All filters exclude soft-deleted images by default. Deleted images cannot
-    // be previewed (GET /download filters them out) and re-deleting them would
-    // always 404, so showing them in the library is just noise. Inspect
-    // audit_logs if you need deletion history.
+    const filter = resolveImageListFilter(actor, query.userId);
+    if (!isAdminAuthorized(request)) {
+      // For child users we force the filter to their own uploads; if they
+      // explicitly supplied a different userId we 403 to avoid any
+      // ambiguity about whose images they're looking at.
+      if (query.userId && query.userId !== actor.userId) {
+        throw new AppError("FORBIDDEN", "Child users can only list their own images", 403);
+      }
+    } else if (query.userId) {
+      const targetUser = await prisma.user.findFirst({
+        where: { id: query.userId, ownerUserId: actor.ownerUserId },
+      });
+      if (!targetUser) {
+        throw new AppError("NOT_FOUND", "Target user not found in this space", 404);
+      }
+      filter.uploadUserId = query.userId;
+    }
+
     const where: {
       ownerUserId: string;
       deletedAt: null;
       expiresAt?: { gt: Date } | { lte: Date };
       createdAt?: { gte?: Date; lt?: Date };
-    } = { ownerUserId, deletedAt: null };
+      uploadUserId?: string;
+    } = { ownerUserId: filter.ownerUserId, deletedAt: null };
+    if (filter.uploadUserId) where.uploadUserId = filter.uploadUserId;
 
     const createdAtFilter: { gte?: Date; lt?: Date } = {};
 
@@ -280,7 +286,6 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
     } else if (query.filter === "month") {
       createdAtFilter.gte = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
     }
-    // "all": every non-deleted image regardless of expiry or age.
 
     if (query.before) {
       createdAtFilter.lt = new Date(query.before);
@@ -331,27 +336,22 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  // Delete image (admin only).
   app.delete("/images/:imageId", async (request, reply) => {
-    if (!request.user && !request.device) {
-      throw new AppError("UNAUTHORIZED", "Authentication required", 401);
-    }
-    if (!isAdminAuthorized(request)) {
-      throw new AppError(
-        "FORBIDDEN",
-        "Manage permission required to delete images",
-        403
-      );
-    }
+    const actor = requireAnyAuth(request);
 
     const { imageId } = request.params as { imageId: string };
-    const ownerUserId = request.user?.ownerUserId ?? request.device!.ownerUserId;
 
     const image = await prisma.image.findFirst({
-      where: { id: imageId, ownerUserId, deletedAt: null },
+      where: { id: imageId, ownerUserId: actor.ownerUserId, deletedAt: null },
     });
 
-    if (!image) {
+    if (!image || !canDeleteImage(actor, image)) {
+      // Plain device tokens are always forbidden from deleting images
+      // (spec §6.11). Child users looking at other members' images get a
+      // 404 to avoid leaking existence.
+      if (actor.deviceId) {
+        throw new AppError("FORBIDDEN", "Device cannot delete images", 403);
+      }
       throw new AppError("NOT_FOUND", "Image not found", 404);
     }
 
@@ -362,8 +362,6 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
         where: { id: imageId },
         data: { deletedAt: now },
       });
-      // Cascade: any pending/notified deliveries for this image become expired
-      // so the cleanup task can drop them on the next pass.
       await tx.delivery.updateMany({
         where: {
           imageId,
@@ -373,7 +371,6 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
       });
     });
 
-    // Best-effort file removal. deleteStoredImage silently ignores ENOENT.
     try {
       await deleteStoredImage(image.storageKey);
     } catch (err) {
@@ -385,9 +382,9 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
     }
 
     await logAudit({
-      ownerUserId,
-      actorUserId: request.user?.userId,
-      actorDeviceId: request.device?.deviceId,
+      ownerUserId: actor.ownerUserId,
+      actorUserId: actor.userId,
+      actorDeviceId: actor.deviceId,
       action: "image.deleted",
       targetType: "image",
       targetId: imageId,

@@ -4,10 +4,12 @@ Electron + TypeScript desktop receiver for Windows and Linux.
 
 ## Current MVP
 
-- Register this computer with a server bind code.
+- Preview the target member before registering with a bind code.
+- Bind directly with an owner or member account without persisting the temporary user JWT.
+- Display the bound member, safe-use profile, and effective server permissions.
+- Refresh effective permissions at startup and periodically; stop upload/receive when the server denies them.
 - Watch a local directory and automatically upload new images.
 - Exclude selected child directories; exclusions include all descendants.
-- Create a bind code by logging in as the owner user.
 - Store the device token with Electron `safeStorage` when available.
 - Connect to `/api/v1/ws` with the device token.
 - Send `hello` and heartbeat `ping`.
@@ -26,8 +28,8 @@ Electron + TypeScript desktop receiver for Windows and Linux.
 - Persist recent receive history locally.
 - Re-copy a received image to the clipboard.
 - Locate a received image in the file manager.
-- Log in to an in-memory owner/admin session.
-- List devices in the owner space.
+- Log in to an in-memory owner/member management session.
+- List devices allowed by the current account role.
 - Rename devices.
 - Update device permissions.
 - Revoke devices.
@@ -56,6 +58,7 @@ Stored settings include:
 - server base URL
 - device ID
 - encrypted device token when `safeStorage` is available
+- bound user summary, device profile, and last known effective permissions
 - download directory
 - watch directory and excluded child directories
 - auto upload setting
@@ -72,8 +75,8 @@ The renderer process never receives the device token.
 1. Start the backend.
 2. Ensure a desktop device has `canAutoReceive = true`.
 3. Start this app with `npm start`.
-4. Log in as the owner and generate a bind code, or paste an existing bind code.
-5. Bind the device.
+4. Bind with the current member account, or paste a bind code and confirm its preview.
+5. Select a safe device profile and bind the device.
 6. Upload an image from an authorized device.
 7. Confirm the desktop app downloads it into the selected folder.
 8. Confirm the server delivery is ACKed.

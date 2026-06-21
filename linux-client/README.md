@@ -35,7 +35,8 @@ studyshot-relay launch
 
 启动后会自动打开浏览器访问 `http://127.0.0.1:<随机端口>`。在 Web 界面里可以：
 
-- 绑定设备
+- 预览绑定目标后绑定设备，或使用成员账号自助绑定
+- 显示绑定成员、用途预设和服务端有效权限
 - 设置监听目录（自动上传）
 - 设置接收目录（自动下载）
 - 启动/停止接收和监听服务
@@ -69,6 +70,22 @@ studyshot-relay launch -p 8080
 ```bash
 studyshot-relay bind -s http://64.90.30.102:3000 -c <绑定码> -n "MyLinuxPC"
 ```
+
+命令会先显示绑定目标并要求确认。也可以使用成员账号自助绑定；密码通过隐藏终端输入读取，不进入 shell history：
+
+```bash
+studyshot-relay bind-login -s http://64.90.30.102:3000 -u <登录名> -n "MyLinuxPC" --profile sync_own
+```
+
+查看或刷新真实服务端身份与权限：
+
+```bash
+studyshot-relay whoami
+studyshot-relay permissions
+studyshot-relay refresh-permissions
+```
+
+本地自动上传/接收开关只有在服务端有效权限允许时才会启动对应服务。
 
 ### 查看状态
 

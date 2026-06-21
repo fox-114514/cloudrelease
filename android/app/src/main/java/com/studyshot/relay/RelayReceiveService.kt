@@ -90,7 +90,7 @@ class RelayReceiveService : Service() {
         if (destroyed) return@withLock
         val settings = app.secureSettings.settings.value
         val token = app.secureSettings.getDeviceToken()
-        if (!settings.autoReceiveEnabled || settings.serverBaseUrl.isBlank() || token.isNullOrBlank()) {
+        if (!settings.autoReceiveEnabled || !settings.serverAllowsAutoReceive() || settings.serverBaseUrl.isBlank() || token.isNullOrBlank()) {
             stopSelf()
             return@withLock
         }
@@ -123,7 +123,12 @@ class RelayReceiveService : Service() {
                 if (socket.get() === webSocket) {
                     socket.set(null)
                     heartbeatJob.getAndSet(null)?.cancel()
-                    if (!destroyed) scheduleReconnect()
+                    if (code == 1008) {
+                        app.secureSettings.clearBinding()
+                        stopSelf()
+                    } else if (!destroyed) {
+                        scheduleReconnect()
+                    }
                 }
             }
 
@@ -132,7 +137,12 @@ class RelayReceiveService : Service() {
                 if (socket.get() === webSocket) {
                     socket.set(null)
                     heartbeatJob.getAndSet(null)?.cancel()
-                    if (!destroyed) scheduleReconnect()
+                    if (response?.code == 401 || response?.code == 403) {
+                        app.secureSettings.clearBinding()
+                        stopSelf()
+                    } else if (!destroyed) {
+                        scheduleReconnect()
+                    }
                 }
             }
         })
@@ -153,7 +163,7 @@ class RelayReceiveService : Service() {
     private suspend fun fetchPending() {
         val settings = app.secureSettings.settings.value
         val token = app.secureSettings.getDeviceToken() ?: return
-        if (!settings.autoReceiveEnabled || settings.serverBaseUrl.isBlank()) return
+        if (!settings.autoReceiveEnabled || !settings.serverAllowsAutoReceive() || settings.serverBaseUrl.isBlank()) return
 
         runCatching {
             app.apiClient.getPendingDeliveries(settings.serverBaseUrl, token).deliveries.forEach {
@@ -325,6 +335,7 @@ class RelayReceiveService : Service() {
     private fun startHeartbeat() {
         heartbeatJob.getAndSet(null)?.cancel()
         heartbeatJob.set(scope.launch {
+            var ticks = 0
             while (true) {
                 delay(30_000)
                 if (destroyed) return@launch
@@ -334,13 +345,59 @@ class RelayReceiveService : Service() {
                     return@launch
                 }
                 current.send("""{"type":"ping"}""")
+                ticks += 1
+                if (ticks % 10 == 0 && !refreshEffectivePermissions()) {
+                    current.close(1000, "Server permission disabled auto receive")
+                    stopSelf()
+                    return@launch
+                }
             }
         })
     }
 
+    private suspend fun refreshEffectivePermissions(): Boolean {
+        val settings = app.secureSettings.settings.value
+        val token = app.secureSettings.getDeviceToken() ?: return false
+        return try {
+            val info = app.apiClient.getDeviceMe(settings.serverBaseUrl, token)
+            val permissionsJson = JSONObject()
+                .put("canAutoUpload", info.permissions.canAutoUpload)
+                .put("canManualUpload", info.permissions.canManualUpload)
+                .put("canAutoReceive", info.permissions.canAutoReceive)
+                .put("canManualDownload", info.permissions.canManualDownload)
+                .put("canManageSpace", info.permissions.canManageSpace)
+                .put("canCreateInvite", info.permissions.canCreateInvite)
+                .put("autoUploadScope", info.permissions.autoUploadScope)
+                .put("autoReceiveScope", info.permissions.autoReceiveScope)
+                .toString()
+            app.secureSettings.saveBinding(
+                serverBaseUrl = settings.serverBaseUrl,
+                deviceId = info.device.id,
+                deviceToken = token,
+                deviceName = info.device.name,
+                boundUserId = info.user.id,
+                boundOwnerUserId = info.user.ownerUserId,
+                boundUserDisplayName = info.user.displayName ?: "",
+                boundUserRole = info.user.role,
+                lastKnownDeviceProfile = info.profile,
+                lastKnownPermissionsJson = permissionsJson,
+            )
+            info.permissions.canAutoReceive
+        } catch (err: ApiException) {
+            if (err.statusCode == 401 || err.statusCode == 403) {
+                app.secureSettings.clearBinding()
+                false
+            } else {
+                settings.serverAllowsAutoReceive()
+            }
+        } catch (_: Exception) {
+            settings.serverAllowsAutoReceive()
+        }
+    }
+
     private fun scheduleReconnect() {
         val settings = app.secureSettings.settings.value
-        if (!settings.autoReceiveEnabled || destroyed) return
+        if (!settings.autoReceiveEnabled || !settings.serverAllowsAutoReceive() || destroyed) return
         if (reconnectAttempts.incrementAndGet() > MAX_RECONNECT_ATTEMPTS) {
             Log.w(TAG, "Giving up WebSocket reconnect after $MAX_RECONNECT_ATTEMPTS attempts")
             stopSelf()

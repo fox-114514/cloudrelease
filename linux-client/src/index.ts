@@ -4,8 +4,18 @@ import { Command } from "commander";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createInterface } from "node:readline/promises";
 import { ApiClient } from "./api.js";
-import { bindDevice, loadConfig, saveConfig, unbind } from "./config.js";
+import {
+  bindDevice,
+  bindWithLogin,
+  loadConfig,
+  previewBindCode,
+  refreshDeviceIdentity,
+  saveConfig,
+  serverAllows,
+  unbind,
+} from "./config.js";
 import { startWatcher } from "./watcher.js";
 import { uploadSingle } from "./uploader.js";
 import { WsReceiveClient } from "./ws-client.js";
@@ -24,9 +34,75 @@ function installShutdown(cleanup: () => Promise<void> | void): void {
   process.on("SIGTERM", () => handler("SIGTERM"));
 }
 
+async function confirmAction(prompt: string): Promise<boolean> {
+  if (!process.stdin.isTTY) return false;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await rl.question(`${prompt} [y/N] `);
+    return answer.trim().toLowerCase() === "y" || answer.trim().toLowerCase() === "yes";
+  } finally {
+    rl.close();
+  }
+}
+
+async function readHiddenPassword(prompt = "Password: "): Promise<string> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY || !process.stdin.setRawMode) {
+    throw new Error("Password input requires an interactive terminal");
+  }
+  process.stdout.write(prompt);
+  const stdin = process.stdin;
+  stdin.setRawMode(true);
+  stdin.resume();
+  stdin.setEncoding("utf8");
+  return new Promise((resolve, reject) => {
+    let value = "";
+    const cleanup = () => {
+      stdin.off("data", onData);
+      stdin.setRawMode(false);
+      stdin.pause();
+      process.stdout.write("\n");
+    };
+    const onData = (chunk: string | Buffer) => {
+      for (const char of String(chunk)) {
+        if (char === "\r" || char === "\n") {
+          cleanup();
+          resolve(value);
+          return;
+        }
+        if (char === "\u0003") {
+          cleanup();
+          reject(new Error("Cancelled"));
+          return;
+        }
+        if (char === "\u007f" || char === "\b") {
+          value = value.slice(0, -1);
+        } else {
+          value += char;
+        }
+      }
+    };
+    stdin.on("data", onData);
+  });
+}
+
+async function refreshAndSaveDevice() {
+  const config = await loadConfig();
+  if (!config.device) throw new Error("Not bound. Run bind first.");
+  config.device = await refreshDeviceIdentity(config.device);
+  await saveConfig(config);
+  return config.device;
+}
+
+function printIdentity(device: NonNullable<Awaited<ReturnType<typeof loadConfig>>["device"]>): void {
+  console.log("Device:", `${device.deviceName} (${device.deviceId})`);
+  console.log("User:", device.user ? `${device.user.displayName || device.user.id} [${device.user.role}]` : "unknown");
+  console.log("Profile:", device.profile || "unknown");
+  console.log("Permissions:", JSON.stringify(device.permissions ?? {}, null, 2));
+}
+
 const program = new Command();
 
-program.name("studyshot-relay").description("StudyShot Relay Linux CLI").version("0.4.1");
+program.name("studyshot-relay").description("StudyShot Relay Linux CLI").version("0.5.0");
 
 program
   .command("bind")
@@ -34,9 +110,19 @@ program
   .requiredOption("-s, --server <url>", "Server base URL, e.g. http://64.90.30.102:3000")
   .requiredOption("-c, --code <code>", "Bind code from server")
   .option("-n, --name <name>", "Device name", os.hostname())
+  .option("--profile <profile>", "manual_only|upload_only|receive_own|sync_own", "manual_only")
+  .option("--yes", "Confirm the preview without prompting", false)
   .action(async (options) => {
     try {
-      const device = await bindDevice(options.server, options.code, options.name);
+      const preview = await previewBindCode(options.server, options.code);
+      const target = preview.targetUser.displayName || preview.targetUser.id;
+      console.log(`Target user: ${target} [${preview.targetUser.role}]`);
+      console.log(`Space: ${preview.space.displayName}`);
+      if (!options.yes && !(await confirmAction("Bind this device to the target above?"))) {
+        console.log("Binding cancelled.");
+        return;
+      }
+      const device = await bindDevice(options.server, options.code, options.name, options.profile);
       const config = await loadConfig();
       config.device = device;
       config.downloadDir = config.downloadDir || defaultDownloadDir();
@@ -50,6 +136,53 @@ program
   });
 
 program
+  .command("bind-login")
+  .description("Log in as a member and bind this device to the same account")
+  .requiredOption("-s, --server <url>", "Server base URL")
+  .requiredOption("-u, --user <login>", "Member login")
+  .option("-n, --name <name>", "Device name", os.hostname())
+  .option("--profile <profile>", "manual_only|upload_only|receive_own|sync_own", "manual_only")
+  .action(async (options) => {
+    try {
+      const password = await readHiddenPassword();
+      const device = await bindWithLogin(
+        options.server,
+        options.user,
+        password,
+        options.name,
+        options.profile,
+      );
+      const config = await loadConfig();
+      config.device = device;
+      config.downloadDir = config.downloadDir || defaultDownloadDir();
+      await saveConfig(config);
+      printIdentity(device);
+    } catch (err) {
+      console.error(`Bind failed: ${(err as Error).message}`);
+      process.exitCode = 1;
+    }
+  });
+
+for (const commandName of ["whoami", "permissions", "refresh-permissions"] as const) {
+  program
+    .command(commandName)
+    .description(commandName === "whoami" ? "Show the bound user identity" : "Refresh and show effective server permissions")
+    .action(async () => {
+      try {
+        const device = await refreshAndSaveDevice();
+        if (commandName === "whoami") {
+          console.log(device.user ? `${device.user.displayName || device.user.id} [${device.user.role}]` : "unknown");
+        } else {
+          console.log(JSON.stringify(device.permissions ?? {}, null, 2));
+        }
+      } catch (err) {
+        console.error((err as Error).message);
+        process.exitCode = 1;
+      }
+    });
+}
+
+program
   .command("status")
   .description("Show current binding and settings")
   .action(async () => {
@@ -58,9 +191,17 @@ program
       console.log("Not bound. Run: studyshot-relay bind -s <server> -c <code>");
       return;
     }
+    try {
+      config.device = await refreshDeviceIdentity(config.device);
+      await saveConfig(config);
+    } catch (err) {
+      console.log("Permission refresh failed; showing cached identity:", (err as Error).message);
+    }
     console.log("Server:", config.device.serverBaseUrl);
     console.log("Device ID:", config.device.deviceId);
     console.log("Device Name:", config.device.deviceName);
+    console.log("Bound User:", config.device.user?.displayName || config.device.user?.id || "unknown");
+    console.log("Profile:", config.device.profile || "unknown");
     console.log("Auto Upload:", config.autoUpload);
     console.log("Auto Receive:", config.autoReceive);
     console.log("Watch Dir:", config.watchDir || "(none)");
@@ -94,6 +235,13 @@ program
       console.error("Not bound. Run bind first.");
       process.exit(1);
     }
+    config.device = await refreshDeviceIdentity(config.device);
+    await saveConfig(config);
+    const requiredPermission = options.kind === "manual_share" ? "canManualUpload" : "canAutoUpload";
+    if (!serverAllows(config.device, requiredPermission)) {
+      console.error("Server does not allow this upload mode for this device.");
+      process.exit(1);
+    }
     try {
       await uploadSingle({
         device: config.device,
@@ -116,6 +264,12 @@ program
     const config = await loadConfig();
     if (!config.device) {
       console.error("Not bound. Run bind first.");
+      process.exit(1);
+    }
+    config.device = await refreshDeviceIdentity(config.device);
+    await saveConfig(config);
+    if (!serverAllows(config.device, "canAutoReceive")) {
+      console.error("Server does not allow automatic receive for this device.");
       process.exit(1);
     }
     if (options.downloadDir) {
@@ -144,7 +298,20 @@ program
 
     client.start();
 
+    const permissionTimer = setInterval(() => {
+      void refreshAndSaveDevice()
+        .then((device) => {
+          if (!serverAllows(device, "canAutoReceive")) {
+            console.error("Server disabled automatic receive; stopping.");
+            clearInterval(permissionTimer);
+            client.stop();
+          }
+        })
+        .catch((err) => console.error(`Permission refresh failed: ${(err as Error).message}`));
+    }, 5 * 60 * 1000);
+
     installShutdown(() => {
+      clearInterval(permissionTimer);
       client.stop();
     });
   });
@@ -158,6 +325,12 @@ program
     const config = await loadConfig();
     if (!config.device) {
       console.error("Not bound. Run bind first.");
+      process.exit(1);
+    }
+    config.device = await refreshDeviceIdentity(config.device);
+    await saveConfig(config);
+    if (!serverAllows(config.device, "canAutoUpload")) {
+      console.error("Server does not allow automatic upload for this device.");
       process.exit(1);
     }
     let watchDir: string;
@@ -189,7 +362,20 @@ program
       onError: console.error,
     });
 
+    const permissionTimer = setInterval(() => {
+      void refreshAndSaveDevice()
+        .then(async (device) => {
+          if (!serverAllows(device, "canAutoUpload")) {
+            console.error("Server disabled automatic upload; stopping watcher.");
+            clearInterval(permissionTimer);
+            await watcher.close();
+          }
+        })
+        .catch((err) => console.error(`Permission refresh failed: ${(err as Error).message}`));
+    }, 5 * 60 * 1000);
+
     installShutdown(async () => {
+      clearInterval(permissionTimer);
       await watcher.close();
     });
   });
@@ -229,6 +415,8 @@ program
       console.error("Not bound. Run bind first.");
       process.exit(1);
     }
+    config.device = await refreshDeviceIdentity(config.device);
+    await saveConfig(config);
     if (options.downloadDir) {
       config.downloadDir = path.resolve(options.downloadDir);
       await saveConfig(config);
@@ -237,7 +425,7 @@ program
     await ensureDir(downloadDir);
 
     let watcher: ReturnType<typeof startWatcher> | undefined;
-    if (config.watchDir && config.autoUpload) {
+    if (config.watchDir && config.autoUpload && serverAllows(config.device, "canAutoUpload")) {
       watcher = startWatcher({
         device: config.device,
         watchDir: config.watchDir,
@@ -246,17 +434,32 @@ program
       });
     }
 
-    const client = new WsReceiveClient({
-      device: config.device,
-      config,
-      onStatus: console.log,
-      onDownload: (filePath) => console.log(`[cli] Received ${filePath}`),
-      onError: (message) => console.error(`[cli] ${message}`),
-    });
-    client.start();
+    const client = serverAllows(config.device, "canAutoReceive")
+      ? new WsReceiveClient({
+          device: config.device,
+          config,
+          onStatus: console.log,
+          onDownload: (filePath) => console.log(`[cli] Received ${filePath}`),
+          onError: (message) => console.error(`[cli] ${message}`),
+        })
+      : undefined;
+    client?.start();
+
+    const permissionTimer = setInterval(() => {
+      void refreshAndSaveDevice()
+        .then(async (device) => {
+          if (!serverAllows(device, "canAutoReceive")) client?.stop();
+          if (!serverAllows(device, "canAutoUpload")) await watcher?.close();
+          if (!serverAllows(device, "canAutoReceive") && !serverAllows(device, "canAutoUpload")) {
+            clearInterval(permissionTimer);
+          }
+        })
+        .catch((err) => console.error(`Permission refresh failed: ${(err as Error).message}`));
+    }, 5 * 60 * 1000);
 
     installShutdown(async () => {
-      client.stop();
+      clearInterval(permissionTimer);
+      client?.stop();
       await watcher?.close();
     });
   });

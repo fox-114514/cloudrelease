@@ -36,6 +36,7 @@ lerna-debug.log*
 .env.*.local
 !**/.env.example
 !**/.env.production.example
+!**/.env.test.example
 
 # Secrets
 *.pem

@@ -7,6 +7,9 @@ import type {
   DeviceProfile,
   DeviceSelfInfo,
   ManualUploadResult,
+  ImageLibraryPage,
+  LibraryImage,
+  ManualLibraryDownloadResult,
   RegisterDeviceInput,
   RendererState,
   SaveSettingsInput,
@@ -35,8 +38,12 @@ const api = {
   connect: (): Promise<RendererState> => ipcRenderer.invoke("connection:connect"),
   disconnect: (): Promise<RendererState> => ipcRenderer.invoke("connection:disconnect"),
   fetchPending: (): Promise<RendererState> => ipcRenderer.invoke("deliveries:fetchPending"),
+  skipPending: (): Promise<RendererState> => ipcRenderer.invoke("deliveries:skipPending"),
   chooseAndUploadImage: (): Promise<ManualUploadResult | undefined> =>
     ipcRenderer.invoke("upload:chooseAndUpload"),
+  listLibraryImages: (): Promise<ImageLibraryPage> => ipcRenderer.invoke("library:list"),
+  downloadLibraryImage: (image: LibraryImage): Promise<ManualLibraryDownloadResult> =>
+    ipcRenderer.invoke("library:download", image),
   chooseDownloadDir: (): Promise<string | undefined> => ipcRenderer.invoke("dialog:chooseDownloadDir"),
   openDownloadDir: (): Promise<boolean> => ipcRenderer.invoke("downloadDir:open"),
   chooseWatchDir: (): Promise<string | undefined> => ipcRenderer.invoke("dialog:chooseWatchDir"),
@@ -45,10 +52,16 @@ const api = {
   openWatchDir: (): Promise<boolean> => ipcRenderer.invoke("watchDir:open"),
   startWatcher: (): Promise<RendererState> => ipcRenderer.invoke("watch:start"),
   stopWatcher: (): Promise<RendererState> => ipcRenderer.invoke("watch:stop"),
+  hideWatchUpload: (uploadedAt: string): Promise<RendererState> =>
+    ipcRenderer.invoke("watch:hideRecord", uploadedAt),
+  clearWatchUploads: (): Promise<RendererState> => ipcRenderer.invoke("watch:clearRecords"),
   copyHistoryToClipboard: (deliveryId: string): Promise<unknown> =>
     ipcRenderer.invoke("history:copyToClipboard", deliveryId),
   showHistoryInFolder: (deliveryId: string): Promise<boolean> =>
     ipcRenderer.invoke("history:showInFolder", deliveryId),
+  hideHistory: (deliveryId: string): Promise<RendererState> =>
+    ipcRenderer.invoke("history:hide", deliveryId),
+  clearHistory: (): Promise<RendererState> => ipcRenderer.invoke("history:clear"),
   adminLogin: (input: AdminLoginInput): Promise<RendererState> => ipcRenderer.invoke("admin:login", input),
   adminLogout: (): Promise<RendererState> => ipcRenderer.invoke("admin:logout"),
   adminRefreshDevices: (): Promise<RendererState> => ipcRenderer.invoke("admin:refreshDevices"),

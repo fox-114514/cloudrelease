@@ -97,7 +97,7 @@ program
     .requiredOption("-s, --server <url>", "Server base URL, e.g. http://64.90.30.102:3000")
     .requiredOption("-c, --code <code>", "Bind code from server")
     .option("-n, --name <name>", "Device name", os.hostname())
-    .option("--profile <profile>", "manual_only|upload_only|receive_own|sync_own", "manual_only")
+    .option("--profile <profile>", "manual_only|upload_only|receive_own|sync_own", "receive_own")
     .option("--yes", "Confirm the preview without prompting", false)
     .action(async (options) => {
     try {
@@ -128,7 +128,7 @@ program
     .requiredOption("-s, --server <url>", "Server base URL")
     .requiredOption("-u, --user <login>", "Member login")
     .option("-n, --name <name>", "Device name", os.hostname())
-    .option("--profile <profile>", "manual_only|upload_only|receive_own|sync_own", "manual_only")
+    .option("--profile <profile>", "manual_only|upload_only|receive_own|sync_own", "receive_own")
     .action(async (options) => {
     try {
         const password = await readHiddenPassword();
@@ -187,6 +187,7 @@ program
     console.log("Profile:", config.device.profile || "unknown");
     console.log("Auto Upload:", config.autoUpload);
     console.log("Auto Receive:", config.autoReceive);
+    console.log("Copy To Clipboard:", config.copyToClipboard);
     console.log("Watch Dir:", config.watchDir || "(none)");
     console.log("Download Dir:", config.downloadDir || defaultDownloadDir());
     try {
@@ -274,6 +275,15 @@ program
         config,
         onStatus: console.log,
         onDownload: (filePath) => console.log(`[cli] Received ${filePath}`),
+        onPending: (count) => {
+            if (count === 0)
+                return;
+            console.log(`[cli] ${count} offline image(s) are waiting; they were not downloaded automatically.`);
+            void confirmAction(`Receive these ${count} offline image(s) now?`).then((accepted) => {
+                if (accepted)
+                    void client.acceptPending();
+            });
+        },
         onError: (message) => console.error(`[cli] ${message}`),
     });
     client.start();
@@ -335,6 +345,7 @@ program
     const watcher = startWatcher({
         device: config.device,
         watchDir,
+        excludedDirs: config.downloadDir ? [config.downloadDir] : [],
         onLog: console.log,
         onError: console.error,
     });
@@ -401,16 +412,22 @@ program
         watcher = startWatcher({
             device: config.device,
             watchDir: config.watchDir,
+            excludedDirs: config.downloadDir ? [config.downloadDir] : [],
             onLog: console.log,
             onError: console.error,
         });
     }
-    const client = serverAllows(config.device, "canAutoReceive")
+    const client = config.autoReceive && serverAllows(config.device, "canAutoReceive")
         ? new WsReceiveClient({
             device: config.device,
             config,
             onStatus: console.log,
             onDownload: (filePath) => console.log(`[cli] Received ${filePath}`),
+            onPending: (count) => {
+                if (count > 0) {
+                    console.log(`[cli] ${count} offline image(s) are waiting; run interactively to accept them.`);
+                }
+            },
             onError: (message) => console.error(`[cli] ${message}`),
         })
         : undefined;

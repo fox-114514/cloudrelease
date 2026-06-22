@@ -1,7 +1,7 @@
 import chokidar from "chokidar";
 import path from "node:path";
 
-const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"]);
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 
 export interface WatcherOptions {
   watchDir: string;

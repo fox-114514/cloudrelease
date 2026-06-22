@@ -111,7 +111,14 @@ export function isAllowedDir(rawDir) {
     const resolved = path.resolve(rawDir);
     const home = os.homedir();
     const tmp = "/tmp";
-    if (resolved === home || resolved.startsWith(home + path.sep))
+    const sensitiveRoots = [".ssh", ".aws", ".gnupg"].map((name) => path.join(home, name));
+    if (sensitiveRoots.some((root) => resolved === root || resolved.startsWith(root + path.sep))) {
+        return { ok: false, reason: "不允许监听或下载到敏感凭据目录" };
+    }
+    if (resolved === home) {
+        return { ok: false, reason: "不允许直接使用用户家目录，请选择具体子目录" };
+    }
+    if (resolved.startsWith(home + path.sep))
         return { ok: true };
     if (resolved === tmp || resolved.startsWith(tmp + path.sep))
         return { ok: true };
@@ -121,6 +128,9 @@ export function isAllowedDir(rawDir) {
     };
 }
 export async function ensureAllowedDir(rawDir, allowUnsafe) {
+    if (!rawDir.trim()) {
+        throw new Error("目录不能为空");
+    }
     const resolved = path.resolve(rawDir);
     if (!allowUnsafe) {
         const verdict = isAllowedDir(resolved);
@@ -129,7 +139,13 @@ export async function ensureAllowedDir(rawDir, allowUnsafe) {
         }
     }
     await ensureDir(resolved);
-    return resolved;
+    const actual = await fs.realpath(resolved);
+    if (!allowUnsafe) {
+        const actualVerdict = isAllowedDir(actual);
+        if (!actualVerdict.ok)
+            throw new Error(actualVerdict.reason);
+    }
+    return actual;
 }
 export function configDir() {
     const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
@@ -142,13 +158,13 @@ export function formatTimestamp(input) {
     const date = Number.isNaN(Date.parse(input)) ? new Date() : new Date(input);
     const pad = (value) => String(value).padStart(2, "0");
     return [
-        date.getFullYear(),
-        pad(date.getMonth() + 1),
-        pad(date.getDate()),
+        date.getUTCFullYear(),
+        pad(date.getUTCMonth() + 1),
+        pad(date.getUTCDate()),
         "-",
-        pad(date.getHours()),
-        pad(date.getMinutes()),
-        pad(date.getSeconds()),
+        pad(date.getUTCHours()),
+        pad(date.getUTCMinutes()),
+        pad(date.getUTCSeconds()),
     ].join("");
 }
 //# sourceMappingURL=utils.js.map

@@ -355,6 +355,7 @@ const ADMIN_HTML = String.raw`<!doctype html>
             <img id="imageModalImg" alt="预览" />
             <div id="imageModalMeta" class="image-modal-meta"></div>
             <div class="actions">
+              <button class="secondary" id="imageModalDownload" type="button">下载图片</button>
               <button class="danger" id="imageModalDelete" type="button">删除图片</button>
             </div>
           </div>
@@ -648,6 +649,8 @@ const ADMIN_HTML = String.raw`<!doctype html>
         });
 
         // Card-level visibility based on role.
+        // The targeted-member forms are owner-only. Self-bind cards stay
+        // visible for child members because the API safely targets themselves.
         const ownerOnlyCards = ["quickBindCard", "createBindCard"];
         ownerOnlyCards.forEach((id) => {
           const el = $(id);
@@ -786,7 +789,9 @@ const ADMIN_HTML = String.raw`<!doctype html>
             ? Object.keys(PERMISSION_LABELS).map((key) => {
                 return '<label class="toggle"><input type="checkbox" data-action="perm" data-device="' + escapeHtml(device.id) + '" data-key="' + key + '"' + (device.permissions && device.permissions[key] ? " checked" : "") + (revoked ? " disabled" : "") + '><span>' + PERMISSION_LABELS[key] + '</span></label>';
               }).join("")
-            : '<span class="session">成员只能使用安全用途预设；高级权限由空间管理员设置。</span>';
+            : ["canManualUpload", "canManualDownload"].map((key) => {
+                return '<label class="toggle"><input type="checkbox" data-action="perm" data-device="' + escapeHtml(device.id) + '" data-key="' + key + '"' + (device.permissions && device.permissions[key] ? " checked" : "") + (revoked ? " disabled" : "") + '><span>' + PERMISSION_LABELS[key] + '</span></label>';
+              }).join("") + '<span class="session">自动权限请使用安全用途预设；高级权限由空间管理员设置。</span>';
           const uploadOptions = Object.keys(UPLOAD_SCOPE_LABELS).map((scope) =>
             '<option value="' + scope + '"' + (device.permissions && device.permissions.autoUploadScope === scope ? " selected" : "") + ">" + UPLOAD_SCOPE_LABELS[scope] + "</option>"
           ).join("");
@@ -1122,6 +1127,7 @@ const ADMIN_HTML = String.raw`<!doctype html>
           ? '<div class="image-card-actions"><span class="image-card-selected-hint">' + (isSelected ? '已选中' : '点击选中') + '</span></div>'
           : '<div class="image-card-actions">' +
               '<button class="secondary" data-action="image-preview" type="button">预览</button>' +
+              '<button class="secondary" data-action="image-download" type="button">下载</button>' +
               '<button class="danger" data-action="image-delete" type="button">删除</button>' +
             '</div>';
         return (
@@ -1353,7 +1359,28 @@ const ADMIN_HTML = String.raw`<!doctype html>
             '<dt>过期</dt><dd>' + fmt(img.expiresAt) + '</dd>' +
           '</dl>';
         $("imageModalDelete").dataset.imageId = imageId;
+        $("imageModalDownload").dataset.imageId = imageId;
         $("imageModal").classList.remove("hidden");
+      }
+
+      async function downloadLibraryImage(imageId) {
+        const img = state.images.find((item) => item.id === imageId);
+        if (!img || img.isExpired) {
+          showMessage("图片已过期，无法下载", "warn");
+          return;
+        }
+        const url = state.previewBlobUrls[imageId] || await loadImagePreview(imageId);
+        if (!url) throw new Error("图片下载失败");
+        const source = ((img.uploadedBy && img.uploadedBy.deviceName) || "设备")
+          .replace(/[^A-Za-z0-9._\u4e00-\u9fff-]+/g, "_");
+        const stamp = String(img.createdAt || "").replace(/\\D/g, "").slice(0, 14) || Date.now();
+        const ext = img.mimeType === "image/jpeg" ? ".jpg" : img.mimeType === "image/webp" ? ".webp" : ".png";
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = source + "_" + stamp + ext;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
       }
 
       function closeImagePreview() {
@@ -1431,6 +1458,8 @@ const ADMIN_HTML = String.raw`<!doctype html>
         const action = actionEl && actionEl.dataset.action;
         if (action === "image-delete") {
           deleteImage(id);
+        } else if (action === "image-download") {
+          downloadLibraryImage(id).catch((err) => showMessage(err.message || String(err), "error"));
         } else {
           openImagePreview(id);
         }
@@ -1472,6 +1501,10 @@ const ADMIN_HTML = String.raw`<!doctype html>
       $("imageModalDelete").addEventListener("click", (event) => {
         const id = event.currentTarget.dataset.imageId;
         if (id) deleteImage(id);
+      });
+      $("imageModalDownload").addEventListener("click", (event) => {
+        const id = event.currentTarget.dataset.imageId;
+        if (id) downloadLibraryImage(id).catch((err) => showMessage(err.message || String(err), "error"));
       });
       $("imageModal").addEventListener("click", (event) => {
         if (event.target === $("imageModal")) closeImagePreview();

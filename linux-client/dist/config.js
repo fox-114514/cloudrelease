@@ -1,12 +1,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { configDir, ensureDir, normalizeBaseUrl } from "./utils.js";
+import { configDir, defaultDownloadDir, ensureDir, normalizeBaseUrl } from "./utils.js";
 const DEFAULT_CONFIG = {
     autoUpload: true,
     autoReceive: true,
+    copyToClipboard: true,
     uploadedHashes: [],
+    receivedHashes: [],
 };
 const CONFIG_FILE = "config.json";
+let saveChain = Promise.resolve();
 function configPath() {
     return path.join(configDir(), CONFIG_FILE);
 }
@@ -18,21 +21,31 @@ export async function loadConfig() {
         return {
             ...DEFAULT_CONFIG,
             ...parsed,
+            downloadDir: parsed.downloadDir?.trim() || defaultDownloadDir(),
             uploadedHashes: parsed.uploadedHashes ?? [],
+            receivedHashes: parsed.receivedHashes ?? [],
         };
     }
     catch (err) {
         if (err.code === "ENOENT") {
-            return { ...DEFAULT_CONFIG };
+            return { ...DEFAULT_CONFIG, downloadDir: defaultDownloadDir() };
         }
         throw err;
     }
 }
 export async function saveConfig(config) {
-    await ensureDir(configDir());
-    await fs.writeFile(configPath(), JSON.stringify(config, null, 2), { mode: 0o600 });
+    const serialized = JSON.stringify(config, null, 2);
+    const run = saveChain.catch(() => undefined).then(async () => {
+        await ensureDir(configDir());
+        const target = configPath();
+        const temporary = `${target}.${process.pid}.tmp`;
+        await fs.writeFile(temporary, serialized, { mode: 0o600 });
+        await fs.rename(temporary, target);
+    });
+    saveChain = run;
+    await run;
 }
-export async function bindDevice(serverBaseUrl, bindCode, deviceName, profile = "manual_only") {
+export async function bindDevice(serverBaseUrl, bindCode, deviceName, profile = "receive_own") {
     const url = normalizeBaseUrl(serverBaseUrl);
     const response = await fetch(`${url}/api/v1/devices/register`, {
         method: "POST",
@@ -77,7 +90,7 @@ export async function previewBindCode(serverBaseUrl, bindCode) {
     });
     return parseData(response);
 }
-export async function bindWithLogin(serverBaseUrl, login, password, deviceName, profile = "manual_only") {
+export async function bindWithLogin(serverBaseUrl, login, password, deviceName, profile = "receive_own") {
     const url = normalizeBaseUrl(serverBaseUrl);
     const loginResponse = await fetch(`${url}/api/v1/auth/login`, {
         method: "POST",
@@ -129,6 +142,7 @@ export async function unbind() {
     const config = await loadConfig();
     config.device = undefined;
     config.uploadedHashes = [];
+    config.receivedHashes = [];
     await saveConfig(config);
 }
 //# sourceMappingURL=config.js.map

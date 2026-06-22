@@ -2,6 +2,7 @@ package com.studyshot.relay.upload
 
 import android.content.Context
 import android.net.Uri
+import com.studyshot.relay.StudyShotApp
 import com.studyshot.relay.data.SecureSettings
 import com.studyshot.relay.data.StudyShotDatabase
 import com.studyshot.relay.data.UploadedHashEntity
@@ -27,7 +28,7 @@ internal enum class UploadExecutionResult {
 internal class UploadTaskExecutor(context: Context) {
     private val appContext = context.applicationContext
     private val database = StudyShotDatabase.get(appContext)
-    private val secureSettings = SecureSettings(appContext)
+    private val secureSettings = (appContext as? StudyShotApp)?.secureSettings ?: SecureSettings(appContext)
     private val apiClient = sharedApiClient
 
     suspend fun execute(taskId: String, runAttemptCount: Int): UploadExecutionResult {

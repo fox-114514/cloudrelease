@@ -376,7 +376,7 @@ describe("GET /api/v1/images (admin list)", () => {
     expect(body.data.images[0].isExpired).toBe(false);
   });
 
-  it("forbids a non-admin device token from listing images", async () => {
+  it("forbids a device without manual-download permission from listing images", async () => {
     const { app, uploadDeviceToken } = await setupUploaderAndReceiver();
     const res = await app.inject({
       method: "GET",
@@ -384,6 +384,25 @@ describe("GET /api/v1/images (admin list)", () => {
       headers: { authorization: `Bearer ${uploadDeviceToken}` },
     });
     expect(res.statusCode).toBe(403);
+  });
+
+  it("lets a manual-download device list only its own user's images", async () => {
+    const { app, userToken, uploadDeviceToken, receiveDeviceId, receiveDeviceToken } =
+      await setupUploaderAndReceiver();
+    const upload = await uploadTestImage(app, uploadDeviceToken);
+    expect(upload.res.statusCode).toBe(201);
+    await updateDevicePermissions(app, userToken, receiveDeviceId, { canManualDownload: true });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/v1/images?filter=active",
+      headers: { authorization: `Bearer ${receiveDeviceToken}` },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = JSON.parse(res.payload);
+    expect(body.data.images.map((image: { id: string }) => image.id)).toContain(
+      upload.body.data.imageId
+    );
   });
 
   it("forbids unauthenticated requests", async () => {

@@ -371,6 +371,37 @@ describe("POST /api/v1/devices/register — multi-user profiles", () => {
     expect(body.data.permissions.autoReceiveScope).toBe("disabled");
   });
 
+  it("gives a new child device same-user receive plus manual upload/download by default", async () => {
+    const app = await buildApp();
+    const ownerLogin = `owner-${randomUUID()}`;
+    const owner = await createOwner(ownerLogin, "password");
+    const child = await createChildUser(
+      owner.ownerUserId,
+      `child-${randomUUID()}`,
+      "password"
+    );
+    const ownerToken = await login(app, ownerLogin, "password");
+    const bindCode = await createBindCode(app, ownerToken, { userId: child.id });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/devices/register",
+      payload: {
+        bindCode,
+        deviceName: "Child Device",
+        platform: "android",
+        osVersion: "15",
+        appVersion: "0.5.0",
+      },
+    });
+    expect(res.statusCode).toBe(201);
+    const permissions = JSON.parse(res.payload).data.permissions;
+    expect(permissions.canManualUpload).toBe(true);
+    expect(permissions.canManualDownload).toBe(true);
+    expect(permissions.canAutoReceive).toBe(true);
+    expect(permissions.autoReceiveScope).toBe("same_user_only");
+  });
+
   it("rejects 'custom' as a profile submission", async () => {
     const app = await buildApp();
     const ownerLogin = `owner-${randomUUID()}`;

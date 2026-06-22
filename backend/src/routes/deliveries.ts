@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { AppError } from "../errors.js";
 import { prisma } from "../lib/prisma.js";
@@ -16,23 +17,29 @@ export async function deliveryRoutes(app: FastifyInstance): Promise<void> {
       throw new AppError("UNAUTHORIZED", "Device authentication required", 401);
     }
 
-    const deliveries = await prisma.delivery.findMany({
-      where: {
-        targetDeviceId: request.device.deviceId,
-        status: { in: ["pending", "notified"] },
-        image: {
-          deletedAt: null,
-          expiresAt: { gt: new Date() },
-        },
+    const where: Prisma.DeliveryWhereInput = {
+      targetDeviceId: request.device.deviceId,
+      status: { in: ["pending", "notified"] },
+      image: {
+        deletedAt: null,
+        expiresAt: { gt: new Date() },
       },
-      include: { image: { include: { uploadDevice: true } } },
-      orderBy: { createdAt: "asc" },
-      take: 100,
-    });
+    };
+    const [deliveries, totalPending] = await prisma.$transaction([
+      prisma.delivery.findMany({
+        where,
+        include: { image: { include: { uploadDevice: true } } },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        take: 100,
+      }),
+      prisma.delivery.count({ where }),
+    ]);
 
     reply.send({
       success: true,
       data: {
+        totalPending,
+        hasMore: totalPending > deliveries.length,
         deliveries: deliveries.map((d) => ({
           deliveryId: d.id,
           image: {
@@ -48,7 +55,7 @@ export async function deliveryRoutes(app: FastifyInstance): Promise<void> {
             uploadDeviceId: d.image.uploadDeviceId,
             uploadDeviceName: d.image.uploadDevice.name,
           },
-          createdAt: d.createdAt.toISOString(),
+          createdAt: d.image.createdAt.toISOString(),
           expiresAt: d.image.expiresAt.toISOString(),
         })),
       },
@@ -75,14 +82,36 @@ export async function deliveryRoutes(app: FastifyInstance): Promise<void> {
       throw new AppError("NOT_FOUND", "Delivery not found", 404);
     }
 
-    const updated = await prisma.delivery.update({
-      where: { id: deliveryId },
+    if (!["pending", "notified"].includes(delivery.status)) {
+      if (delivery.status === body.status) {
+        return reply.send({
+          success: true,
+          data: { deliveryId: delivery.id, status: delivery.status },
+        });
+      }
+      throw new AppError(
+        "DELIVERY_ALREADY_ACKED",
+        `Delivery is already ${delivery.status}`,
+        409,
+      );
+    }
+
+    const transition = await prisma.delivery.updateMany({
+      where: { id: deliveryId, status: { in: ["pending", "notified"] } },
       data: {
         status: body.status,
-        failureReason: body.errorMessage,
-        downloadedAt: body.status === "downloaded" ? new Date() : delivery.downloadedAt,
+        failureReason: body.status === "failed" ? body.errorMessage : null,
+        downloadedAt: body.status === "downloaded" ? new Date() : undefined,
       },
     });
+    const updated = await prisma.delivery.findUniqueOrThrow({ where: { id: deliveryId } });
+    if (transition.count === 0 && updated.status !== body.status) {
+      throw new AppError(
+        "DELIVERY_ALREADY_ACKED",
+        `Delivery is already ${updated.status}`,
+        409,
+      );
+    }
 
     reply.send({
       success: true,

@@ -269,7 +269,7 @@ describe("PATCH /api/v1/devices/:id/permissions — privilege escalation", () =>
     expect(after.canCreateInvite).toBe(true);
   });
 
-  it("forbids child user tokens from calling the legacy permissions endpoint at all", async () => {
+  it("allows a child to change manual rights on their own device but rejects automatic fields", async () => {
     const app = await buildApp();
     const ownerLogin = `owner-${randomUUID()}`;
     const owner = await createOwner(ownerLogin, "password");
@@ -280,14 +280,24 @@ describe("PATCH /api/v1/devices/:id/permissions — privilege escalation", () =>
     const childBindCode = await createBindCode(app, ownerToken, { userId: child.id });
     const { deviceId } = await registerDevice(app, childBindCode);
 
-    const res = await app.inject({
+    const manual = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/devices/${deviceId}/permissions`,
+      headers: { authorization: `Bearer ${childToken}` },
+      payload: { canManualUpload: false, canManualDownload: false },
+    });
+    expect(manual.statusCode).toBe(200);
+    expect(JSON.parse(manual.payload).data.permissions.canManualUpload).toBe(false);
+    expect(JSON.parse(manual.payload).data.permissions.canManualDownload).toBe(false);
+
+    const automatic = await app.inject({
       method: "PATCH",
       url: `/api/v1/devices/${deviceId}/permissions`,
       headers: { authorization: `Bearer ${childToken}` },
       payload: { canAutoUpload: true },
     });
-    expect(res.statusCode).toBe(403);
-    expect(JSON.parse(res.payload).error.code).toBe("OWNER_AUTH_REQUIRED_FOR_PRIVILEGED_PERMISSION");
+    expect(automatic.statusCode).toBe(403);
+    expect(JSON.parse(automatic.payload).error.code).toBe("CHILD_PERMISSION_FIELD_FORBIDDEN");
   });
 });
 

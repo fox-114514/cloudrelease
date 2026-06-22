@@ -40,9 +40,11 @@ export interface AppConfig {
     device?: DeviceConfig;
     autoUpload: boolean;
     autoReceive: boolean;
+    copyToClipboard: boolean;
     watchDir?: string;
     downloadDir?: string;
     uploadedHashes: string[];
+    receivedHashes: string[];
 }
 export declare function loadConfig(): Promise<AppConfig>;
 export declare function saveConfig(config: AppConfig): Promise<void>;

@@ -129,6 +129,8 @@ data class DeliveryPayload(
 
 data class PendingDeliveriesResponse(
     val deliveries: List<DeliveryPayload>,
+    val totalPending: Int,
+    val hasMore: Boolean,
 )
 
 data class DownloadedImage(

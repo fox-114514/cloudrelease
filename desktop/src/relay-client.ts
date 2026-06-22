@@ -25,6 +25,9 @@ import type {
   DownloadRecord,
   ImageCreatedEvent,
   ManualUploadResult,
+  ImageLibraryPage,
+  LibraryImage,
+  ManualLibraryDownloadResult,
   ManagedDevice,
   Platform,
   RegisterDeviceInput,
@@ -69,6 +72,8 @@ interface CreateBindCodeResponse {
 
 interface PendingDeliveriesResponse {
   deliveries: DeliveryPayload[];
+  totalPending?: number;
+  hasMore?: boolean;
 }
 
 interface DevicesResponse {
@@ -81,6 +86,8 @@ interface UploadImageResponse {
   createdDeliveriesCount: number;
   expiresAt: string;
 }
+
+interface ImageLibraryResponse extends ImageLibraryPage {}
 
 type StateListener = (state: RendererState) => void;
 
@@ -167,13 +174,13 @@ function formatTimestamp(input: string): string {
   const date = Number.isNaN(Date.parse(input)) ? new Date() : new Date(input);
   const pad = (value: number): string => String(value).padStart(2, "0");
   return [
-    date.getFullYear(),
-    pad(date.getMonth() + 1),
-    pad(date.getDate()),
+    date.getUTCFullYear(),
+    pad(date.getUTCMonth() + 1),
+    pad(date.getUTCDate()),
     "-",
-    pad(date.getHours()),
-    pad(date.getMinutes()),
-    pad(date.getSeconds()),
+    pad(date.getUTCHours()),
+    pad(date.getUTCMinutes()),
+    pad(date.getUTCSeconds()),
   ].join("");
 }
 
@@ -272,6 +279,9 @@ export class RelayClient {
   private lastMessageAt = 0;
   private processingDeliveries = new Set<string>();
   private completedDeliveries = new LruSet<string>(5000);
+  private receivedHashes = new LruSet<string>(5000);
+  private pendingOfflineCount = 0;
+  private deliveryChain: Promise<void> = Promise.resolve();
   private stateListener?: StateListener;
   private connection: ConnectionState = { status: "idle" };
   private adminToken?: string;
@@ -300,6 +310,19 @@ export class RelayClient {
     this.emitState();
   }
 
+  hideWatchUpload(uploadedAt: string): void {
+    this.watch = {
+      ...this.watch,
+      recentUploads: this.watch.recentUploads.filter((event) => event.uploadedAt !== uploadedAt),
+    };
+    this.emitState();
+  }
+
+  clearWatchUploads(): void {
+    this.watch = { ...this.watch, recentUploads: [] };
+    this.emitState();
+  }
+
   get watchState(): WatchState {
     return this.watch;
   }
@@ -307,7 +330,11 @@ export class RelayClient {
   constructor(
     private readonly config: ConfigStore,
     private readonly history: HistoryStore
-  ) {}
+  ) {
+    for (const record of history.list()) {
+      if (record.sha256) this.receivedHashes.add(record.sha256);
+    }
+  }
 
   onState(listener: StateListener): void {
     this.stateListener = listener;
@@ -319,6 +346,7 @@ export class RelayClient {
       settings: this.config.settings,
       connection: this.connection,
       recentDownloads: this.history.list(),
+      pendingOfflineCount: this.pendingOfflineCount,
       admin: this.admin,
       watch: this.watch,
     };
@@ -744,6 +772,11 @@ export class RelayClient {
         });
         return;
       }
+      if (code === 4001) {
+        this.clearReconnect();
+        this.setConnection({ status: "stopped", lastError: "该设备已在另一个客户端实例上连接" });
+        return;
+      }
 
       if (this.config.autoReceive && this.config.settings.lastKnownPermissions?.canAutoReceive !== false) {
         this.scheduleReconnect(reasonText);
@@ -761,18 +794,51 @@ export class RelayClient {
     this.clearReconnect();
     this.stopHeartbeat();
     this.closeSocket();
+    this.pendingOfflineCount = 0;
     this.setConnection({ status: "stopped" });
   }
 
   async fetchPending(): Promise<void> {
+    const seen = new Set<string>();
+    while (true) {
+      const data = await this.getPendingBatch();
+      const batch = data.deliveries.filter((delivery) => !seen.has(delivery.deliveryId));
+      if (batch.length === 0) break;
+      for (const delivery of batch) {
+        seen.add(delivery.deliveryId);
+        await this.processDelivery(delivery);
+      }
+    }
+    await this.checkPending();
+  }
+
+  async checkPending(): Promise<void> {
+    const data = await this.getPendingBatch();
+    this.pendingOfflineCount = data.totalPending ?? data.deliveries.length;
+    this.emitState();
+  }
+
+  async skipPending(): Promise<void> {
+    const seen = new Set<string>();
+    while (true) {
+      const data = await this.getPendingBatch();
+      const batch = data.deliveries.filter((delivery) => !seen.has(delivery.deliveryId));
+      if (batch.length === 0) break;
+      for (const delivery of batch) {
+        seen.add(delivery.deliveryId);
+        await this.safeAckDelivery(delivery.deliveryId, "skipped", "User skipped offline delivery", undefined);
+      }
+    }
+    await this.checkPending();
+  }
+
+  private async getPendingBatch(): Promise<PendingDeliveriesResponse> {
     const token = this.requireDeviceToken();
     const response = await fetch(apiUrl(this.config.serverBaseUrl, "/api/v1/deliveries/pending"), {
       headers: { Authorization: `Bearer ${token}` },
     });
     const data = await parseEnvelope<PendingDeliveriesResponse>(response);
-    for (const delivery of data.deliveries) {
-      await this.processDelivery(delivery);
-    }
+    return data;
   }
 
   async uploadManualImage(filePath: string): Promise<ManualUploadResult> {
@@ -781,6 +847,48 @@ export class RelayClient {
 
   async uploadScreenshotFromPath(filePath: string): Promise<ManualUploadResult> {
     return this.uploadFromPath(filePath, "screenshot");
+  }
+
+  async listLibraryImages(): Promise<ImageLibraryPage> {
+    const token = this.adminToken ?? this.requireManualDownloadToken();
+    const response = await fetch(
+      apiUrl(this.config.serverBaseUrl, "/api/v1/images?filter=active&limit=100"),
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    return parseEnvelope<ImageLibraryResponse>(response);
+  }
+
+  async downloadLibraryImage(image: LibraryImage): Promise<ManualLibraryDownloadResult> {
+    if (image.isExpired) throw new Error("图片已过期，无法下载");
+    const token = this.adminToken ?? this.requireManualDownloadToken();
+    const response = await fetch(
+      apiUrl(this.config.serverBaseUrl, `/api/v1/images/${image.id}/download`),
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    if (!response.ok) await parseEnvelope<unknown>(response);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+    if (sha256 !== image.sha256) throw new Error("下载图片 sha256 校验失败");
+
+    await mkdir(this.config.downloadDir, { recursive: true });
+    const sourceName = sanitizeFilePart(image.uploadedBy.deviceName || "设备");
+    const fileName = `${sourceName}_${formatTimestamp(image.createdAt)}`;
+    const savedPath = await writeFileWithUniqueSuffix(
+      path.join(this.config.downloadDir, `${fileName}${extensionForMime(image.mimeType)}`),
+      buffer,
+    );
+    const clipboardResult = this.config.copyToClipboard
+      ? this.copyImageToClipboard(savedPath)
+      : { copied: false };
+    return { imageId: image.id, savedPath, copiedToClipboard: clipboardResult.copied };
+  }
+
+  private requireManualDownloadToken(): string {
+    const token = this.requireDeviceToken();
+    if (this.config.settings.lastKnownPermissions?.canManualDownload !== true) {
+      throw new Error("服务端未允许本设备手动下载；也可以先登录成员账号");
+    }
+    return token;
   }
 
   private async uploadFromPath(
@@ -806,6 +914,17 @@ export class RelayClient {
     }
 
     const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+    if (sourceKind !== "manual_share" && this.receivedHashes.has(sha256)) {
+      logInfo("Skipped watched image received from server", { filePath, sha256 });
+      return {
+        imageId: "",
+        deduplicated: true,
+        createdDeliveriesCount: 0,
+        expiresAt: "",
+        fileName: path.basename(filePath),
+        sha256,
+      };
+    }
     const form = new FormData();
     form.append("sha256", sha256);
     form.append("sourceKind", sourceKind);
@@ -852,30 +971,41 @@ export class RelayClient {
         status: "connected",
         lastConnectedAt: new Date().toISOString(),
       });
-      await this.fetchPending();
+      await this.checkPending();
       return;
     }
     if (message.type === "pong") {
       return;
     }
     if (message.type === "image.created") {
-      await this.processDelivery(message as ImageCreatedEvent);
+      await this.enqueueDelivery(message as ImageCreatedEvent);
     }
   }
 
+  private enqueueDelivery(delivery: DeliveryPayload): Promise<void> {
+    const run = this.deliveryChain.catch(() => undefined).then(() => this.processDelivery(delivery));
+    this.deliveryChain = run;
+    return run;
+  }
+
   private async processDelivery(delivery: DeliveryPayload): Promise<void> {
-    if (
-      this.processingDeliveries.has(delivery.deliveryId) ||
-      this.completedDeliveries.has(delivery.deliveryId) ||
-      this.history.find(delivery.deliveryId)?.status === "downloaded"
-    ) {
+    const existing = this.history.find(delivery.deliveryId);
+    if (existing?.status === "downloaded") {
+      await this.safeAckDelivery(delivery.deliveryId, "downloaded", undefined, existing.savedPath);
+      return;
+    }
+    if (this.completedDeliveries.has(delivery.deliveryId)) {
+      await this.safeAckDelivery(delivery.deliveryId, "downloaded", undefined, undefined);
+      return;
+    }
+    if (this.processingDeliveries.has(delivery.deliveryId)) {
       return;
     }
 
     this.processingDeliveries.add(delivery.deliveryId);
     try {
       const result = await this.downloadWithRetries(delivery);
-      this.completedDeliveries.add(delivery.deliveryId);
+      if (result.status === "downloaded") this.completedDeliveries.add(delivery.deliveryId);
       await this.history.add(result);
       this.emitState();
     } finally {
@@ -935,11 +1065,7 @@ export class RelayClient {
 
     await mkdir(this.config.downloadDir, { recursive: true });
     const sourceName = sanitizeFilePart(delivery.source.uploadDeviceName ?? delivery.source.uploadDeviceId);
-    const fileName = [
-      formatTimestamp(delivery.createdAt),
-      sourceName,
-      delivery.image.id.slice(0, 8),
-    ].join("_");
+    const fileName = [sourceName, formatTimestamp(delivery.createdAt)].join("_");
     const filePath = await writeFileWithUniqueSuffix(
       path.join(this.config.downloadDir, `${fileName}${extensionForMime(delivery.image.mimeType)}`),
       buffer,
@@ -954,6 +1080,7 @@ export class RelayClient {
     const record: DownloadRecord = {
       deliveryId: delivery.deliveryId,
       imageId: delivery.image.id,
+      sha256: delivery.image.sha256,
       sourceDeviceName: sourceName,
       savedPath: filePath,
       receivedAt: new Date().toISOString(),
@@ -961,6 +1088,7 @@ export class RelayClient {
       clipboardError: clipboardResult.error,
       status: "downloaded",
     };
+    this.receivedHashes.add(delivery.image.sha256);
     this.showDownloadedNotification(record);
     logInfo("Delivery downloaded", { deliveryId: delivery.deliveryId, imageId: delivery.image.id });
     return record;

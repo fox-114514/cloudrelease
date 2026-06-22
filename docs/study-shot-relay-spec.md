@@ -1226,8 +1226,8 @@ Linux 注意：
 1. 客户端启动。
 2. 读取本地配置和 token。
 3. 连接 WebSocket。
-4. 拉取 pending deliveries。
-5. 对每个投递下载图片。
+4. 拉取 pending deliveries；如有离线积压，弹窗询问用户接收或忽略。
+5. 用户确认接收后才分批下载；在线新投递仍自动下载。
 6. 保存到下载目录。
 7. 如果启用“自动复制到剪贴板”，写入剪贴板。
 8. ACK 服务端。
@@ -1239,7 +1239,7 @@ Linux 注意：
 
 文件命名：
 
-- `YYYYMMDD-HHMMSS_<source-device-name>_<image-id>.png`
+- `<source-device-name>_YYYYMMDD-HHMMSS.png`（UTC，同秒冲突自动加序号）
 - 设备名要清理非法文件名字符。
 
 ### 10.4 剪贴板策略

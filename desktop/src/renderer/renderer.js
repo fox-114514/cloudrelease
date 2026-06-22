@@ -41,15 +41,24 @@ const els = {
   watchStatusDot: document.getElementById("watchStatusDot"),
   watchErrorLine: document.getElementById("watchErrorLine"),
   watchEventList: document.getElementById("watchEventList"),
+  clearWatchRecordsButton: document.getElementById("clearWatchRecordsButton"),
   connectButton: document.getElementById("connectButton"),
   disconnectButton: document.getElementById("disconnectButton"),
   saveSettingsButton: document.getElementById("saveSettingsButton"),
   chooseDirButton: document.getElementById("chooseDirButton"),
   openDirButton: document.getElementById("openDirButton"),
   fetchPendingButton: document.getElementById("fetchPendingButton"),
+  clearHistoryButton: document.getElementById("clearHistoryButton"),
+  pendingPrompt: document.getElementById("pendingPrompt"),
+  pendingPromptText: document.getElementById("pendingPromptText"),
+  acceptPendingButton: document.getElementById("acceptPendingButton"),
+  skipPendingButton: document.getElementById("skipPendingButton"),
   manualUploadButton: document.getElementById("manualUploadButton"),
   manualUploadResult: document.getElementById("manualUploadResult"),
   historyList: document.getElementById("historyList"),
+  libraryList: document.getElementById("libraryList"),
+  libraryError: document.getElementById("libraryError"),
+  refreshLibraryButton: document.getElementById("refreshLibraryButton"),
   adminLoginForm: document.getElementById("adminLoginForm"),
   adminServerInput: document.getElementById("adminServerInput"),
   adminLoginInput: document.getElementById("adminLoginInput"),
@@ -111,6 +120,7 @@ const RECEIVE_SCOPE_LABELS = {
 
 const THEME_KEY = "studyshot.theme";
 let currentState = null;
+let libraryImages = [];
 
 function formatDate(value) {
   if (!value) return "-";
@@ -149,6 +159,68 @@ function showWatchError(message) {
 function applyTab(name) {
   els.navItems.forEach((n) => n.classList.toggle("active", n.dataset.tab === name));
   els.views.forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
+  if (name === "library") loadLibrary();
+}
+
+function showLibraryError(message) {
+  els.libraryError.textContent = message || "";
+  els.libraryError.hidden = !message;
+}
+
+function renderLibrary() {
+  els.libraryList.replaceChildren();
+  if (!libraryImages.length) {
+    const empty = document.createElement("li");
+    empty.className = "empty";
+    empty.textContent = "当前没有可下载的有效图片。";
+    els.libraryList.append(empty);
+    return;
+  }
+  for (const image of libraryImages) {
+    const row = document.createElement("li");
+    row.className = "record-item";
+    const details = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = `${image.uploadedBy.deviceName} · ${formatDate(image.createdAt)}`;
+    const meta = document.createElement("p");
+    meta.className = "record-meta";
+    meta.textContent = `${image.uploadedBy.userDisplayName} · ${(image.fileSize / 1024).toFixed(1)} KB · ${image.mimeType}`;
+    details.append(title, meta);
+    const button = document.createElement("button");
+    button.className = "btn primary";
+    button.type = "button";
+    button.textContent = "下载";
+    button.addEventListener("click", async () => {
+      setBusy(button, true);
+      showLibraryError("");
+      try {
+        const result = await window.studyshot.downloadLibraryImage(image);
+        button.textContent = result.copiedToClipboard ? "已下载并复制" : "已下载";
+      } catch (err) {
+        showLibraryError(err.message || String(err));
+      } finally {
+        setBusy(button, false);
+      }
+    });
+    row.append(details, button);
+    els.libraryList.append(row);
+  }
+}
+
+async function loadLibrary() {
+  setBusy(els.refreshLibraryButton, true);
+  showLibraryError("");
+  try {
+    const page = await window.studyshot.listLibraryImages();
+    libraryImages = page.images || [];
+    renderLibrary();
+  } catch (err) {
+    libraryImages = [];
+    renderLibrary();
+    showLibraryError(err.message || String(err));
+  } finally {
+    setBusy(els.refreshLibraryButton, false);
+  }
 }
 
 function applyTheme(theme) {
@@ -256,6 +328,18 @@ function renderHistory(records) {
       side.append(showBtn);
     }
 
+    const hideBtn = document.createElement("button");
+    hideBtn.className = "btn small";
+    hideBtn.textContent = "隐藏";
+    hideBtn.addEventListener("click", async () => {
+      try {
+        await window.studyshot.hideHistory(record.deliveryId);
+      } catch (err) {
+        showError(err.message || String(err));
+      }
+    });
+    side.append(hideBtn);
+
     li.append(main, side);
     els.historyList.append(li);
   }
@@ -287,6 +371,13 @@ function renderWatchEvents(events) {
     tag.className = ev.ok ? "tag ok" : "tag fail";
     tag.textContent = ev.ok ? "已上传" : "失败";
     side.append(tag);
+    const hideBtn = document.createElement("button");
+    hideBtn.className = "btn small";
+    hideBtn.textContent = "隐藏";
+    hideBtn.addEventListener("click", async () => {
+      renderState(await window.studyshot.hideWatchUpload(ev.uploadedAt));
+    });
+    side.append(hideBtn);
     li.append(main, side);
     els.watchEventList.append(li);
   }
@@ -443,7 +534,10 @@ function renderAdminDevices(admin) {
     const permGrid = document.createElement("div");
     permGrid.className = "permission-grid";
     permGrid.append(profileItem);
-    if (isOwner) for (const key of Object.keys(PERMISSION_LABELS)) {
+    const editablePermissionKeys = isOwner
+      ? Object.keys(PERMISSION_LABELS)
+      : ["canManualUpload", "canManualDownload"];
+    for (const key of editablePermissionKeys) {
       const item = document.createElement("label");
       item.className = "permission-item";
       const label = document.createElement("span");
@@ -694,6 +788,8 @@ function renderState(state) {
   els.autoUploadInput.disabled = !settings.isBound || !settings.watchDir || permissions?.canAutoUpload === false;
 
   renderHistory(state.recentDownloads);
+  els.pendingPrompt.hidden = !(state.pendingOfflineCount > 0);
+  els.pendingPromptText.textContent = `设备离线期间收到 ${state.pendingOfflineCount || 0} 张图片，是否现在接收？`;
   renderAdminDevices(state.admin);
 }
 
@@ -782,7 +878,14 @@ els.saveSettingsButton.addEventListener("click", async () => {
 els.chooseDirButton.addEventListener("click", async () => {
   const selected = await window.studyshot.chooseDownloadDir();
   if (selected) {
-    els.downloadDirInput.value = selected;
+    try {
+      // Selecting a directory is itself an explicit user action. Persist it
+      // immediately so an asynchronous state refresh cannot restore the old
+      // default path before the separate Save button is clicked.
+      renderState(await window.studyshot.saveSettings({ downloadDir: selected }));
+    } catch (err) {
+      showError(err.message || String(err));
+    }
   }
 });
 
@@ -875,6 +978,46 @@ els.fetchPendingButton.addEventListener("click", async () => {
     showError(err.message || String(err));
   } finally {
     setBusy(els.fetchPendingButton, false);
+  }
+});
+
+els.acceptPendingButton.addEventListener("click", async () => {
+  setBusy(els.acceptPendingButton, true);
+  try {
+    renderState(await window.studyshot.fetchPending());
+  } catch (err) {
+    showError(err.message || String(err));
+  } finally {
+    setBusy(els.acceptPendingButton, false);
+  }
+});
+
+els.skipPendingButton.addEventListener("click", async () => {
+  setBusy(els.skipPendingButton, true);
+  try {
+    renderState(await window.studyshot.skipPending());
+  } catch (err) {
+    showError(err.message || String(err));
+  } finally {
+    setBusy(els.skipPendingButton, false);
+  }
+});
+
+els.clearHistoryButton.addEventListener("click", async () => {
+  try {
+    renderState(await window.studyshot.clearHistory());
+  } catch (err) {
+    showError(err.message || String(err));
+  }
+});
+
+els.refreshLibraryButton.addEventListener("click", loadLibrary);
+
+els.clearWatchRecordsButton.addEventListener("click", async () => {
+  try {
+    renderState(await window.studyshot.clearWatchUploads());
+  } catch (err) {
+    showWatchError(err.message || String(err));
   }
 });
 

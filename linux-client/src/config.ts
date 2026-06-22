@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { configDir, ensureDir, normalizeBaseUrl } from "./utils.js";
+import { configDir, defaultDownloadDir, ensureDir, normalizeBaseUrl } from "./utils.js";
 
 export interface DeviceConfig {
   serverBaseUrl: string;
@@ -41,18 +41,23 @@ export interface AppConfig {
   device?: DeviceConfig;
   autoUpload: boolean;
   autoReceive: boolean;
+  copyToClipboard: boolean;
   watchDir?: string;
   downloadDir?: string;
   uploadedHashes: string[];
+  receivedHashes: string[];
 }
 
 const DEFAULT_CONFIG: AppConfig = {
   autoUpload: true,
   autoReceive: true,
+  copyToClipboard: true,
   uploadedHashes: [],
+  receivedHashes: [],
 };
 
 const CONFIG_FILE = "config.json";
+let saveChain: Promise<void> = Promise.resolve();
 
 function configPath(): string {
   return path.join(configDir(), CONFIG_FILE);
@@ -66,26 +71,36 @@ export async function loadConfig(): Promise<AppConfig> {
     return {
       ...DEFAULT_CONFIG,
       ...parsed,
+      downloadDir: parsed.downloadDir?.trim() || defaultDownloadDir(),
       uploadedHashes: parsed.uploadedHashes ?? [],
+      receivedHashes: parsed.receivedHashes ?? [],
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      return { ...DEFAULT_CONFIG };
+      return { ...DEFAULT_CONFIG, downloadDir: defaultDownloadDir() };
     }
     throw err;
   }
 }
 
 export async function saveConfig(config: AppConfig): Promise<void> {
-  await ensureDir(configDir());
-  await fs.writeFile(configPath(), JSON.stringify(config, null, 2), { mode: 0o600 });
+  const serialized = JSON.stringify(config, null, 2);
+  const run = saveChain.catch(() => undefined).then(async () => {
+    await ensureDir(configDir());
+    const target = configPath();
+    const temporary = `${target}.${process.pid}.tmp`;
+    await fs.writeFile(temporary, serialized, { mode: 0o600 });
+    await fs.rename(temporary, target);
+  });
+  saveChain = run;
+  await run;
 }
 
 export async function bindDevice(
   serverBaseUrl: string,
   bindCode: string,
   deviceName: string,
-  profile = "manual_only",
+  profile = "receive_own",
 ): Promise<DeviceConfig> {
   const url = normalizeBaseUrl(serverBaseUrl);
   const response = await fetch(`${url}/api/v1/devices/register`, {
@@ -156,7 +171,7 @@ export async function bindWithLogin(
   login: string,
   password: string,
   deviceName: string,
-  profile = "manual_only",
+  profile = "receive_own",
 ): Promise<DeviceConfig> {
   const url = normalizeBaseUrl(serverBaseUrl);
   const loginResponse = await fetch(`${url}/api/v1/auth/login`, {
@@ -226,5 +241,6 @@ export async function unbind(): Promise<void> {
   const config = await loadConfig();
   config.device = undefined;
   config.uploadedHashes = [];
+  config.receivedHashes = [];
   await saveConfig(config);
 }

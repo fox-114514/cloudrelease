@@ -150,7 +150,15 @@ export async function deviceRoutes(app: FastifyInstance): Promise<void> {
     const deviceToken = generateRandomToken(32);
     const deviceTokenHash = hashToken(deviceToken);
 
-    const profile = body.profile ? permissionsForProfile(body.profile) : LEGACY_DEFAULT_PROFILE;
+    // A child member's new device must be useful without an owner having to
+    // repair its permissions afterwards.  When an older client omits a
+    // profile, default child devices to same-user receiving; owner devices
+    // keep the legacy fallback for backwards compatibility.
+    const profile = body.profile
+      ? permissionsForProfile(body.profile)
+      : targetUser.role === "child"
+        ? permissionsForProfile("receive_own")
+        : LEGACY_DEFAULT_PROFILE;
 
     const device = await prisma.$transaction(async (tx) => {
       const newDevice = await tx.device.create({
@@ -172,7 +180,10 @@ export async function deviceRoutes(app: FastifyInstance): Promise<void> {
           canAutoUpload: profile.canAutoUpload,
           canManualUpload: profile.canManualUpload,
           canAutoReceive: profile.canAutoReceive,
-          canManualDownload: false,
+          // Child members naturally own manual upload/download rights for
+          // images uploaded by their own user. Authorization still prevents
+          // this permission from crossing member or owner-space boundaries.
+          canManualDownload: targetUser.role === "child",
           canManageSpace: false,
           canCreateInvite: false,
           autoUploadScope: profile.autoUploadScope,
@@ -600,13 +611,30 @@ export async function deviceRoutes(app: FastifyInstance): Promise<void> {
     const { deviceId } = request.params as { deviceId: string };
     const body = updatePermissionsSchema.parse(request.body);
 
-    ensureCanModifyPermissions(actor, body);
-
     const device = await prisma.device.findFirst({
       where: { id: deviceId, ownerUserId: actor.ownerUserId, deletedAt: null },
     });
     if (!device) {
       throw new AppError("NOT_FOUND", "Device not found", 404);
+    }
+
+    const isChildManagingOwnDevice =
+      !actor.deviceId && actor.role === "child" && actor.userId === device.userId;
+    if (isChildManagingOwnDevice) {
+      // Profiles and receive-config are the safe paths for automatic receive
+      // settings. Child users may directly control only the two manual rights
+      // on devices belonging to themselves.
+      const childMutableFields = new Set(["canManualUpload", "canManualDownload"]);
+      const unsupported = Object.keys(body).find((field) => !childMutableFields.has(field));
+      if (unsupported) {
+        throw new AppError(
+          "CHILD_PERMISSION_FIELD_FORBIDDEN",
+          `Child users cannot directly modify ${unsupported}; use a device profile or receive-config`,
+          403
+        );
+      }
+    } else {
+      ensureCanModifyPermissions(actor, body);
     }
 
     const data: Record<string, unknown> = {};

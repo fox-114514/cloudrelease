@@ -4,6 +4,19 @@
 
 本文说明如何把 StudyShot Relay 后端部署到一台 Linux 服务器。推荐服务器使用 Docker Compose、PostgreSQL 和 Caddy。Caddy 负责 HTTPS 和 WSS，后端只在 Docker 内部监听 `3000`。
 
+## 本地集成测试
+
+```bash
+cd backend
+cp .env.test.example .env.test
+npm run test:db:up
+npm run test:db:migrate
+npm test
+npm run test:db:down
+```
+
+测试数据库使用独立的 `55432` 端口和 tmpfs，不会重置开发或生产数据库。
+
 ## 1. 部署目录
 
 建议把后端目录放到服务器：

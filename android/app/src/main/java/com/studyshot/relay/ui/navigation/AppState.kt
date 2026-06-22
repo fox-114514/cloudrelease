@@ -457,24 +457,29 @@ class AppState internal constructor(
 
     fun setImageFilter(filter: String) {
         _imageFilter.value = filter
-        val session = _adminSession.value ?: return
-        refreshImageLibrary(session, app.secureSettings.settings.value.serverBaseUrl, reset = true)
+        refreshImageLibraryFromAvailableAuth(reset = true)
     }
 
     fun refreshImageLibraryFromSession() {
-        val session = _adminSession.value ?: return
-        refreshImageLibrary(session, app.secureSettings.settings.value.serverBaseUrl, reset = true)
+        refreshImageLibraryFromAvailableAuth(reset = true)
+    }
+
+    fun libraryAccessToken(): String? {
+        _adminSession.value?.accessToken?.let { return it }
+        val settings = app.secureSettings.settings.value
+        if (!settings.deviceTokenAvailable || !settings.serverAllowsManualDownload()) return null
+        return app.secureSettings.getDeviceToken()
     }
 
     fun loadMoreImages() {
-        val session = _adminSession.value ?: return
+        val token = libraryAccessToken() ?: return
         val cursor = _imageCursor.value ?: return
         scope.launch {
             try {
                 val page = withContext(Dispatchers.IO) {
                     app.apiClient.listImages(
                         serverBaseUrl = app.secureSettings.settings.value.serverBaseUrl,
-                        accessToken = session.accessToken,
+                        accessToken = token,
                         filter = _imageFilter.value,
                         before = cursor,
                     )
@@ -488,13 +493,22 @@ class AppState internal constructor(
     }
 
     private fun refreshImageLibrary(session: AdminSession, server: String, reset: Boolean) {
+        refreshImageLibrary(session.accessToken, server, reset)
+    }
+
+    private fun refreshImageLibraryFromAvailableAuth(reset: Boolean) {
+        val token = libraryAccessToken() ?: return
+        refreshImageLibrary(token, app.secureSettings.settings.value.serverBaseUrl, reset)
+    }
+
+    private fun refreshImageLibrary(token: String, server: String, reset: Boolean) {
         _imageLoading.value = true
         scope.launch {
             try {
                 val page = withContext(Dispatchers.IO) {
                     app.apiClient.listImages(
                         serverBaseUrl = server,
-                        accessToken = session.accessToken,
+                        accessToken = token,
                         filter = _imageFilter.value,
                         before = if (reset) null else _imageCursor.value,
                     )

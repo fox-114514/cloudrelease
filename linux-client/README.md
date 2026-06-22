@@ -39,6 +39,10 @@ studyshot-relay launch
 - 显示绑定成员、用途预设和服务端有效权限
 - 设置监听目录（自动上传）
 - 设置接收目录（自动下载）
+- 接收后自动将图片写入系统剪贴板
+- 离线期间累积的图片上线后先弹窗询问，不会擅自补收
+- 下载文件统一命名为 `上传设备名_YYYYMMDD-HHMMSS.ext`
+- 最近投递记录可单条隐藏或全部清空
 - 启动/停止接收和监听服务
 - 登录主账号并打开服务器原生 `/admin` 管理后台
 - 查看实时日志
@@ -62,6 +66,16 @@ studyshot-relay launch -p 8080
 ## 配置文件
 
 配置文件保存在 `~/.config/studyshot-relay/config.json`，权限 600。
+
+自动剪贴板默认开启。Wayland 会优先使用 `wl-copy`，X11 会优先使用
+`xclip`，可以根据桌面会话安装其中一个：
+
+```bash
+# Ubuntu / Debian
+sudo apt install wl-clipboard xclip
+```
+
+可在 Web 界面的“本地配置 → 监听与接收”中关闭自动剪贴板。
 
 ## 命令行命令
 
@@ -95,7 +109,7 @@ studyshot-relay status
 
 ### 接收图片
 
-保持 WebSocket 连接，自动下载收到的图片：
+保持 WebSocket 连接，自动下载收到的图片并写入剪贴板：
 
 ```bash
 studyshot-relay receive

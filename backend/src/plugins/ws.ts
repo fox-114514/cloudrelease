@@ -50,7 +50,14 @@ export function notifyDevicesForImage(imageId: string): void {
           expiresAt: delivery.image.expiresAt.toISOString(),
         };
 
-        client.socket.send(JSON.stringify(event));
+        try {
+          if (client.socket.readyState !== 1) continue;
+          client.socket.send(JSON.stringify(event));
+        } catch {
+          // A broken socket must not prevent later target devices from being
+          // notified. This delivery remains pending for reconnect recovery.
+          continue;
+        }
 
         prisma.delivery
           .update({
@@ -103,7 +110,9 @@ export const wsPlugin = fp(async (app: FastifyInstance) => {
     // Close any existing connection for this device.
     const existing = connections.get(device.id);
     if (existing) {
-      existing.socket.close(1008, "New connection established");
+      // 1008 is reserved for invalid/revoked credentials. A distinct code
+      // prevents the displaced client from deleting an otherwise valid bind.
+      existing.socket.close(4001, "New connection established elsewhere");
       connections.delete(device.id);
     }
 
@@ -123,6 +132,7 @@ export const wsPlugin = fp(async (app: FastifyInstance) => {
       try {
         const msg = JSON.parse(raw.toString());
         if (msg.type === "hello") {
+          client.lastClientActivityAt = Date.now();
           socket.send(
             JSON.stringify({
               type: "hello.ack",
@@ -154,7 +164,7 @@ export const wsPlugin = fp(async (app: FastifyInstance) => {
   });
 
   // Heartbeat checker: disconnect stale clients.
-  setInterval(() => {
+  const heartbeatTimer = setInterval(() => {
     const now = Date.now();
     for (const [deviceId, client] of connections.entries()) {
       if (now - client.lastClientActivityAt > HEARTBEAT_TIMEOUT_MS) {
@@ -163,4 +173,7 @@ export const wsPlugin = fp(async (app: FastifyInstance) => {
       }
     }
   }, HEARTBEAT_INTERVAL_MS);
+  app.addHook("onClose", async () => {
+    clearInterval(heartbeatTimer);
+  });
 });

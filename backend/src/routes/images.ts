@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { randomUUID } from "crypto";
 import { AppError } from "../errors.js";
@@ -11,7 +12,6 @@ import {
   createImageReadStream,
   deleteStoredImage,
   ensureStorageRoot,
-  getAbsolutePath,
   getImageDimensions,
   storeImage,
 } from "../services/storage.js";
@@ -34,7 +34,7 @@ const uploadImageSchema = z.object({
 
 const listImagesSchema = z.object({
   limit: z.coerce.number().int().positive().max(100).default(50),
-  before: z.string().datetime().optional(),
+  before: z.string().min(1).optional(),
   filter: z.enum(["all", "active", "expired", "today", "week", "month"]).default("all"),
   userId: z.string().uuid().optional(),
 });
@@ -47,6 +47,28 @@ function isAdminAuthorized(request: FastifyRequest): boolean {
   if (request.user?.role === "owner") return true;
   if (request.device?.permissions.canManageSpace) return true;
   return false;
+}
+
+function decodeImageCursor(raw: string): { createdAt: Date; id?: string } {
+  try {
+    const parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as {
+      createdAt?: string;
+      id?: string;
+    };
+    const createdAt = new Date(parsed.createdAt ?? "");
+    if (!Number.isNaN(createdAt.getTime()) && parsed.id) return { createdAt, id: parsed.id };
+  } catch {
+    // Backward-compatible ISO timestamp cursor.
+  }
+  const createdAt = new Date(raw);
+  if (Number.isNaN(createdAt.getTime())) {
+    throw new AppError("INVALID_CURSOR", "Invalid image cursor", 400);
+  }
+  return { createdAt };
+}
+
+function encodeImageCursor(createdAt: Date, id: string): string {
+  return Buffer.from(JSON.stringify({ createdAt: createdAt.toISOString(), id })).toString("base64url");
 }
 
 export async function imageRoutes(app: FastifyInstance): Promise<void> {
@@ -78,23 +100,17 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
     await ensureStorageRoot();
 
     const stored = await storeImage(imageId, data.file, data.mimetype);
+    let imagePersisted = false;
+
+    try {
 
     if (stored.sha256 !== meta.sha256) {
-      const abs = getAbsolutePath(stored.storageKey);
-      try {
-        await import("fs").then((fs) => fs.promises.unlink(abs));
-      } catch {
-        // ignore
-      }
+      await deleteStoredImage(stored.storageKey);
       throw new AppError("HASH_MISMATCH", "Client sha256 does not match server sha256", 400);
     }
 
     if (meta.originImageId) {
-      try {
-        await import("fs").then((fs) => fs.promises.unlink(stored.absolutePath));
-      } catch {
-        // ignore
-      }
+      await deleteStoredImage(stored.storageKey);
       throw new AppError("LOOP_RISK", "Image downloaded from server cannot be auto-uploaded", 400);
     }
 
@@ -111,11 +127,7 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
     });
 
     if (existing) {
-      try {
-        await import("fs").then((fs) => fs.promises.unlink(stored.absolutePath));
-      } catch {
-        // ignore
-      }
+      await deleteStoredImage(stored.storageKey);
 
       await logAudit({
         ownerUserId: deviceAuth.ownerUserId,
@@ -164,6 +176,7 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
       await generateDeliveries(created, tx);
       return created;
     });
+    imagePersisted = true;
 
     await logAudit({
       ownerUserId: deviceAuth.ownerUserId,
@@ -187,6 +200,20 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
         expiresAt: expiresAt.toISOString(),
       },
     });
+    } catch (err) {
+      if (!imagePersisted) {
+        try {
+          await deleteStoredImage(stored.storageKey);
+        } catch (cleanupError) {
+          logger.warn("Failed to clean up uncommitted image file", {
+            imageId,
+            storageKey: stored.storageKey,
+            error: String(cleanupError),
+          });
+        }
+      }
+      throw err;
+    }
   });
 
   app.get("/images/:imageId/download", async (request, reply) => {
@@ -235,10 +262,13 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
 
   app.get("/images", async (request, reply) => {
     const actor = requireAnyAuth(request);
-    if (!isAdminAuthorized(request) && !request.user) {
+    const manualDownloadDevice = Boolean(
+      request.device?.permissions.canManualDownload
+    );
+    if (!isAdminAuthorized(request) && !request.user && !manualDownloadDevice) {
       throw new AppError(
         "FORBIDDEN",
-        "Manage permission required to list images",
+        "Manual download or manage permission required to list images",
         403
       );
     }
@@ -264,13 +294,7 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
       filter.uploadUserId = query.userId;
     }
 
-    const where: {
-      ownerUserId: string;
-      deletedAt: null;
-      expiresAt?: { gt: Date } | { lte: Date };
-      createdAt?: { gte?: Date; lt?: Date };
-      uploadUserId?: string;
-    } = { ownerUserId: filter.ownerUserId, deletedAt: null };
+    const where: Prisma.ImageWhereInput = { ownerUserId: filter.ownerUserId, deletedAt: null };
     if (filter.uploadUserId) where.uploadUserId = filter.uploadUserId;
 
     const createdAtFilter: { gte?: Date; lt?: Date } = {};
@@ -288,7 +312,19 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
     }
 
     if (query.before) {
-      createdAtFilter.lt = new Date(query.before);
+      const cursor = decodeImageCursor(query.before);
+      if (cursor.id) {
+        where.AND = [
+          {
+            OR: [
+              { createdAt: { lt: cursor.createdAt } },
+              { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+            ],
+          },
+        ];
+      } else {
+        createdAtFilter.lt = cursor.createdAt;
+      }
     }
 
     if (Object.keys(createdAtFilter).length > 0) {
@@ -301,7 +337,7 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
         uploadDevice: { select: { id: true, name: true } },
         uploadUser: { select: { id: true, displayName: true, emailOrLogin: true } },
       },
-      orderBy: { createdAt: "desc" },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       take: query.limit + 1,
     });
 
@@ -331,7 +367,9 @@ export async function imageRoutes(app: FastifyInstance): Promise<void> {
       success: true,
       data: {
         images: items,
-        nextCursor: hasMore ? items[items.length - 1].createdAt : null,
+        nextCursor: hasMore
+          ? encodeImageCursor(rows[query.limit - 1].createdAt, rows[query.limit - 1].id)
+          : null,
       },
     });
   });

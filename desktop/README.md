@@ -14,12 +14,14 @@ Electron + TypeScript desktop receiver for Windows and Linux.
 - Connect to `/api/v1/ws` with the device token.
 - Send `hello` and heartbeat `ping`.
 - Reconnect with exponential backoff, capped at 60 seconds.
-- Fetch pending deliveries after connection.
+- Ask before receiving deliveries accumulated while the device was offline.
 - Download images to a configured local folder.
 - Verify downloaded image sha256 before ACK.
 - ACK `downloaded` or `failed`.
 - Optionally write the downloaded image to the system clipboard.
 - Optionally show a system notification after a successful download.
+- Save files as `<upload-device>_YYYYMMDD-HHMMSS.ext` and suffix collisions.
+- Allow received and watched-upload history entries to be hidden or cleared locally.
 - Save receive settings locally.
 - Enable or disable OS login startup.
 - Run in the system tray.

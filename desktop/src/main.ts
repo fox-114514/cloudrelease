@@ -11,6 +11,7 @@ import type {
   DevicePermissions,
   DeviceProfile,
   ManualUploadResult,
+  LibraryImage,
   RegisterDeviceInput,
   SaveSettingsInput,
 } from "./shared";
@@ -106,10 +107,23 @@ async function setAutoReceive(enabled: boolean): Promise<void> {
   broadcastState();
 }
 
+function effectiveWatchExcludedDirs(dir: string): string[] {
+  const excludedDirs = [...configStore.watchExcludedDirs];
+  const relativeDownload = path.relative(path.resolve(dir), path.resolve(configStore.downloadDir));
+  if (
+    relativeDownload === "" ||
+    (!relativeDownload.startsWith("..") && !path.isAbsolute(relativeDownload))
+  ) {
+    excludedDirs.push(configStore.downloadDir);
+  }
+  return [...new Set(excludedDirs.map((value) => path.resolve(value)))];
+}
+
 function buildWatcher(dir: string): DirectoryWatcher {
+  const excludedDirs = effectiveWatchExcludedDirs(dir);
   return new DirectoryWatcher({
     watchDir: dir,
-    excludedDirs: configStore.watchExcludedDirs,
+    excludedDirs,
     onLog: (message) => logInfo(`[watch] ${message}`),
     onError: (message) => {
       logError(`[watch] ${message}`);
@@ -186,7 +200,10 @@ async function applyWatcherConfig(): Promise<void> {
     dir: configStore.watchDir,
   });
   if (enabled) {
-    if (!directoryWatcher || !directoryWatcher.matches(configStore.watchDir, configStore.watchExcludedDirs)) {
+    if (!directoryWatcher || !directoryWatcher.matches(
+      configStore.watchDir,
+      effectiveWatchExcludedDirs(configStore.watchDir),
+    )) {
       await stopDirectoryWatcher();
       await startDirectoryWatcher();
     }
@@ -347,6 +364,11 @@ function registerIpcHandlers(): void {
     return relayClient.getState();
   });
 
+  ipcMain.handle("deliveries:skipPending", async () => {
+    await relayClient.skipPending();
+    return relayClient.getState();
+  });
+
   ipcMain.handle("upload:chooseAndUpload", async (): Promise<ManualUploadResult | undefined> => {
     const options = {
       title: "选择要上传的图片",
@@ -364,6 +386,11 @@ function registerIpcHandlers(): void {
     }
     return relayClient.uploadManualImage(result.filePaths[0]);
   });
+
+  ipcMain.handle("library:list", async () => relayClient.listLibraryImages());
+  ipcMain.handle("library:download", async (_event, image: LibraryImage) =>
+    relayClient.downloadLibraryImage(image)
+  );
 
   ipcMain.handle("dialog:chooseDownloadDir", async () => {
     const options = {
@@ -443,6 +470,16 @@ function registerIpcHandlers(): void {
     return relayClient.getState();
   });
 
+  ipcMain.handle("watch:hideRecord", async (_event, uploadedAt: string) => {
+    relayClient.hideWatchUpload(uploadedAt);
+    return relayClient.getState();
+  });
+
+  ipcMain.handle("watch:clearRecords", async () => {
+    relayClient.clearWatchUploads();
+    return relayClient.getState();
+  });
+
   ipcMain.handle("history:copyToClipboard", async (_event, deliveryId: string) => {
     const record = await relayClient.copyRecordToClipboard(deliveryId);
     broadcastState();
@@ -456,6 +493,18 @@ function registerIpcHandlers(): void {
     }
     shell.showItemInFolder(record.savedPath);
     return true;
+  });
+
+  ipcMain.handle("history:hide", async (_event, deliveryId: string) => {
+    await historyStore.remove(deliveryId);
+    broadcastState();
+    return relayClient.getState();
+  });
+
+  ipcMain.handle("history:clear", async () => {
+    await historyStore.clear();
+    broadcastState();
+    return relayClient.getState();
   });
 
   ipcMain.handle("admin:login", async (_event, input: AdminLoginInput) => {

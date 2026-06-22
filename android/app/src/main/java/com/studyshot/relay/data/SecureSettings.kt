@@ -22,6 +22,7 @@ data class AppSettings(
     val autoReceiveEnabled: Boolean = false,
     val downloadNotificationEnabled: Boolean = true,
     val saveDownloadsToGallery: Boolean = false,
+    val pendingOfflineCount: Int = 0,
     val boundUserId: String = "",
     val boundOwnerUserId: String = "",
     val boundUserDisplayName: String = "",
@@ -39,6 +40,7 @@ data class AppSettings(
     fun serverAllowsAutoUpload(): Boolean = serverPermission("canAutoUpload")
     fun serverAllowsManualUpload(): Boolean = serverPermission("canManualUpload")
     fun serverAllowsAutoReceive(): Boolean = serverPermission("canAutoReceive")
+    fun serverAllowsManualDownload(): Boolean = serverPermission("canManualDownload")
 }
 
 class SecureSettings(context: Context) {
@@ -143,6 +145,7 @@ class SecureSettings(context: Context) {
     ) {
         prefs.edit {
             putBoolean(KEY_AUTO_RECEIVE_ENABLED, autoReceiveEnabled)
+            if (!autoReceiveEnabled) putInt(KEY_PENDING_OFFLINE_COUNT, 0)
             putBoolean(KEY_DOWNLOAD_NOTIFICATION_ENABLED, downloadNotificationEnabled)
             putBoolean(KEY_SAVE_DOWNLOADS_TO_GALLERY, saveDownloadsToGallery)
         }
@@ -160,7 +163,13 @@ class SecureSettings(context: Context) {
             remove(KEY_LAST_KNOWN_PROFILE)
             remove(KEY_LAST_KNOWN_PERMISSIONS)
             remove(KEY_PERMISSIONS_FETCHED_AT)
+            remove(KEY_PENDING_OFFLINE_COUNT)
         }
+        settingsFlow.value = readSettings()
+    }
+
+    fun setPendingOfflineCount(count: Int) {
+        prefs.edit { putInt(KEY_PENDING_OFFLINE_COUNT, count.coerceAtLeast(0)) }
         settingsFlow.value = readSettings()
     }
 
@@ -185,6 +194,7 @@ class SecureSettings(context: Context) {
             autoReceiveEnabled = prefs.getBoolean(KEY_AUTO_RECEIVE_ENABLED, false),
             downloadNotificationEnabled = prefs.getBoolean(KEY_DOWNLOAD_NOTIFICATION_ENABLED, true),
             saveDownloadsToGallery = prefs.getBoolean(KEY_SAVE_DOWNLOADS_TO_GALLERY, false),
+            pendingOfflineCount = prefs.getInt(KEY_PENDING_OFFLINE_COUNT, 0),
             boundUserId = prefs.getString(KEY_BOUND_USER_ID, "") ?: "",
             boundOwnerUserId = prefs.getString(KEY_BOUND_OWNER_USER_ID, "") ?: "",
             boundUserDisplayName = prefs.getString(KEY_BOUND_USER_DISPLAY_NAME, "") ?: "",
@@ -211,6 +221,7 @@ class SecureSettings(context: Context) {
         private const val KEY_AUTO_RECEIVE_ENABLED = "auto_receive_enabled"
         private const val KEY_DOWNLOAD_NOTIFICATION_ENABLED = "download_notification_enabled"
         private const val KEY_SAVE_DOWNLOADS_TO_GALLERY = "save_downloads_to_gallery"
+        private const val KEY_PENDING_OFFLINE_COUNT = "pending_offline_count"
         private const val KEY_BOUND_USER_ID = "bound_user_id"
         private const val KEY_BOUND_OWNER_USER_ID = "bound_owner_user_id"
         private const val KEY_BOUND_USER_DISPLAY_NAME = "bound_user_display_name"

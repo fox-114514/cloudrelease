@@ -1045,6 +1045,34 @@ a:hover {
 
 /* ---------- Responsive ---------- */
 
+.prompt-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(15, 23, 42, 0.62);
+}
+
+.prompt-overlay[hidden] {
+  display: none;
+}
+
+.prompt-card {
+  width: min(520px, 100%);
+  padding: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-md);
+}
+
+.prompt-actions {
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
 @media (max-width: 900px) {
   body {
     min-width: 0;

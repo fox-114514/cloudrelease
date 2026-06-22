@@ -121,7 +121,9 @@ export function canManageOwnDeviceOrThrowNotFound(
  * Whether the actor may modify a DevicePermission row. Owner user tokens
  * can change any field; canManageSpace devices can only mutate the runtime
  * fields listed in `MUTABLE_RUNTIME_FIELDS` (spec §6.7); plain device
- * tokens and child user tokens are forbidden entirely.
+ * tokens are forbidden. The route layer separately permits child users to
+ * change manual upload/download rights on their own devices after ownership
+ * has been resolved.
  */
 export const MUTABLE_RUNTIME_FIELDS = [
   "canAutoUpload",
@@ -177,8 +179,8 @@ export function ensureCanModifyPermissions(
     return;
   }
 
-  // Child users and plain device tokens cannot mutate permissions directly;
-  // they must use the dedicated profile / receive-config endpoints.
+  // Child users are handled by the route only after target ownership is
+  // checked. Plain device tokens cannot mutate permissions directly.
   throw new AppError(
     "OWNER_AUTH_REQUIRED_FOR_PRIVILEGED_PERMISSION",
     "Insufficient permission to modify device permissions",

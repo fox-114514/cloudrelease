@@ -12,7 +12,8 @@
     "copy-assets": "mkdir -p dist/web && cp src/web/index.html dist/web/index.html && cp assets/icon.svg dist/web/icon.svg",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "dependencies": {
     "@fastify/static": "^9.1.3",

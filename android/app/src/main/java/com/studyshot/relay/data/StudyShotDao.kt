@@ -17,6 +17,12 @@ interface StudyShotDao {
     @Query("SELECT * FROM upload_tasks WHERE id = :id")
     suspend fun getUploadTask(id: String): UploadTaskEntity?
 
+    @Query("DELETE FROM upload_tasks WHERE id = :id AND status NOT IN ('queued', 'uploading')")
+    suspend fun deleteFinishedUploadTask(id: String)
+
+    @Query("DELETE FROM upload_tasks WHERE status NOT IN ('queued', 'uploading')")
+    suspend fun clearFinishedUploadTasks()
+
     @Query(
         """
         UPDATE upload_tasks
@@ -61,6 +67,12 @@ interface StudyShotDao {
 
     @Query("SELECT * FROM download_records ORDER BY createdAt DESC LIMIT :limit")
     fun observeDownloadRecords(limit: Int = 50): Flow<List<DownloadRecordEntity>>
+
+    @Query("DELETE FROM download_records WHERE deliveryId = :deliveryId")
+    suspend fun deleteDownloadRecord(deliveryId: String)
+
+    @Query("DELETE FROM download_records")
+    suspend fun clearDownloadRecords()
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun addEventLog(log: EventLogEntity)

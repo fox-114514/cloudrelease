@@ -18,6 +18,8 @@ import androidx.compose.material.icons.outlined.HelpOutline
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -80,6 +82,8 @@ fun AppRoot(
     stopRealtimeService: () -> Unit,
     startReceiveService: () -> Unit,
     stopReceiveService: () -> Unit,
+    acceptPendingDeliveries: () -> Unit,
+    skipPendingDeliveries: () -> Unit,
 ) {
     val navController = rememberNavController()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -88,6 +92,25 @@ fun AppRoot(
 
     val settings by state.app.secureSettings.settings.collectAsState()
     val transient by state.transient.collectAsState()
+
+    if (settings.pendingOfflineCount > 0) {
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("发现离线图片") },
+            text = {
+                Text(
+                    "设备离线期间收到 ${settings.pendingOfflineCount} 张图片，是否现在接收？" +
+                        "\n\n在线期间的新图片仍会自动接收。",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = acceptPendingDeliveries) { Text("全部接收") }
+            },
+            dismissButton = {
+                TextButton(onClick = skipPendingDeliveries) { Text("忽略这些图片") }
+            },
+        )
+    }
 
     LaunchedEffect(transient?.id) {
         val msg = transient ?: return@LaunchedEffect

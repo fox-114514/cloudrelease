@@ -267,7 +267,8 @@ V2 起图片列表、下载、删除权限在 owner / canManageSpace / child / d
 - owner JWT：查看全空间，可选 `userId=<uuid>` 过滤同空间成员。
 - canManageSpace 设备：查看全空间，可按 userId 过滤。
 - child JWT：仅 `uploadUserId == request.user.userId`；传 `userId` 给他人时强制回到自身（也允许直接 403）。
-- 普通设备 token：拒绝。
+- `canManualDownload=true` 的普通设备 token：仅查看 `uploadUserId == device.userId` 的图片。
+- 其他普通设备 token：拒绝。
 
 ### `GET /api/v1/images/:imageId/download`
 

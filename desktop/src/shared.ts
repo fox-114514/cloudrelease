@@ -102,6 +102,7 @@ export interface ConnectionState {
 export interface DownloadRecord {
   deliveryId: string;
   imageId: string;
+  sha256?: string;
   sourceDeviceName: string;
   savedPath?: string;
   receivedAt: string;
@@ -115,6 +116,7 @@ export interface RendererState {
   settings: RendererSettings;
   connection: ConnectionState;
   recentDownloads: DownloadRecord[];
+  pendingOfflineCount: number;
   admin: AdminState;
   watch: WatchState;
 }
@@ -180,6 +182,32 @@ export interface ManualUploadResult {
   expiresAt: string;
   fileName: string;
   sha256: string;
+}
+
+export interface LibraryImage {
+  id: string;
+  mimeType: string;
+  fileSize: number;
+  sha256: string;
+  sourceDisplayName?: string;
+  createdAt: string;
+  expiresAt: string;
+  isExpired: boolean;
+  uploadedBy: {
+    userDisplayName: string;
+    deviceName: string;
+  };
+}
+
+export interface ImageLibraryPage {
+  images: LibraryImage[];
+  nextCursor?: string;
+}
+
+export interface ManualLibraryDownloadResult {
+  imageId: string;
+  savedPath: string;
+  copiedToClipboard: boolean;
 }
 
 export interface AdminLoginInput {

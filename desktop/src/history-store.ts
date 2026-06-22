@@ -62,6 +62,17 @@ export class HistoryStore {
     return returned;
   }
 
+  async remove(deliveryId: string): Promise<void> {
+    await this.enqueueWrite((records) => ({
+      next: records.filter((record) => record.deliveryId !== deliveryId),
+      result: undefined,
+    }));
+  }
+
+  async clear(): Promise<void> {
+    await this.enqueueWrite(() => ({ next: [], result: undefined }));
+  }
+
   private enqueueWrite(
     mutate: (records: DownloadRecord[]) => { next: DownloadRecord[]; result: DownloadRecord | undefined }
   ): Promise<void> {
@@ -98,4 +109,3 @@ export class HistoryStore {
     }
   }
 }
-

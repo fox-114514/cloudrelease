@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import WebSocket from "ws";
 import { ApiClient } from "./api.js";
+import { copyImageToClipboard } from "./clipboard.js";
+import { loadConfig, saveConfig } from "./config.js";
 import { ensureDir, extensionForMime, formatTimestamp, sanitizeFilePart, wsUrl, } from "./utils.js";
 const PING_INTERVAL_MS = 25_000;
 const DOWNLOAD_MAX_ATTEMPTS = 3;
@@ -14,6 +16,8 @@ export class WsReceiveClient {
     reconnectDelayMs = 1000;
     destroyed = false;
     processing = new Set();
+    downloadedUnacked = new Set();
+    liveDeliveryChain = Promise.resolve();
     api;
     constructor(options) {
         this.options = options;
@@ -51,7 +55,6 @@ export class WsReceiveClient {
             this.log("connected", "WebSocket connected");
             this.socket?.send(JSON.stringify({ type: "hello" }));
             this.startHeartbeat();
-            this.fetchPending();
         });
         this.socket.on("message", (data) => {
             const text = Buffer.isBuffer(data) ? data.toString("utf-8") : String(data);
@@ -92,7 +95,7 @@ export class WsReceiveClient {
         try {
             const msg = JSON.parse(text);
             if (msg.type === "hello.ack") {
-                this.fetchPending();
+                void this.checkPending();
             }
             else if (msg.type === "pong") {
                 // ignore
@@ -112,13 +115,16 @@ export class WsReceiveClient {
         if (this.processing.has(delivery.deliveryId))
             return;
         this.processing.add(delivery.deliveryId);
-        this.downloadWithRetries(delivery).finally(() => {
+        const run = this.liveDeliveryChain.catch(() => undefined).then(() => this.downloadWithRetries(delivery));
+        this.liveDeliveryChain = run;
+        run.finally(() => {
             this.processing.delete(delivery.deliveryId);
         });
     }
     parseDelivery(msg) {
         const deliveryId = msg.deliveryId;
         const image = (msg.image ?? {});
+        const source = (msg.source ?? {});
         const imageId = image.id;
         const sha256 = image.sha256;
         if (!deliveryId || !imageId || !sha256)
@@ -129,36 +135,102 @@ export class WsReceiveClient {
             mimeType: image.mimeType || "image/jpeg",
             createdAt: msg.createdAt || new Date().toISOString(),
             expectedSha256: sha256,
+            sourceDeviceName: source.uploadDeviceName || source.uploadDeviceId || "unknown-device",
         };
     }
-    async fetchPending() {
+    async checkPending() {
         try {
-            const { deliveries } = await this.api.getPendingDeliveries();
-            for (const raw of deliveries) {
-                const delivery = {
-                    deliveryId: raw.id,
-                    imageId: raw.image.id,
-                    mimeType: raw.image.mimeType,
-                    createdAt: raw.createdAt,
-                    expectedSha256: raw.image.sha256,
-                };
+            const pending = await this.api.getPendingDeliveries();
+            const count = pending.totalPending ?? pending.deliveries.length;
+            this.options.onPending?.(count);
+            return count;
+        }
+        catch (err) {
+            this.log("error", `checkPending failed: ${err.message}`);
+            return 0;
+        }
+    }
+    async acceptPending() {
+        await this.drainPending("downloaded");
+    }
+    async skipPending() {
+        await this.drainPending("skipped");
+    }
+    async drainPending(action) {
+        const seen = new Set();
+        while (!this.destroyed) {
+            const pending = await this.api.getPendingDeliveries();
+            const batch = pending.deliveries.filter((raw) => !seen.has(raw.deliveryId));
+            if (batch.length === 0)
+                break;
+            for (const raw of batch) {
+                seen.add(raw.deliveryId);
+                if (this.downloadedUnacked.has(raw.deliveryId)) {
+                    try {
+                        await this.api.ackDelivery(raw.deliveryId, "downloaded");
+                        this.downloadedUnacked.delete(raw.deliveryId);
+                    }
+                    catch (err) {
+                        this.log("ack-warning", `ACK retry failed for ${raw.deliveryId}: ${err.message}`);
+                    }
+                    continue;
+                }
+                if (action === "skipped") {
+                    try {
+                        await this.api.ackDelivery(raw.deliveryId, "skipped");
+                    }
+                    catch (err) {
+                        this.log("error", `Skip ACK failed for ${raw.deliveryId}: ${err.message}`);
+                    }
+                    continue;
+                }
+                const delivery = this.pendingDelivery(raw);
                 if (this.processing.has(delivery.deliveryId))
                     continue;
                 this.processing.add(delivery.deliveryId);
-                this.downloadWithRetries(delivery).finally(() => {
+                try {
+                    await this.downloadWithRetries(delivery);
+                }
+                finally {
                     this.processing.delete(delivery.deliveryId);
-                });
+                }
             }
         }
-        catch (err) {
-            this.log("error", `fetchPending failed: ${err.message}`);
-        }
+        await this.checkPending();
+    }
+    pendingDelivery(raw) {
+        return {
+            deliveryId: raw.deliveryId,
+            imageId: raw.image.id,
+            mimeType: raw.image.mimeType,
+            createdAt: raw.createdAt,
+            expectedSha256: raw.image.sha256,
+            sourceDeviceName: raw.source.uploadDeviceName || raw.source.uploadDeviceId,
+        };
     }
     async downloadWithRetries(delivery) {
         let lastError;
         for (let attempt = 1; attempt <= DOWNLOAD_MAX_ATTEMPTS; attempt += 1) {
             try {
-                await this.downloadOnce(delivery);
+                const filePath = await this.downloadOnce(delivery);
+                try {
+                    await this.recordReceivedHash(delivery.expectedSha256);
+                }
+                catch (err) {
+                    this.log("warning", `Failed to persist received hash: ${err.message}`);
+                }
+                try {
+                    await this.api.ackDelivery(delivery.deliveryId, "downloaded");
+                    this.downloadedUnacked.delete(delivery.deliveryId);
+                }
+                catch (err) {
+                    // ACK failure must not redownload an image that is already safely on
+                    // disk. A later pending decision can retry the idempotent ACK.
+                    this.log("ack-warning", `Downloaded but ACK failed: ${err.message}`);
+                    this.downloadedUnacked.add(delivery.deliveryId);
+                }
+                this.log("download", `Saved ${filePath}`);
+                this.options.onDownload?.(filePath, delivery.imageId, delivery.deliveryId, delivery.sourceDeviceName);
                 return;
             }
             catch (err) {
@@ -181,14 +253,23 @@ export class WsReceiveClient {
     async downloadOnce(delivery) {
         const downloadDir = this.options.config.downloadDir || path.join(process.cwd(), "downloads");
         await ensureDir(downloadDir);
-        const sourceName = sanitizeFilePart(this.options.device.deviceName);
-        const fileName = `${formatTimestamp(delivery.createdAt)}_${sourceName}_${delivery.imageId.slice(0, 8)}${extensionForMime(delivery.mimeType)}`;
+        const sourceName = sanitizeFilePart(delivery.sourceDeviceName);
+        const fileName = `${sourceName}_${formatTimestamp(delivery.createdAt)}${extensionForMime(delivery.mimeType)}`;
         const basePath = path.join(downloadDir, fileName);
         const stream = await this.api.downloadImage(delivery.imageId);
         const filePath = await this.writeImageWithUniqueSuffix(basePath, stream, delivery.expectedSha256);
-        await this.api.ackDelivery(delivery.deliveryId, "downloaded");
-        this.log("download", `Saved ${filePath}`);
-        this.options.onDownload?.(filePath, delivery.imageId);
+        if (this.options.config.copyToClipboard) {
+            try {
+                const { tool } = await copyImageToClipboard(filePath, delivery.mimeType);
+                this.log("clipboard", `Copied ${filePath} via ${tool}`);
+            }
+            catch (err) {
+                // The file is already safely downloaded. Clipboard integration is a
+                // convenience and must not turn this delivery into a failed retry.
+                this.log("clipboard-warning", err.message);
+            }
+        }
+        return filePath;
     }
     // Streams the response body to disk at `basePath`, hashing as we go.
     // Uses O_EXCL so two concurrent downloads of the same image can't stomp
@@ -239,9 +320,20 @@ export class WsReceiveClient {
             throw new Error("下载图片 sha256 校验失败");
         }
     }
+    async recordReceivedHash(sha256) {
+        const latest = await loadConfig();
+        if (!latest.receivedHashes.includes(sha256))
+            latest.receivedHashes.push(sha256);
+        while (latest.receivedHashes.length > 5000)
+            latest.receivedHashes.shift();
+        this.options.config.receivedHashes = latest.receivedHashes;
+        await saveConfig(latest);
+    }
     shouldReconnect(closeCode) {
         // 1008 = policy violation (revoked, invalid token, etc.)
         if (closeCode === 1008)
+            return false;
+        if (closeCode === 4001)
             return false;
         return !this.destroyed;
     }

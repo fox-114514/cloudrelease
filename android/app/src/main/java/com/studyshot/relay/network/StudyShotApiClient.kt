@@ -413,7 +413,11 @@ class StudyShotApiClient(
                 add(parseDelivery(deliveriesJson.getJSONObject(index)))
             }
         }
-        return PendingDeliveriesResponse(deliveries)
+        return PendingDeliveriesResponse(
+            deliveries = deliveries,
+            totalPending = data.optInt("totalPending", deliveries.size),
+            hasMore = data.optBoolean("hasMore", false),
+        )
     }
 
     suspend fun downloadImage(

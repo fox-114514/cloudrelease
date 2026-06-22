@@ -253,9 +253,9 @@
 - `platform` 只能是 `android`、`windows`、`linux`。
 - `clientGeneratedDeviceId` 可选；如果传入，必须是 UUID。
 - `profile`（V2 新增）可选：`manual_only` / `upload_only` / `receive_own` / `sync_own`。
-  - 不传时保持旧默认（`canAutoUpload=false, canManualUpload=true, canAutoReceive=false, autoUploadScope=screenshot_only, autoReceiveScope=disabled`），响应中 `profile` 字段返回 `custom`。
+  - owner 目标不传时保持旧默认；child 目标不传时默认 `receive_own`（`autoReceiveScope=same_user_only`）。
   - 提交 `custom` 返回 `400 INVALID_DEVICE_PROFILE`。
-  - profile 仅影响 6 个运行时字段；`canManualDownload` / `canManageSpace` / `canCreateInvite` 始终保持 `false`。
+  - profile 不授予管理类权限。child 新设备默认 `canManualUpload=true`、`canManualDownload=true`；owner 新设备的 `canManualDownload` 默认仍为 `false`。
 - 目标用户 `disabledAt` 必须为 `null`，否则返回 `400 INVALID_BIND_CODE`。
 
 成功响应：
@@ -422,7 +422,8 @@
 
 - owner 用户 token：可修改所有字段。
 - `canManageSpace` 设备 token：仅可修改 6 个运行时字段；提交 `canManageSpace` / `canCreateInvite` 返回 `403 OWNER_AUTH_REQUIRED_FOR_PRIVILEGED_PERMISSION`。
-- child 用户 token / 普通设备 token：禁止调用，统一返回 `403`。
+- child 用户 token：仅可修改本人设备的 `canManualUpload` / `canManualDownload`；自动权限使用 profile / receive-config，其他字段返回 `403 CHILD_PERMISSION_FIELD_FORBIDDEN`。
+- 普通设备 token：禁止调用，返回 `403`。
 
 请求字段均可选（运行时 6 字段 + 特权 3 字段）：
 
@@ -676,7 +677,7 @@ Content-Type：`multipart/form-data`
 
 ### `GET /api/v1/deliveries/pending`
 
-用途：客户端启动或 WebSocket 重连后补收未完成投递。
+用途：客户端启动或 WebSocket 重连后查询未完成投递。
 
 鉴权：设备 token。
 
@@ -693,6 +694,8 @@ Content-Type：`multipart/form-data`
 {
   "success": true,
   "data": {
+    "totalPending": 135,
+    "hasMore": true,
     "deliveries": [
       {
         "deliveryId": "uuid",
@@ -719,8 +722,9 @@ Content-Type：`multipart/form-data`
 
 客户端要求：
 
-- 启动后立即调用一次。
-- WebSocket 连接成功或重连成功后调用一次。
+- WebSocket 连接成功或重连成功后调用一次，只展示离线投递确认，不自动下载。
+- 用户选择“接收”后按批处理；`hasMore = true` 或处理后仍有 pending 时继续拉取。
+- 用户选择“忽略”时，对当前离线投递 ACK `skipped`。
 - 本地要记录正在处理和已处理的 `deliveryId`，避免重复下载。
 - 对同一个 delivery 重复收到 WebSocket 事件和 pending 响应时，只处理一次。
 
@@ -753,14 +757,15 @@ Content-Type：`multipart/form-data`
 
 ### `GET /api/v1/images`（管理列表）
 
-用途：列出当前 owner 空间内的图片，用于管理后台图片库。
+用途：列出当前身份可见的图片，用于图库和手动下载。
 
 鉴权（V2）：
 
 - owner 用户 token：查看全空间；可按成员筛选。
 - `canManageSpace` 设备 token：同上。
 - child 用户 token：仅 `uploadUserId == request.user.userId`；`userId` 给他人返回 `403`。
-- 普通设备 token：禁止。
+- `canManualDownload=true` 的普通设备 token：仅查看 `uploadUserId == device.userId` 的图片。
+- 其他普通设备 token：禁止。
 
 请求参数（query）：
 
@@ -1078,7 +1083,7 @@ Authorization: Bearer <device-token>
 - 每 25 到 30 秒发送一次 `ping`。
 - 90 秒内未收到服务端响应或 socket 关闭时，进入重连。
 - 重连使用指数退避，最大 60 秒。
-- 每次连接成功后调用 `GET /deliveries/pending`。
+- 每次连接成功后调用 `GET /deliveries/pending`，有积压时由用户确认接收或忽略。
 
 ### 服务端图片事件
 
@@ -1118,8 +1123,8 @@ Authorization: Bearer <device-token>
 2. 调用 `/devices/register`，保存 `deviceId` 与 `deviceToken`。
 3. 建立 WebSocket。
 4. 发送 `hello`，等待 `hello.ack`。
-5. 调用 `/deliveries/pending`。
-6. 收到 `image.created` 或 pending 记录后，按 `deliveryId` 去重。
+5. 调用 `/deliveries/pending`，如有离线积压则弹窗询问用户。
+6. 用户确认后处理 pending；在线收到的 `image.created` 仍自动处理，并按 `deliveryId` 去重。
 7. 调用 `/images/{imageId}/download` 下载图片。
 8. 保存到本地下载目录。
 9. 计算 sha256，与元数据比较。

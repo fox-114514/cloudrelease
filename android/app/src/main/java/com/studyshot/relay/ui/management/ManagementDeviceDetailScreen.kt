@@ -74,11 +74,11 @@ fun ManagementDeviceDetailScreen(
             return
         }
         DeviceProfileSection(state = state, device = device)
-        if (session?.user?.role == "owner") {
-            DevicePermissionsSection(state = state, device = device)
-        } else {
+        val isOwner = session?.user?.role == "owner"
+        DevicePermissionsSection(state = state, device = device, isOwner = isOwner)
+        if (!isOwner) {
             HelpCallout(
-                text = "成员只能使用安全用途预设；管理空间等高级权限由空间管理员设置。",
+                text = "成员可修改自己设备的手动上传/下载权限；自动权限请使用安全用途预设，管理空间等高级权限由空间管理员设置。",
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
             )
         }
@@ -119,6 +119,7 @@ private fun DeviceProfileSection(
 private fun DevicePermissionsSection(
     state: AppState,
     device: ManagedDevice,
+    isOwner: Boolean,
 ) {
     val revoked = !device.revokedAt.isNullOrBlank()
     val rows = listOf(
@@ -128,7 +129,7 @@ private fun DevicePermissionsSection(
         Triple("canManualDownload", "手动下载", Icons.Outlined.HelpOutline),
         Triple("canManageSpace", "管理空间", Icons.Outlined.Key),
         Triple("canCreateInvite", "创建邀请", Icons.Outlined.Folder),
-    )
+    ).filter { isOwner || it.first == "canManualUpload" || it.first == "canManualDownload" }
     SettingsGroup(
         title = "权限",
         footer = "修改会立即生效。已撤销的设备不能修改权限。",

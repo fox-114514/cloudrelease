@@ -389,7 +389,7 @@ private fun receiveSummary(settings: AppSettings): String {
         !settings.deviceTokenAvailable -> "绑定后才能接收"
         !settings.serverAllowsAutoReceive() -> "服务端未允许自动接收"
         !settings.autoReceiveEnabled -> "关闭 · 改为开启"
-        settings.saveDownloadsToGallery -> "下载到相册并复制剪贴板"
+        settings.saveDownloadsToGallery -> "下载到系统相册"
         settings.downloadNotificationEnabled -> "下载后通知"
         else -> "静默接收"
     }

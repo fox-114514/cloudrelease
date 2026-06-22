@@ -1,4 +1,5 @@
 interface RecentDelivery {
+    deliveryId: string;
     imageId: string;
     fileName: string;
     sourceDevice: string;

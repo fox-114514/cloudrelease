@@ -38,6 +38,28 @@ describe("POST /api/v1/devices/register", () => {
     expect(body.data.permissions.canManualUpload).toBe(true);
   });
 
+  it("preserves bind-code case while ignoring copied surrounding whitespace", async () => {
+    const app = await buildApp();
+    const loginName = `owner-${randomUUID()}`;
+    await createOwner(loginName, "password");
+    const token = await login(app, loginName, "password");
+    const bindCode = await createBindCode(app, token);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/v1/devices/register",
+      payload: {
+        bindCode: `  ${bindCode}\n`,
+        deviceName: "Copied Code Tablet",
+        platform: "android",
+        osVersion: "14",
+        appVersion: "0.4.1",
+      },
+    });
+
+    expect(res.statusCode).toBe(201);
+  });
+
   it("rejects an already-used bind code", async () => {
     const app = await buildApp();
     const loginName = `owner-${randomUUID()}`;
@@ -191,7 +213,7 @@ describe("PATCH /api/v1/devices/:id/permissions", () => {
 
     expect(res.statusCode).toBe(403);
     const body = JSON.parse(res.payload);
-    expect(body.error.code).toBe("FORBIDDEN");
+    expect(body.error.code).toBe("OWNER_AUTH_REQUIRED_FOR_PRIVILEGED_PERMISSION");
   });
 });
 

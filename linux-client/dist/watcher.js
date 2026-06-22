@@ -1,12 +1,21 @@
 import chokidar from "chokidar";
 import path from "node:path";
 import { uploadSingle } from "./uploader.js";
-const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 export function startWatcher(options) {
     const log = (msg) => options.onLog?.(`[watch] ${msg}`);
     log(`Watching ${options.watchDir}`);
     const watcher = chokidar.watch(options.watchDir, {
-        ignored: /(^|[/\\])\../,
+        ignored: (candidate) => {
+            if (/(^|[/\\])\../.test(candidate))
+                return true;
+            const resolved = path.resolve(candidate);
+            return (options.excludedDirs ?? []).some((excludedDir) => {
+                const excluded = path.resolve(excludedDir);
+                const relative = path.relative(excluded, resolved);
+                return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+            });
+        },
         persistent: true,
         ignoreInitial: true,
         awaitWriteFinish: {

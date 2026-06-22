@@ -35,9 +35,14 @@ studyshot-relay launch
 
 启动后会自动打开浏览器访问 `http://127.0.0.1:<随机端口>`。在 Web 界面里可以：
 
-- 绑定设备
+- 预览绑定目标后绑定设备，或使用成员账号自助绑定
+- 显示绑定成员、用途预设和服务端有效权限
 - 设置监听目录（自动上传）
 - 设置接收目录（自动下载）
+- 接收后自动将图片写入系统剪贴板
+- 离线期间累积的图片上线后先弹窗询问，不会擅自补收
+- 下载文件统一命名为 `上传设备名_YYYYMMDD-HHMMSS.ext`
+- 最近投递记录可单条隐藏或全部清空
 - 启动/停止接收和监听服务
 - 登录主账号并打开服务器原生 `/admin` 管理后台
 - 查看实时日志
@@ -62,6 +67,16 @@ studyshot-relay launch -p 8080
 
 配置文件保存在 `~/.config/studyshot-relay/config.json`，权限 600。
 
+自动剪贴板默认开启。Wayland 会优先使用 `wl-copy`，X11 会优先使用
+`xclip`，可以根据桌面会话安装其中一个：
+
+```bash
+# Ubuntu / Debian
+sudo apt install wl-clipboard xclip
+```
+
+可在 Web 界面的“本地配置 → 监听与接收”中关闭自动剪贴板。
+
 ## 命令行命令
 
 ### 绑定设备
@@ -69,6 +84,22 @@ studyshot-relay launch -p 8080
 ```bash
 studyshot-relay bind -s http://64.90.30.102:3000 -c <绑定码> -n "MyLinuxPC"
 ```
+
+命令会先显示绑定目标并要求确认。也可以使用成员账号自助绑定；密码通过隐藏终端输入读取，不进入 shell history：
+
+```bash
+studyshot-relay bind-login -s http://64.90.30.102:3000 -u <登录名> -n "MyLinuxPC" --profile sync_own
+```
+
+查看或刷新真实服务端身份与权限：
+
+```bash
+studyshot-relay whoami
+studyshot-relay permissions
+studyshot-relay refresh-permissions
+```
+
+本地自动上传/接收开关只有在服务端有效权限允许时才会启动对应服务。
 
 ### 查看状态
 
@@ -78,7 +109,7 @@ studyshot-relay status
 
 ### 接收图片
 
-保持 WebSocket 连接，自动下载收到的图片：
+保持 WebSocket 连接，自动下载收到的图片并写入剪贴板：
 
 ```bash
 studyshot-relay receive

@@ -4,6 +4,19 @@
 
 本文说明如何把 StudyShot Relay 后端部署到一台 Linux 服务器。推荐服务器使用 Docker Compose、PostgreSQL 和 Caddy。Caddy 负责 HTTPS 和 WSS，后端只在 Docker 内部监听 `3000`。
 
+## 本地集成测试
+
+```bash
+cd backend
+cp .env.test.example .env.test
+npm run test:db:up
+npm run test:db:migrate
+npm test
+npm run test:db:down
+```
+
+测试数据库使用独立的 `55432` 端口和 tmpfs，不会重置开发或生产数据库。
+
 ## 1. 部署目录
 
 建议把后端目录放到服务器：
@@ -199,13 +212,13 @@ npm run db:migrate:deploy
 
 因此新迁移会在启动前应用。
 
-升级到 `0.4.0` 后可通过健康检查确认实际部署版本：
+升级到 `0.4.1` 后可通过健康检查确认实际部署版本：
 
 ```bash
 curl -fsS http://你的服务器:3000/api/v1/healthz
 ```
 
-返回的 `version` 必须为 `0.4.0`；如果仍是 `0.1.0`，Android 虽可完成基础登录和绑定，但“删除已撤销设备”等新接口不可用。
+返回的 `version` 必须为 `0.4.1`。Android `0.4.1` 同时修复了 `0.4.0` 将大小写敏感绑定码转换为大写的问题。
 
 ## 8. 停止与重启
 

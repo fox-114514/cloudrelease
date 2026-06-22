@@ -46,10 +46,23 @@
 - `401`：token 缺失、无效、设备撤销或用户禁用。客户端应停止当前自动任务，并提示重新绑定或重新登录。
 - `403`：身份有效但权限不足。客户端应保留配置，显示权限不足，不要反复重试同一操作。
 - `400`：请求格式或业务参数错误。客户端应修正请求，不要无限重试。
-- `404`：目标不存在、跨空间访问或图片过期。下载场景可将投递标记为失败或跳过。
-- `409`：资源冲突，例如登录名已存在。
+- `404`：目标不存在、跨空间访问、跨成员资源访问或图片过期。下载场景可将投递标记为失败或跳过。
+- `409`：资源冲突，例如登录名已存在、目标成员已禁用、删除未撤销设备。
 - `429`：限速。客户端应退避后重试。
 - `5xx`：服务端错误。客户端应指数退避重试。
+
+客户端应**始终根据 `error.code` 判断逻辑**，不要根据英文 `message` 拼接。新增或更新的错误码：
+
+| code | HTTP | 场景 |
+|---|---:|---|
+| `UNAUTHORIZED` | 401 | 缺失身份；包括 bind-codes 无 token |
+| `DEVICE_AUTH_REQUIRED` | 401 | `/devices/me` 使用非设备身份 |
+| `FORBIDDEN` | 403 | 身份有效但权限不足 |
+| `TARGET_USER_DISABLED` | 409 | 为禁用成员创建绑定码 |
+| `INVALID_DEVICE_PROFILE` | 400 | profile 非法或提交了 `custom` |
+| `OWNER_AUTH_REQUIRED_FOR_PRIVILEGED_PERMISSION` | 403 | 非 owner 试图授予 `canManageSpace` / `canCreateInvite` |
+| `INVALID_RECEIVE_CONFIG` | 400 | `selected_devices` 无来源等 |
+| `CROSS_USER_SOURCE_FORBIDDEN` | 404 | child 用户选择了其他成员来源；生产环境建议统一返回 `NOT_FOUND` |
 
 ## 3. 健康检查
 
@@ -116,12 +129,15 @@
 
 用途：创建一次性绑定码。当前后端已实现 `bind_device` 和 `invite_child_user` 两种 purpose，但 `/devices/register` 只接受 `bind_device`。
 
-鉴权：
+鉴权矩阵（V2）：
 
-- owner 用户 token 可以创建。
-- 有 `canCreateInvite` 或 `canManageSpace` 的设备 token 可以创建。
-- 只有 owner 用户或 `canManageSpace` 设备可以给其他用户创建设备绑定码。
-- 只有 `canCreateInvite` 的设备只能给自身用户创建绑定码。
+| 调用身份 | 不传 `userId` | 传自己的 `userId` | 传其他成员 `userId` |
+|---|---:|---:|---:|
+| owner 用户 token | 目标为 owner | 允许 | 允许（必须同空间、未禁用） |
+| child 用户 token | 目标为自己 | 允许 | **403** |
+| `canCreateInvite` 设备 token | 目标为设备所属用户 | 允许 | **403** |
+| `canManageSpace` 设备 token | 目标为设备所属用户 | 允许 | 允许（必须同空间、未禁用） |
+| 无身份 | **401** `UNAUTHORIZED` | **401** | **401** |
 
 请求：
 
@@ -134,6 +150,11 @@
 }
 ```
 
+约束：
+
+- `expiresInSeconds` 必须为正整数且 `≤ 3600`，默认 `600`。
+- `purpose` 当前仅消费 `bind_device`，`invite_child_user` 暂时只是占位枚举，注册时被拒。
+
 成功响应：
 
 ```json
@@ -141,16 +162,69 @@
   "success": true,
   "data": {
     "bindCode": "<raw-code-shown-once>",
-    "expiresAt": "2026-06-18T01:00:00.000Z"
+    "expiresAt": "2026-06-18T01:00:00.000Z",
+    "targetUser": {
+      "id": "uuid",
+      "role": "child",
+      "displayName": "张三"
+    }
+  }
+}
+```
+
+错误响应：
+
+- `401 UNAUTHORIZED`：无身份。
+- `403 FORBIDDEN`：成员或普通邀请设备指定其他用户。
+- `404 NOT_FOUND`：目标不属于当前 owner 空间。
+- `409 TARGET_USER_DISABLED`：目标成员已禁用。
+- `400`：参数非法（如 `expiresInSeconds > 3600`）。
+
+审计 metadata：`{ targetUserId, targetRole, expiresInSeconds }`。**绝不**记录原始 `bindCode`。
+
+### `POST /api/v1/bind-codes/preview`（V2 新增）
+
+用途：注册前预览「这台设备将属于谁」。**不消费**绑定码。
+
+鉴权：无需 token。绑定码本身即短期 bearer 受现有 rate limit 保护。
+
+请求：
+
+```json
+{
+  "bindCode": "raw-one-time-code"
+}
+```
+
+校验：
+
+- 去除首尾空白但保留大小写。
+- 不存在 / 已使用 / 已过期 / `purpose != bind_device` / 目标用户已禁用，统一返回 `400 INVALID_BIND_CODE`，**不**泄露具体状态。
+
+成功响应：
+
+```json
+{
+  "success": true,
+  "data": {
+    "expiresAt": "2026-06-21T12:10:00.000Z",
+    "space": {
+      "ownerUserId": "owner-uuid",
+      "displayName": "王老师的空间"
+    },
+    "targetUser": {
+      "id": "uuid",
+      "role": "child",
+      "displayName": "张三"
+    }
   }
 }
 ```
 
 客户端要求：
 
-- `bindCode` 只显示一次，服务端不再明文保存。
-- 默认有效期使用 600 秒。
-- 绑定码过期或使用失败后，客户端应引导用户重新创建绑定码。
+- 注册流程必须先调用 preview，确认目标成员后再调用 `/devices/register`。
+- 不在响应中显示 `emailOrLogin`、`passwordHash` 或设备列表。
 
 ## 6. 设备注册
 
@@ -158,7 +232,7 @@
 
 用途：新设备使用绑定码注册，获取设备 ID 和设备 token。
 
-鉴权：不需要。
+鉴权：不需要（绑定码本身是短期 bearer）。
 
 请求：
 
@@ -169,7 +243,8 @@
   "platform": "android",
   "osVersion": "14",
   "appVersion": "0.1.0",
-  "clientGeneratedDeviceId": "optional-uuid"
+  "clientGeneratedDeviceId": "optional-uuid",
+  "profile": "sync_own"
 }
 ```
 
@@ -177,6 +252,11 @@
 
 - `platform` 只能是 `android`、`windows`、`linux`。
 - `clientGeneratedDeviceId` 可选；如果传入，必须是 UUID。
+- `profile`（V2 新增）可选：`manual_only` / `upload_only` / `receive_own` / `sync_own`。
+  - owner 目标不传时保持旧默认；child 目标不传时默认 `receive_own`（`autoReceiveScope=same_user_only`）。
+  - 提交 `custom` 返回 `400 INVALID_DEVICE_PROFILE`。
+  - profile 不授予管理类权限。child 新设备默认 `canManualUpload=true`、`canManualDownload=true`；owner 新设备的 `canManualDownload` 默认仍为 `false`。
+- 目标用户 `disabledAt` 必须为 `null`，否则返回 `400 INVALID_BIND_CODE`。
 
 成功响应：
 
@@ -186,21 +266,22 @@
   "data": {
     "deviceId": "uuid",
     "deviceToken": "<raw-device-token-shown-once>",
+    "profile": "sync_own",
     "permissions": {
-      "canAutoUpload": false,
+      "canAutoUpload": true,
       "canManualUpload": true,
-      "canAutoReceive": false,
+      "canAutoReceive": true,
       "canManualDownload": false,
       "canManageSpace": false,
       "canCreateInvite": false,
       "autoUploadScope": "screenshot_only",
-      "autoReceiveScope": "disabled"
+      "autoReceiveScope": "same_user_only"
     },
     "user": {
       "id": "uuid",
       "ownerUserId": "uuid",
-      "role": "owner",
-      "displayName": "Owner"
+      "role": "child",
+      "displayName": "张三"
     }
   }
 }
@@ -209,8 +290,9 @@
 客户端要求：
 
 - `deviceToken` 只在注册响应出现一次，必须立刻保存到安全存储。
-- 新设备默认权限很小。自动上传、自动接收需要后续由管理端开启。
+- 推荐立即调用 `GET /devices/me` 确认服务端真实权限与本地保存一致。
 - 如果响应成功但本地保存 token 失败，客户端必须提示用户重新绑定，不能继续进入半绑定状态。
+- 同一事务内完成「绑定码消费 + 设备创建 + 权限创建 + 审计日志」。
 
 ## 7. 设备列表与权限
 
@@ -236,26 +318,26 @@
         "id": "uuid",
         "ownerUserId": "uuid",
         "userId": "uuid",
-        "userDisplayName": "Owner",
-        "name": "Ubuntu laptop",
-        "platform": "linux",
-        "appVersion": "0.1.0",
-        "osVersion": "Ubuntu 24.04",
+        "userDisplayName": "张三",
+        "userRole": "child",
+        "name": "张三的平板",
+        "platform": "android",
+        "appVersion": "0.5.0",
+        "osVersion": "Android 15",
         "lastSeenAt": "2026-06-18T01:00:00.000Z",
         "createdAt": "2026-06-18T00:00:00.000Z",
         "revokedAt": null,
+        "profile": "sync_own",
+        "receiveSourceDeviceIds": [],
         "permissions": {
-          "deviceId": "uuid",
-          "canAutoUpload": false,
+          "canAutoUpload": true,
           "canManualUpload": true,
           "canAutoReceive": true,
           "canManualDownload": false,
           "canManageSpace": false,
           "canCreateInvite": false,
           "autoUploadScope": "screenshot_only",
-          "autoReceiveScope": "all_authorized_sources",
-          "createdAt": "2026-06-18T00:00:00.000Z",
-          "updatedAt": "2026-06-18T00:00:00.000Z"
+          "autoReceiveScope": "same_user_only"
         }
       }
     ]
@@ -263,13 +345,87 @@
 }
 ```
 
+### `GET /api/v1/devices/me`（V2 新增）
+
+用途：让当前设备查看自己的真实归属与服务端权限。
+
+鉴权：**仅设备 token**。用户 JWT 调用返回 `401 DEVICE_AUTH_REQUIRED`。
+
+成功响应：
+
+```json
+{
+  "success": true,
+  "data": {
+    "device": {
+      "id": "uuid",
+      "name": "张三的平板",
+      "platform": "android",
+      "appVersion": "0.5.0",
+      "osVersion": "Android 15",
+      "createdAt": "2026-06-21T12:00:00.000Z",
+      "lastSeenAt": "2026-06-21T12:05:00.000Z",
+      "revokedAt": null
+    },
+    "user": {
+      "id": "uuid",
+      "ownerUserId": "uuid",
+      "role": "child",
+      "displayName": "张三"
+    },
+    "profile": "sync_own",
+    "permissions": {}
+  }
+}
+```
+
+`profile` 由服务端推断；任一字段与预设不完全匹配时为 `custom`。
+
+客户端调用时机：
+
+- 注册成功后立即调用一次。
+- 应用启动且已绑定时调用一次。
+- 收到上传/下载 403 后刷新一次，再决定是否关闭本地任务。
+- WebSocket 因 1008 关闭时刷新一次；若设备已撤销则进入重新绑定状态。
+
+### `PATCH /api/v1/devices/{deviceId}/profile`（V2 新增）
+
+用途：以原子方式设置设备用途预设，避免产生 `canAutoReceive=true + autoReceiveScope=disabled` 等无效组合。
+
+鉴权：
+
+- owner 用户 token：当前空间任意设备。
+- child 用户 token：仅 `device.userId == request.user.userId`。
+- `canManageSpace` 设备 token：当前空间任意设备。
+- 普通设备 token：**禁止**。
+
+请求：
+
+```json
+{
+  "profile": "receive_own"
+}
+```
+
+`profile` 仅允许 `manual_only` / `upload_only` / `receive_own` / `sync_own`，提交 `custom` 返回 `400 INVALID_DEVICE_PROFILE`。
+
+行为：
+
+- 只更新 6 个运行时字段；**不**修改 `canManualDownload` / `canManageSpace` / `canCreateInvite`。
+- 审计 action：`device.profile_updated`，metadata：`{ profile }`。
+
 ### `PATCH /api/v1/devices/{deviceId}/permissions`
 
-用途：修改设备权限。
+用途：修改设备权限。**V2 起收紧** — 仅 owner JWT 可授予特权字段。
 
-鉴权：owner 用户 token 或 `canManageSpace` 设备 token。
+鉴权：
 
-请求字段均可选：
+- owner 用户 token：可修改所有字段。
+- `canManageSpace` 设备 token：仅可修改 6 个运行时字段；提交 `canManageSpace` / `canCreateInvite` 返回 `403 OWNER_AUTH_REQUIRED_FOR_PRIVILEGED_PERMISSION`。
+- child 用户 token：仅可修改本人设备的 `canManualUpload` / `canManualDownload`；自动权限使用 profile / receive-config，其他字段返回 `403 CHILD_PERMISSION_FIELD_FORBIDDEN`。
+- 普通设备 token：禁止调用，返回 `403`。
+
+请求字段均可选（运行时 6 字段 + 特权 3 字段）：
 
 ```json
 {
@@ -291,9 +447,14 @@
 
 ### `PATCH /api/v1/devices/{deviceId}`
 
-用途：修改设备基础信息。当前支持设备名。
+用途：修改设备基础信息（设备名）。
 
-鉴权：owner 用户 token 或 `canManageSpace` 设备 token。
+鉴权（V2）：
+
+- owner 用户 token：任意设备。
+- child 用户 token：**仅自己名下**设备；其他成员设备返回 `404`。
+- `canManageSpace` 设备 token：当前空间任意设备。
+- 普通设备 token：返回 `403`。
 
 请求：
 
@@ -321,7 +482,7 @@
 
 用途：撤销设备。撤销后设备 token 失效，WebSocket 连接会被关闭。
 
-鉴权：owner 用户 token 或 `canManageSpace` 设备 token。
+鉴权矩阵同上：owner / canManageSpace 任意设备；child 仅自己设备；其他成员返回 `404`；普通设备 token 返回 `403`。
 
 成功响应：
 
@@ -338,7 +499,7 @@
 
 用途：从设备管理列表删除一个已经撤销的设备。
 
-鉴权：owner 用户 token 或 `canManageSpace` 设备 token。
+鉴权矩阵同上。
 
 约束：
 
@@ -357,13 +518,49 @@
 }
 ```
 
-## 8. 接收来源规则
+## 8. 接收配置
 
-这些接口只在目标设备 `autoReceiveScope = selected_devices` 时影响自动投递。
+### `PUT /api/v1/devices/{deviceId}/receive-config`（V2 推荐）
+
+用途：原子化地修改接收模式与来源规则，避免出现 `canAutoReceive=true + autoReceiveScope=disabled` 半配置状态。
+
+鉴权：
+
+- owner JWT / canManageSpace 设备：当前空间任意设备。
+- child JWT：仅自己设备，且只能使用 `disabled` / `same_user_only` / `selected_devices`。
+
+请求：
+
+```json
+{
+  "mode": "selected_devices",
+  "sourceDeviceIds": ["uuid-a", "uuid-b"]
+}
+```
+
+合法 mode 与对应副作用：
+
+| mode | 运行时副作用 | 来源规则 |
+|---|---|---|
+| `disabled` | `canAutoReceive=false`、`autoReceiveScope=disabled` | 删除全部旧规则 |
+| `same_user_only` | `canAutoReceive=true`、`autoReceiveScope=same_user_only` | 删除旧规则 |
+| `selected_devices` | `canAutoReceive=true`、`autoReceiveScope=selected_devices` | 事务内替换为 `sourceDeviceIds`（必须至少 1 项） |
+| `all_authorized_sources` | `canAutoReceive=true`、`autoReceiveScope=all_authorized_sources` | 删除旧规则；**仅** owner / canManageSpace 可调用 |
+
+child 用户调用 `selected_devices` 时，所有 `sourceDeviceIds` 必须属于自己；传入跨成员来源返回 `404`。
+
+错误：
+
+- `400 INVALID_RECEIVE_CONFIG`：`selected_devices` 缺少来源。
+- `404 NOT_FOUND`：目标或来源设备不属于当前空间。
+- `403 FORBIDDEN`：child 选择 `all_authorized_sources`。
+- `404 CROSS_USER_SOURCE_FORBIDDEN`：child 选择了其他成员来源。
 
 ### `GET /api/v1/devices/{deviceId}/receive-sources`
 
-鉴权：owner 用户 token 或 `canManageSpace` 设备 token。
+这些旧的细粒度接口保留兼容，但在新代码里**优先**使用上面的 `receive-config`。
+
+鉴权：owner 用户 token、`canManageSpace` 设备 token，或 child 用户 token 查询自己名下的目标设备；child 查询其他成员设备返回 `404`。
 
 成功响应：
 
@@ -386,8 +583,6 @@
 
 ### `PUT /api/v1/devices/{deviceId}/receive-sources/{sourceDeviceId}`
 
-用途：创建或更新一条来源允许规则。
-
 请求：
 
 ```json
@@ -402,8 +597,6 @@
 - 两台设备必须属于同一 owner 空间。
 
 ### `DELETE /api/v1/devices/{deviceId}/receive-sources/{sourceDeviceId}`
-
-用途：删除一条来源规则。
 
 成功响应：
 
@@ -484,7 +677,7 @@ Content-Type：`multipart/form-data`
 
 ### `GET /api/v1/deliveries/pending`
 
-用途：客户端启动或 WebSocket 重连后补收未完成投递。
+用途：客户端启动或 WebSocket 重连后查询未完成投递。
 
 鉴权：设备 token。
 
@@ -501,6 +694,8 @@ Content-Type：`multipart/form-data`
 {
   "success": true,
   "data": {
+    "totalPending": 135,
+    "hasMore": true,
     "deliveries": [
       {
         "deliveryId": "uuid",
@@ -527,8 +722,9 @@ Content-Type：`multipart/form-data`
 
 客户端要求：
 
-- 启动后立即调用一次。
-- WebSocket 连接成功或重连成功后调用一次。
+- WebSocket 连接成功或重连成功后调用一次，只展示离线投递确认，不自动下载。
+- 用户选择“接收”后按批处理；`hasMore = true` 或处理后仍有 pending 时继续拉取。
+- 用户选择“忽略”时，对当前离线投递 ACK `skipped`。
 - 本地要记录正在处理和已处理的 `deliveryId`，避免重复下载。
 - 对同一个 delivery 重复收到 WebSocket 事件和 pending 响应时，只处理一次。
 
@@ -561,15 +757,22 @@ Content-Type：`multipart/form-data`
 
 ### `GET /api/v1/images`（管理列表）
 
-用途：列出当前 owner 空间内的图片，用于管理后台图片库。
+用途：列出当前身份可见的图片，用于图库和手动下载。
 
-鉴权：owner 用户 token，或 `canManageSpace` 设备 token。
+鉴权（V2）：
+
+- owner 用户 token：查看全空间；可按成员筛选。
+- `canManageSpace` 设备 token：同上。
+- child 用户 token：仅 `uploadUserId == request.user.userId`；`userId` 给他人返回 `403`。
+- `canManualDownload=true` 的普通设备 token：仅查看 `uploadUserId == device.userId` 的图片。
+- 其他普通设备 token：禁止。
 
 请求参数（query）：
 
 - `limit`：单页条数，默认 `50`，最大 `100`。
 - `before`：以 ISO 8601 时间分页，返回 `createdAt < before` 的记录。
 - `filter`：可选 `all` / `active` / `expired` / `today` / `week` / `month`。
+- `userId`（V2 新增）：owner / canManageSpace 可按成员筛选；child 忽略或 403。
 
 成功响应：
 
@@ -589,9 +792,9 @@ Content-Type：`multipart/form-data`
         "sourceDisplayName": "Screenshots",
         "uploadedBy": {
           "userId": "uuid",
-          "userDisplayName": "Owner",
+          "userDisplayName": "张三",
           "deviceId": "uuid",
-          "deviceName": "OnePlus Pad"
+          "deviceName": "张三的平板"
         },
         "createdAt": "2026-06-18T01:00:00.000Z",
         "expiresAt": "2026-07-18T01:00:00.000Z",
@@ -610,11 +813,38 @@ Content-Type：`multipart/form-data`
 - 所有 `filter` 都默认排除已删除（`deletedAt` 不为空）的图片。已删除的图片无法预览（`GET /download` 也会拒绝它们），再删除也会 404。如果需要查看删除历史，请查询 `audit-logs`（`action = "image.deleted"`）。
 - 服务端按 `createdAt DESC` 返回。
 
+### `GET /api/v1/images/{imageId}/download`
+
+鉴权与授权条件（V2）：
+
+- owner JWT / canManageSpace：当前空间任意有效图片。
+- child JWT：仅 `image.uploadUserId == request.user.userId`。
+- 设备 token 拥有合法 delivery：允许。
+- 设备 token 无 delivery：只有 `canManualDownload=true` **且** `image.uploadUserId == device.userId` 才允许。
+- 其他情况一律 `404`，**不**返回 `403`，避免泄露其他成员图片是否存在。
+
+响应：
+
+- `Content-Type`：图片 MIME，例如 `image/png`
+- `Content-Length`：文件大小
+- Body：图片二进制流
+
+客户端要求：
+
+- 下载后自行计算 sha256，与事件或 pending 元数据比较。
+- sha256 不一致时不要 ACK `downloaded`，应 ACK `failed` 或本地重试后再 ACK。
+- 下载失败不应崩溃，应保留投递状态等待重试。
+- 管理后台通过该接口配合 `Authorization: Bearer <user-jwt>` 实现图片预览。
+
 ### `DELETE /api/v1/images/{imageId}`（管理删除）
 
 用途：删除一张图片及磁盘文件。
 
-鉴权：owner 用户 token，或 `canManageSpace` 设备 token。
+鉴权（V2）：
+
+- owner JWT / canManageSpace：当前空间任意图片。
+- child JWT：仅自己的图片；他人图片返回 `404`。
+- 普通设备 token：**禁止**，返回 `403`。
 
 行为：
 
@@ -637,8 +867,8 @@ Content-Type：`multipart/form-data`
 
 错误情况：
 
-- `404`：图片不存在或属于其他 owner 空间，或已被删除。
-- `403`：非管理身份。
+- `404`：图片不存在、属于其他 owner 空间、被删除，或 child 删除他人图片。
+- `403`：设备 token 删除。
 
 ## 12. 投递 ACK
 
@@ -757,6 +987,33 @@ Content-Type：`multipart/form-data`
 
 返回审计日志。`limit` 最大 100。
 
+鉴权：owner 用户 token 或 `canManageSpace` 设备 token。child JWT / 普通设备 token 返回 `403`。
+
+### 审计 metadata 要求
+
+记录在 `metadataJson` 中：
+
+- 不得包含：原始绑定码、device token、password、JWT、本地绝对文件路径。
+- 必须包含：`actorUserId` / `actorDeviceId`，绑定相关包含 `targetUserId`，设备相关包含 `targetDeviceId`，profile 或接收 `mode`，跨成员配置时的 `sourceDeviceIds`。
+
+V2 涉及的关键 action：
+
+| action | 触发 |
+|---|---|
+| `bind_code.created` | `POST /bind-codes` 成功 |
+| `bind_code.previewed` | （可选）记录 `POST /bind-codes/preview` 调用，但**不**记录原始 code |
+| `device.registered` | `POST /devices/register` 成功 |
+| `device.profile_updated` | `PATCH /devices/:id/profile` |
+| `device.receive_config_updated` | `PUT /devices/:id/receive-config` |
+| `device.permissions_updated` | `PATCH /devices/:id/permissions` |
+| `device.updated` | 设备改名 |
+| `device.revoked` | `POST /devices/:id/revoke` |
+| `device.deleted` | `DELETE /devices/:id` 软删除 |
+| `image.deleted` | `DELETE /images/:id` |
+| `image.uploaded` | `POST /images` 成功 |
+| `image.upload_deduplicated` | 同 sha256 一小时内去重命中 |
+| `user.created` / `user.updated` | 用户管理 |
+
 ## 14. WebSocket
 
 ### 连接
@@ -826,7 +1083,7 @@ Authorization: Bearer <device-token>
 - 每 25 到 30 秒发送一次 `ping`。
 - 90 秒内未收到服务端响应或 socket 关闭时，进入重连。
 - 重连使用指数退避，最大 60 秒。
-- 每次连接成功后调用 `GET /deliveries/pending`。
+- 每次连接成功后调用 `GET /deliveries/pending`，有积压时由用户确认接收或忽略。
 
 ### 服务端图片事件
 
@@ -866,8 +1123,8 @@ Authorization: Bearer <device-token>
 2. 调用 `/devices/register`，保存 `deviceId` 与 `deviceToken`。
 3. 建立 WebSocket。
 4. 发送 `hello`，等待 `hello.ack`。
-5. 调用 `/deliveries/pending`。
-6. 收到 `image.created` 或 pending 记录后，按 `deliveryId` 去重。
+5. 调用 `/deliveries/pending`，如有离线积压则弹窗询问用户。
+6. 用户确认后处理 pending；在线收到的 `image.created` 仍自动处理，并按 `deliveryId` 去重。
 7. 调用 `/images/{imageId}/download` 下载图片。
 8. 保存到本地下载目录。
 9. 计算 sha256，与元数据比较。

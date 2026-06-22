@@ -3,6 +3,7 @@ import type { DeviceConfig } from "./config.js";
 export interface WatchOptions {
     device: DeviceConfig;
     watchDir: string;
+    excludedDirs?: string[];
     onLog?: (message: string) => void;
     onError?: (message: string) => void;
 }

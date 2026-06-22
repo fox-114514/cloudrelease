@@ -1,6 +1,8 @@
 package com.studyshot.relay.ui.library
 
 import android.graphics.BitmapFactory
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -30,6 +32,7 @@ import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Cloud
 import androidx.compose.material.icons.outlined.CloudUpload
+import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Photo
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material3.AlertDialog
@@ -41,6 +44,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -59,6 +63,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -70,6 +75,8 @@ import com.studyshot.relay.ui.components.HelpCallout
 import com.studyshot.relay.ui.components.SectionHeader
 import com.studyshot.relay.ui.components.SurfaceCard
 import com.studyshot.relay.ui.navigation.AppState
+import com.studyshot.relay.ui.navigation.StatusTone
+import com.studyshot.relay.ui.navigation.TransientMessage
 import com.studyshot.relay.ui.theme.Hairline
 import com.studyshot.relay.ui.theme.MonoCaptionStyle
 import com.studyshot.relay.ui.theme.SlateMuted
@@ -99,13 +106,23 @@ fun ActivityScreen(
     val uploads by uploadsFlow.collectAsState(initial = emptyList())
     val downloads by downloadsFlow.collectAsState(initial = emptyList())
     val adminSession by state.adminSession.collectAsState()
+    val settings by state.app.secureSettings.settings.collectAsState()
     val images by state.libraryImages.collectAsState()
     val imageLoading by state.imageLoading.collectAsState()
     val imageFilter by state.imageFilter.collectAsState()
     val imageCursor by state.imageCursor.collectAsState()
+    val scope = rememberCoroutineScope()
 
     var tab by rememberSaveable(stateSaver = ActivityTabSaver) {
         mutableStateOf(ActivityTab.Uploads)
+    }
+    val hasLibraryAccess = adminSession != null ||
+        (settings.deviceTokenAvailable && settings.serverAllowsManualDownload())
+
+    LaunchedEffect(tab, hasLibraryAccess, adminSession?.accessToken) {
+        if (tab == ActivityTab.Library && hasLibraryAccess) {
+            state.refreshImageLibraryFromSession()
+        }
     }
 
     Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -113,7 +130,7 @@ fun ActivityScreen(
             uploadsCount = uploads.size,
             downloadsCount = downloads.size,
             libraryCount = images.size,
-            isOwner = adminSession?.user?.role == "owner",
+            hasLibrarySession = hasLibraryAccess,
             onPickImage = onPickImage,
         )
 
@@ -125,7 +142,7 @@ fun ActivityScreen(
         ) {
             ActivityTab.values().forEach { entry ->
                 val isActive = entry == tab
-                val enabled = entry != ActivityTab.Library || adminSession?.user?.role == "owner"
+                val enabled = entry != ActivityTab.Library || hasLibraryAccess
                 FilterChip(
                     selected = isActive,
                     onClick = { if (enabled) tab = entry },
@@ -146,14 +163,22 @@ fun ActivityScreen(
         }
 
         when (tab) {
-            ActivityTab.Uploads -> UploadsLog(uploads)
-            ActivityTab.Downloads -> DownloadsLog(downloads)
+            ActivityTab.Uploads -> UploadsLog(
+                uploads = uploads,
+                onDelete = { id -> scope.launch(Dispatchers.IO) { state.app.database.dao().deleteFinishedUploadTask(id) } },
+                onClear = { scope.launch(Dispatchers.IO) { state.app.database.dao().clearFinishedUploadTasks() } },
+            )
+            ActivityTab.Downloads -> DownloadsLog(
+                records = downloads,
+                onDelete = { id -> scope.launch(Dispatchers.IO) { state.app.database.dao().deleteDownloadRecord(id) } },
+                onClear = { scope.launch(Dispatchers.IO) { state.app.database.dao().clearDownloadRecords() } },
+            )
             ActivityTab.Library -> {
-                if (adminSession?.user?.role != "owner") {
+                if (!hasLibraryAccess) {
                     EmptyState(
                         icon = Icons.Outlined.Photo,
-                        title = "需要 owner 账号",
-                        description = "图片库只对 owner 可见。请先在「设置 → 管理」中登录 owner 账号。",
+                        title = "需要登录账号",
+                        description = "请登录成员账号，或由管理员为本设备开启手动下载权限。成员和普通设备只查看自己的图片。",
                         modifier = Modifier.fillMaxSize(),
                     )
                 } else {
@@ -163,6 +188,7 @@ fun ActivityScreen(
                         imageFilter = imageFilter,
                         loading = imageLoading,
                         hasMore = imageCursor != null,
+                        canDelete = adminSession != null,
                     )
                 }
             }
@@ -175,7 +201,7 @@ private fun ActivityHeader(
     uploadsCount: Int,
     downloadsCount: Int,
     libraryCount: Int,
-    isOwner: Boolean,
+    hasLibrarySession: Boolean,
     onPickImage: () -> Unit,
 ) {
     Row(
@@ -191,7 +217,7 @@ private fun ActivityHeader(
             )
             Spacer(Modifier.height(2.dp))
             Text(
-                text = "上传 $uploadsCount · 下载 $downloadsCount · ${if (isOwner) "图库 $libraryCount" else "图库仅 owner"}",
+                text = "上传 $uploadsCount · 下载 $downloadsCount · ${if (hasLibrarySession) "图库 $libraryCount" else "图库需登录"}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = SlateMuted,
             )
@@ -215,7 +241,11 @@ private fun ActivityHeader(
 }
 
 @Composable
-private fun UploadsLog(uploads: List<UploadTaskEntity>) {
+private fun UploadsLog(
+    uploads: List<UploadTaskEntity>,
+    onDelete: (String) -> Unit,
+    onClear: () -> Unit,
+) {
     if (uploads.isEmpty()) {
         EmptyState(
             icon = Icons.Outlined.Bolt,
@@ -225,19 +255,24 @@ private fun UploadsLog(uploads: List<UploadTaskEntity>) {
         )
         return
     }
+    Column(modifier = Modifier.fillMaxSize()) {
+      Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        TextButton(onClick = onClear) { Text("清空已完成记录") }
+      }
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.weight(1f),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         items(uploads, key = { it.id }) { task ->
-            UploadLogCard(task)
+            UploadLogCard(task, onDelete)
         }
+    }
     }
 }
 
 @Composable
-private fun UploadLogCard(task: UploadTaskEntity) {
+private fun UploadLogCard(task: UploadTaskEntity, onDelete: (String) -> Unit) {
     val tone = when (task.status) {
         "uploaded", "completed" -> Icons.Outlined.CheckCircle to Teal600
         "failed" -> Icons.Outlined.WarningAmber to MaterialTheme.colorScheme.error
@@ -280,12 +315,21 @@ private fun UploadLogCard(task: UploadTaskEntity) {
                 style = MaterialTheme.typography.labelSmall,
                 color = tone.second,
             )
+            if (task.status !in setOf("queued", "uploading")) {
+                IconButton(onClick = { onDelete(task.id) }) {
+                    Icon(Icons.Outlined.DeleteOutline, contentDescription = "隐藏记录")
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun DownloadsLog(records: List<DownloadRecordEntity>) {
+private fun DownloadsLog(
+    records: List<DownloadRecordEntity>,
+    onDelete: (String) -> Unit,
+    onClear: () -> Unit,
+) {
     if (records.isEmpty()) {
         EmptyState(
             icon = Icons.Outlined.Cloud,
@@ -295,19 +339,24 @@ private fun DownloadsLog(records: List<DownloadRecordEntity>) {
         )
         return
     }
+    Column(modifier = Modifier.fillMaxSize()) {
+      Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        TextButton(onClick = onClear) { Text("清空记录") }
+      }
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier.weight(1f),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         items(records, key = { it.deliveryId }) { record ->
-            DownloadLogCard(record)
+            DownloadLogCard(record, onDelete)
         }
+    }
     }
 }
 
 @Composable
-private fun DownloadLogCard(record: DownloadRecordEntity) {
+private fun DownloadLogCard(record: DownloadRecordEntity, onDelete: (String) -> Unit) {
     val tone = when (record.status) {
         "downloaded", "completed", "saved" -> Icons.Outlined.CheckCircle to Teal600
         "failed" -> Icons.Outlined.WarningAmber to MaterialTheme.colorScheme.error
@@ -341,6 +390,9 @@ private fun DownloadLogCard(record: DownloadRecordEntity) {
                 style = MaterialTheme.typography.labelSmall,
                 color = tone.second,
             )
+            IconButton(onClick = { onDelete(record.deliveryId) }) {
+                Icon(Icons.Outlined.DeleteOutline, contentDescription = "隐藏记录")
+            }
         }
     }
 }
@@ -359,9 +411,31 @@ private fun ImageLibraryGrid(
     imageFilter: String,
     loading: Boolean,
     hasMore: Boolean,
+    canDelete: Boolean,
 ) {
     var preview by remember { mutableStateOf(PreviewState()) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    var pendingSave by remember { mutableStateOf<Pair<String, ByteArray>?>(null) }
+    val saveDocument = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("image/*"),
+    ) { uri ->
+        val pending = pendingSave
+        pendingSave = null
+        if (uri != null && pending != null) {
+            scope.launch {
+                try {
+                    withContext(Dispatchers.IO) {
+                        context.contentResolver.openOutputStream(uri)?.use { it.write(pending.second) }
+                            ?: error("无法打开保存位置")
+                    }
+                    state.emit(TransientMessage("图片已保存", StatusTone.Positive))
+                } catch (err: Exception) {
+                    state.emit(TransientMessage("保存失败：${err.message}", StatusTone.Critical))
+                }
+            }
+        }
+    }
     val filters = listOf(
         "all" to "全部",
         "active" to "有效",
@@ -426,14 +500,18 @@ private fun ImageLibraryGrid(
                     ImageLibraryTile(
                         image = image,
                         onClick = {
+                            if (image.isExpired) {
+                                preview = PreviewState(image = image, error = "图片已过期，无法预览或下载")
+                                return@ImageLibraryTile
+                            }
                             preview = PreviewState(image = image, isLoading = true)
                             scope.launch {
                                 try {
                                     val downloaded = withContext(Dispatchers.IO) {
-                                        val session = state.adminSession.value ?: return@withContext null
+                                        val token = state.libraryAccessToken() ?: return@withContext null
                                         state.app.apiClient.downloadImage(
                                             state.app.secureSettings.settings.value.serverBaseUrl,
-                                            session.accessToken,
+                                            token,
                                             image.id,
                                         )
                                     }
@@ -455,7 +533,6 @@ private fun ImageLibraryGrid(
                                 }
                             }
                         },
-                        onDelete = { state.deleteImage(image) },
                     )
                 }
             }
@@ -521,7 +598,33 @@ private fun ImageLibraryGrid(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { state.deleteImage(preview.image!!) }) { Text("删除") }
+                Row {
+                    if (canDelete) {
+                        TextButton(onClick = { state.deleteImage(preview.image!!) }) { Text("删除") }
+                    }
+                    TextButton(
+                        enabled = preview.bytes != null,
+                        onClick = {
+                            val bytes = preview.bytes ?: return@TextButton
+                            val image = preview.image ?: return@TextButton
+                            val extension = when (image.mimeType.substringBefore(';')) {
+                                "image/jpeg" -> ".jpg"
+                                "image/webp" -> ".webp"
+                                else -> ".png"
+                            }
+                            val device = image.uploadedBy.deviceName
+                                .replace(Regex("[^A-Za-z0-9._\\-\\u4e00-\\u9fff]+"), "_")
+                                .trim('_')
+                                .ifBlank { "设备" }
+                            val stamp = image.createdAt.replace(Regex("[^0-9]"), "")
+                                .take(14)
+                                .ifBlank { System.currentTimeMillis().toString() }
+                            val fileName = "${device}_${stamp}${extension}"
+                            pendingSave = fileName to bytes
+                            saveDocument.launch(fileName)
+                        },
+                    ) { Text("保存图片") }
+                }
             },
             dismissButton = {
                 TextButton(onClick = { preview = PreviewState() }) { Text("关闭") }
@@ -534,7 +637,6 @@ private fun ImageLibraryGrid(
 private fun ImageLibraryTile(
     image: LibraryImage,
     onClick: () -> Unit,
-    onDelete: () -> Unit,
 ) {
     SurfaceCard(
         onClick = onClick,

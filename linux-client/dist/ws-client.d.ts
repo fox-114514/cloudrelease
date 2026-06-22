@@ -3,7 +3,8 @@ export interface WsClientOptions {
     device: DeviceConfig;
     config: AppConfig;
     onStatus?: (status: string) => void;
-    onDownload?: (filePath: string, imageId: string) => void;
+    onDownload?: (filePath: string, imageId: string, deliveryId: string, sourceDeviceName: string) => void;
+    onPending?: (count: number) => void;
     onError?: (message: string) => void;
 }
 export declare class WsReceiveClient {
@@ -14,6 +15,8 @@ export declare class WsReceiveClient {
     private reconnectDelayMs;
     private destroyed;
     private processing;
+    private downloadedUnacked;
+    private liveDeliveryChain;
     private api;
     constructor(options: WsClientOptions);
     start(): void;
@@ -24,10 +27,16 @@ export declare class WsReceiveClient {
     private handleMessage;
     private handleImageCreated;
     private parseDelivery;
-    private fetchPending;
+    checkPending(): Promise<number>;
+    acceptPending(): Promise<void>;
+    skipPending(): Promise<void>;
+    private drainPending;
+    private pendingDelivery;
     private downloadWithRetries;
     private downloadOnce;
-    private uniquePath;
+    private writeImageWithUniqueSuffix;
+    private writeImageExclusive;
+    private recordReceivedHash;
     private shouldReconnect;
     private scheduleReconnect;
     private clearReconnect;

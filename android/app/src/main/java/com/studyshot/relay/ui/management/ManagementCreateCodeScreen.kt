@@ -104,6 +104,21 @@ fun ManagementCreateCodeScreen(
                     text = "当前绑定码",
                     style = MaterialTheme.typography.labelLarge,
                 )
+                generated?.targetUser?.let { target ->
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "将绑定到:${target.displayName ?: target.id} (${
+                            when (target.role) {
+                                "owner" -> "空间管理员"
+                                "child" -> "成员"
+                                else -> target.role
+                            }
+                        })",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Teal600,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 SelectionContainer {
                     Text(

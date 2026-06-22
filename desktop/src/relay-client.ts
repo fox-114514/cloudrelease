@@ -12,13 +12,22 @@ import { logError, logInfo, logWarn } from "./logger";
 import type {
   AdminLoginInput,
   AdminState,
+  BindCodePreview,
+  BindCodeTargetUser,
+  BoundUserInfo,
   ConnectionState,
   CreateBindCodeInput,
   CreateBindCodeResult,
   DeliveryPayload,
+  DevicePermissions,
+  DeviceProfile,
+  DeviceSelfInfo,
   DownloadRecord,
   ImageCreatedEvent,
   ManualUploadResult,
+  ImageLibraryPage,
+  LibraryImage,
+  ManualLibraryDownloadResult,
   ManagedDevice,
   Platform,
   RegisterDeviceInput,
@@ -39,23 +48,32 @@ interface ApiEnvelope<T> {
 interface RegisterDeviceResponse {
   deviceId: string;
   deviceToken: string;
+  profile?: DeviceProfile;
+  permissions: DevicePermissions;
+  user: BoundUserInfo;
 }
 
 interface LoginResponse {
   accessToken: string;
   user: {
-    emailOrLogin?: string;
+    id: string;
+    ownerUserId: string;
     role: string;
+    emailOrLogin?: string;
+    displayName?: string;
   };
 }
 
 interface CreateBindCodeResponse {
   bindCode: string;
   expiresAt: string;
+  targetUser?: BindCodeTargetUser;
 }
 
 interface PendingDeliveriesResponse {
   deliveries: DeliveryPayload[];
+  totalPending?: number;
+  hasMore?: boolean;
 }
 
 interface DevicesResponse {
@@ -68,6 +86,8 @@ interface UploadImageResponse {
   createdDeliveriesCount: number;
   expiresAt: string;
 }
+
+interface ImageLibraryResponse extends ImageLibraryPage {}
 
 type StateListener = (state: RendererState) => void;
 
@@ -154,13 +174,13 @@ function formatTimestamp(input: string): string {
   const date = Number.isNaN(Date.parse(input)) ? new Date() : new Date(input);
   const pad = (value: number): string => String(value).padStart(2, "0");
   return [
-    date.getFullYear(),
-    pad(date.getMonth() + 1),
-    pad(date.getDate()),
+    date.getUTCFullYear(),
+    pad(date.getUTCMonth() + 1),
+    pad(date.getUTCDate()),
     "-",
-    pad(date.getHours()),
-    pad(date.getMinutes()),
-    pad(date.getSeconds()),
+    pad(date.getUTCHours()),
+    pad(date.getUTCMinutes()),
+    pad(date.getUTCSeconds()),
   ].join("");
 }
 
@@ -259,6 +279,9 @@ export class RelayClient {
   private lastMessageAt = 0;
   private processingDeliveries = new Set<string>();
   private completedDeliveries = new LruSet<string>(5000);
+  private receivedHashes = new LruSet<string>(5000);
+  private pendingOfflineCount = 0;
+  private deliveryChain: Promise<void> = Promise.resolve();
   private stateListener?: StateListener;
   private connection: ConnectionState = { status: "idle" };
   private adminToken?: string;
@@ -287,6 +310,19 @@ export class RelayClient {
     this.emitState();
   }
 
+  hideWatchUpload(uploadedAt: string): void {
+    this.watch = {
+      ...this.watch,
+      recentUploads: this.watch.recentUploads.filter((event) => event.uploadedAt !== uploadedAt),
+    };
+    this.emitState();
+  }
+
+  clearWatchUploads(): void {
+    this.watch = { ...this.watch, recentUploads: [] };
+    this.emitState();
+  }
+
   get watchState(): WatchState {
     return this.watch;
   }
@@ -294,7 +330,11 @@ export class RelayClient {
   constructor(
     private readonly config: ConfigStore,
     private readonly history: HistoryStore
-  ) {}
+  ) {
+    for (const record of history.list()) {
+      if (record.sha256) this.receivedHashes.add(record.sha256);
+    }
+  }
 
   onState(listener: StateListener): void {
     this.stateListener = listener;
@@ -306,12 +346,13 @@ export class RelayClient {
       settings: this.config.settings,
       connection: this.connection,
       recentDownloads: this.history.list(),
+      pendingOfflineCount: this.pendingOfflineCount,
       admin: this.admin,
       watch: this.watch,
     };
   }
 
-  async registerDevice(input: RegisterDeviceInput): Promise<void> {
+  async registerDevice(input: RegisterDeviceInput): Promise<DeviceSelfInfo> {
     const serverBaseUrl = normalizeBaseUrl(input.serverBaseUrl);
     if (!serverBaseUrl) {
       throw new Error("服务器地址不能为空");
@@ -320,16 +361,20 @@ export class RelayClient {
       throw new Error("绑定码不能为空");
     }
 
+    const body: Record<string, unknown> = {
+      bindCode: input.bindCode.trim(),
+      deviceName: input.deviceName.trim() || os.hostname(),
+      platform: currentPlatform(),
+      osVersion: `${os.type()} ${os.release()}`,
+      appVersion: "0.5.0",
+    };
+    if (input.profile) {
+      body.profile = input.profile;
+    }
     const response = await fetch(apiUrl(serverBaseUrl, "/api/v1/devices/register"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        bindCode: input.bindCode.trim(),
-        deviceName: input.deviceName.trim() || os.hostname(),
-        platform: currentPlatform(),
-        osVersion: `${os.type()} ${os.release()}`,
-        appVersion: "0.4.0",
-      }),
+      body: JSON.stringify(body),
     });
 
     const data = await parseEnvelope<RegisterDeviceResponse>(response);
@@ -338,12 +383,138 @@ export class RelayClient {
       deviceId: data.deviceId,
       deviceToken: data.deviceToken,
       deviceName: input.deviceName.trim() || os.hostname(),
+      boundUser: data.user,
+      lastKnownProfile: data.profile ?? "custom",
+      lastKnownPermissions: data.permissions,
     });
     logInfo("Device registered", { serverBaseUrl, deviceId: data.deviceId });
     this.emitState();
 
     if (this.config.autoReceive) {
       this.connect();
+    }
+
+    return {
+      device: {
+        id: data.deviceId,
+        name: input.deviceName.trim() || os.hostname(),
+        platform: currentPlatform(),
+        appVersion: "0.5.0",
+        osVersion: `${os.type()} ${os.release()}`,
+        createdAt: new Date().toISOString(),
+        lastSeenAt: new Date().toISOString(),
+      },
+      user: data.user,
+      profile: data.profile ?? "custom",
+      permissions: data.permissions,
+    };
+  }
+
+  async previewBindCode(serverBaseUrl: string, bindCode: string): Promise<BindCodePreview> {
+    const normalized = normalizeBaseUrl(serverBaseUrl);
+    if (!normalized) {
+      throw new Error("服务器地址不能为空");
+    }
+    if (!bindCode.trim()) {
+      throw new Error("绑定码不能为空");
+    }
+    const response = await fetch(apiUrl(normalized, "/api/v1/bind-codes/preview"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bindCode: bindCode.trim() }),
+    });
+    return parseEnvelope<BindCodePreview>(response);
+  }
+
+  async getDeviceMe(): Promise<DeviceSelfInfo> {
+    const token = this.config.getDeviceToken();
+    const serverBaseUrl = this.config.serverBaseUrl;
+    if (!token || !serverBaseUrl) {
+      throw new Error("设备未绑定");
+    }
+    const response = await fetch(apiUrl(serverBaseUrl, "/api/v1/devices/me"), {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await parseEnvelope<DeviceSelfInfo>(response);
+    await this.config.saveSettings({
+      boundUser: data.user,
+      lastKnownProfile: data.profile,
+      lastKnownPermissions: data.permissions,
+      permissionsFetchedAt: new Date().toISOString(),
+    });
+    if (!data.permissions.canAutoReceive) {
+      this.disconnect();
+    }
+    this.emitState();
+    return data;
+  }
+
+  async refreshEffectivePermissions(): Promise<DeviceSelfInfo | undefined> {
+    if (!this.config.serverBaseUrl || !this.config.getDeviceToken()) {
+      return undefined;
+    }
+    try {
+      return await this.getDeviceMe();
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        // Auth failure likely means the device was revoked or disabled; the
+        // UI should stop the watcher/receiver and prompt for rebind.
+        this.disconnect();
+        await this.config.clearBinding();
+        this.emitState();
+      }
+      throw err;
+    }
+  }
+
+  async updateDeviceProfile(profile: DeviceProfile): Promise<void> {
+    await this.adminUpdateDeviceProfile(this.requireDeviceId(), profile);
+  }
+
+  async adminUpdateDeviceProfile(deviceId: string, profile: DeviceProfile): Promise<void> {
+    const token = this.requireAdminToken();
+    if (!this.config.serverBaseUrl) throw new Error("服务器地址不能为空");
+    const response = await fetch(
+      apiUrl(this.config.serverBaseUrl, `/api/v1/devices/${deviceId}/profile`),
+      {
+        method: "PATCH",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ profile }),
+      },
+    );
+    await parseEnvelope<unknown>(response);
+    await this.adminRefreshDevices();
+    if (deviceId === this.config.settings.deviceId) {
+      await this.refreshEffectivePermissions();
+    }
+  }
+
+  async updateReceiveConfig(
+    mode: "disabled" | "same_user_only" | "selected_devices" | "all_authorized_sources",
+    sourceDeviceIds: string[] = []
+  ): Promise<void> {
+    await this.adminUpdateReceiveConfig(this.requireDeviceId(), mode, sourceDeviceIds);
+  }
+
+  async adminUpdateReceiveConfig(
+    deviceId: string,
+    mode: "disabled" | "same_user_only" | "selected_devices" | "all_authorized_sources",
+    sourceDeviceIds: string[] = []
+  ): Promise<void> {
+    const token = this.requireAdminToken();
+    if (!this.config.serverBaseUrl) throw new Error("服务器地址不能为空");
+    const response = await fetch(
+      apiUrl(this.config.serverBaseUrl, `/api/v1/devices/${deviceId}/receive-config`),
+      {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ mode, sourceDeviceIds }),
+      },
+    );
+    await parseEnvelope<unknown>(response);
+    await this.adminRefreshDevices();
+    if (deviceId === this.config.settings.deviceId) {
+      await this.refreshEffectivePermissions();
     }
   }
 
@@ -388,6 +559,62 @@ export class RelayClient {
     return bindData;
   }
 
+  async bindWithLogin(input: CreateBindCodeInput): Promise<DeviceSelfInfo> {
+    const serverBaseUrl = normalizeBaseUrl(input.serverBaseUrl);
+    if (!serverBaseUrl) {
+      throw new Error("服务器地址不能为空");
+    }
+    if (!input.login.trim() || !input.password) {
+      throw new Error("成员账号和密码不能为空");
+    }
+    const loginResponse = await fetch(apiUrl(serverBaseUrl, "/api/v1/auth/login"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ login: input.login.trim(), password: input.password }),
+    });
+    const loginData = await parseEnvelope<LoginResponse>(loginResponse);
+
+    const bindResponse = await fetch(apiUrl(serverBaseUrl, "/api/v1/bind-codes"), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${loginData.accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        purpose: "bind_device",
+        deviceNameHint: input.deviceNameHint,
+        expiresInSeconds: 600,
+      }),
+    });
+    const bindData = await parseEnvelope<CreateBindCodeResponse>(bindResponse);
+
+    if (bindData.targetUser && bindData.targetUser.id !== loginData.user.id) {
+      throw new Error("服务端返回的绑定码不属于当前账号，已中止绑定");
+    }
+
+    const preview = await this.previewBindCode(serverBaseUrl, bindData.bindCode);
+    if (preview.targetUser.id !== loginData.user.id) {
+      throw new Error("绑定码预览身份与当前账号不一致，已中止绑定");
+    }
+
+    const self = await this.registerDevice({
+      serverBaseUrl,
+      bindCode: bindData.bindCode,
+      deviceName: input.deviceNameHint ?? os.hostname(),
+      profile: input.profile,
+    });
+    logInfo("Member bind-with-login succeeded", { userId: loginData.user.id });
+    return self;
+  }
+
+  private requireDeviceId(): string {
+    const id = this.config.settings.deviceId;
+    if (!id) {
+      throw new Error("设备未绑定");
+    }
+    return id;
+  }
+
   async adminLogin(input: AdminLoginInput): Promise<void> {
     const serverBaseUrl = normalizeBaseUrl(input.serverBaseUrl);
     if (!serverBaseUrl) {
@@ -411,6 +638,12 @@ export class RelayClient {
     this.admin = {
       isLoggedIn: true,
       login: data.user.emailOrLogin ?? input.login.trim(),
+      user: {
+        id: data.user.id,
+        ownerUserId: data.user.ownerUserId,
+        role: data.user.role,
+        displayName: data.user.displayName,
+      },
       devices: [],
     };
     await this.adminRefreshDevices();
@@ -493,6 +726,10 @@ export class RelayClient {
       this.setConnection({ status: "stopped" });
       return;
     }
+    if (this.config.settings.lastKnownPermissions?.canAutoReceive === false) {
+      this.setConnection({ status: "stopped", lastError: "服务端未允许本设备自动接收" });
+      return;
+    }
 
     this.closeSocket();
     this.setConnection({ status: "connecting" });
@@ -535,8 +772,13 @@ export class RelayClient {
         });
         return;
       }
+      if (code === 4001) {
+        this.clearReconnect();
+        this.setConnection({ status: "stopped", lastError: "该设备已在另一个客户端实例上连接" });
+        return;
+      }
 
-      if (this.config.autoReceive) {
+      if (this.config.autoReceive && this.config.settings.lastKnownPermissions?.canAutoReceive !== false) {
         this.scheduleReconnect(reasonText);
       } else {
         this.setConnection({ status: "stopped" });
@@ -552,18 +794,51 @@ export class RelayClient {
     this.clearReconnect();
     this.stopHeartbeat();
     this.closeSocket();
+    this.pendingOfflineCount = 0;
     this.setConnection({ status: "stopped" });
   }
 
   async fetchPending(): Promise<void> {
+    const seen = new Set<string>();
+    while (true) {
+      const data = await this.getPendingBatch();
+      const batch = data.deliveries.filter((delivery) => !seen.has(delivery.deliveryId));
+      if (batch.length === 0) break;
+      for (const delivery of batch) {
+        seen.add(delivery.deliveryId);
+        await this.processDelivery(delivery);
+      }
+    }
+    await this.checkPending();
+  }
+
+  async checkPending(): Promise<void> {
+    const data = await this.getPendingBatch();
+    this.pendingOfflineCount = data.totalPending ?? data.deliveries.length;
+    this.emitState();
+  }
+
+  async skipPending(): Promise<void> {
+    const seen = new Set<string>();
+    while (true) {
+      const data = await this.getPendingBatch();
+      const batch = data.deliveries.filter((delivery) => !seen.has(delivery.deliveryId));
+      if (batch.length === 0) break;
+      for (const delivery of batch) {
+        seen.add(delivery.deliveryId);
+        await this.safeAckDelivery(delivery.deliveryId, "skipped", "User skipped offline delivery", undefined);
+      }
+    }
+    await this.checkPending();
+  }
+
+  private async getPendingBatch(): Promise<PendingDeliveriesResponse> {
     const token = this.requireDeviceToken();
     const response = await fetch(apiUrl(this.config.serverBaseUrl, "/api/v1/deliveries/pending"), {
       headers: { Authorization: `Bearer ${token}` },
     });
     const data = await parseEnvelope<PendingDeliveriesResponse>(response);
-    for (const delivery of data.deliveries) {
-      await this.processDelivery(delivery);
-    }
+    return data;
   }
 
   async uploadManualImage(filePath: string): Promise<ManualUploadResult> {
@@ -574,6 +849,48 @@ export class RelayClient {
     return this.uploadFromPath(filePath, "screenshot");
   }
 
+  async listLibraryImages(): Promise<ImageLibraryPage> {
+    const token = this.adminToken ?? this.requireManualDownloadToken();
+    const response = await fetch(
+      apiUrl(this.config.serverBaseUrl, "/api/v1/images?filter=active&limit=100"),
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    return parseEnvelope<ImageLibraryResponse>(response);
+  }
+
+  async downloadLibraryImage(image: LibraryImage): Promise<ManualLibraryDownloadResult> {
+    if (image.isExpired) throw new Error("图片已过期，无法下载");
+    const token = this.adminToken ?? this.requireManualDownloadToken();
+    const response = await fetch(
+      apiUrl(this.config.serverBaseUrl, `/api/v1/images/${image.id}/download`),
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    if (!response.ok) await parseEnvelope<unknown>(response);
+    const buffer = Buffer.from(await response.arrayBuffer());
+    const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+    if (sha256 !== image.sha256) throw new Error("下载图片 sha256 校验失败");
+
+    await mkdir(this.config.downloadDir, { recursive: true });
+    const sourceName = sanitizeFilePart(image.uploadedBy.deviceName || "设备");
+    const fileName = `${sourceName}_${formatTimestamp(image.createdAt)}`;
+    const savedPath = await writeFileWithUniqueSuffix(
+      path.join(this.config.downloadDir, `${fileName}${extensionForMime(image.mimeType)}`),
+      buffer,
+    );
+    const clipboardResult = this.config.copyToClipboard
+      ? this.copyImageToClipboard(savedPath)
+      : { copied: false };
+    return { imageId: image.id, savedPath, copiedToClipboard: clipboardResult.copied };
+  }
+
+  private requireManualDownloadToken(): string {
+    const token = this.requireDeviceToken();
+    if (this.config.settings.lastKnownPermissions?.canManualDownload !== true) {
+      throw new Error("服务端未允许本设备手动下载；也可以先登录成员账号");
+    }
+    return token;
+  }
+
   private async uploadFromPath(
     filePath: string,
     sourceKind: "screenshot" | "manual_share" | "selected_album" | "unknown"
@@ -581,6 +898,13 @@ export class RelayClient {
     const token = this.requireDeviceToken();
     if (!this.config.serverBaseUrl) {
       throw new Error("服务器地址不能为空");
+    }
+    const permissions = this.config.settings.lastKnownPermissions;
+    const allowed = sourceKind === "manual_share"
+      ? permissions?.canManualUpload !== false
+      : permissions?.canAutoUpload !== false;
+    if (!allowed) {
+      throw new Error(sourceKind === "manual_share" ? "服务端未允许本设备手动上传" : "服务端未允许本设备自动上传");
     }
 
     const buffer = await readFile(filePath);
@@ -590,6 +914,17 @@ export class RelayClient {
     }
 
     const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
+    if (sourceKind !== "manual_share" && this.receivedHashes.has(sha256)) {
+      logInfo("Skipped watched image received from server", { filePath, sha256 });
+      return {
+        imageId: "",
+        deduplicated: true,
+        createdDeliveriesCount: 0,
+        expiresAt: "",
+        fileName: path.basename(filePath),
+        sha256,
+      };
+    }
     const form = new FormData();
     form.append("sha256", sha256);
     form.append("sourceKind", sourceKind);
@@ -618,7 +953,11 @@ export class RelayClient {
 
   async handleSettingsChanged(): Promise<void> {
     this.emitState();
-    if (this.config.autoReceive && this.config.settings.isBound) {
+    if (
+      this.config.autoReceive &&
+      this.config.settings.isBound &&
+      this.config.settings.lastKnownPermissions?.canAutoReceive !== false
+    ) {
       this.connect();
       return;
     }
@@ -632,30 +971,41 @@ export class RelayClient {
         status: "connected",
         lastConnectedAt: new Date().toISOString(),
       });
-      await this.fetchPending();
+      await this.checkPending();
       return;
     }
     if (message.type === "pong") {
       return;
     }
     if (message.type === "image.created") {
-      await this.processDelivery(message as ImageCreatedEvent);
+      await this.enqueueDelivery(message as ImageCreatedEvent);
     }
   }
 
+  private enqueueDelivery(delivery: DeliveryPayload): Promise<void> {
+    const run = this.deliveryChain.catch(() => undefined).then(() => this.processDelivery(delivery));
+    this.deliveryChain = run;
+    return run;
+  }
+
   private async processDelivery(delivery: DeliveryPayload): Promise<void> {
-    if (
-      this.processingDeliveries.has(delivery.deliveryId) ||
-      this.completedDeliveries.has(delivery.deliveryId) ||
-      this.history.find(delivery.deliveryId)?.status === "downloaded"
-    ) {
+    const existing = this.history.find(delivery.deliveryId);
+    if (existing?.status === "downloaded") {
+      await this.safeAckDelivery(delivery.deliveryId, "downloaded", undefined, existing.savedPath);
+      return;
+    }
+    if (this.completedDeliveries.has(delivery.deliveryId)) {
+      await this.safeAckDelivery(delivery.deliveryId, "downloaded", undefined, undefined);
+      return;
+    }
+    if (this.processingDeliveries.has(delivery.deliveryId)) {
       return;
     }
 
     this.processingDeliveries.add(delivery.deliveryId);
     try {
       const result = await this.downloadWithRetries(delivery);
-      this.completedDeliveries.add(delivery.deliveryId);
+      if (result.status === "downloaded") this.completedDeliveries.add(delivery.deliveryId);
       await this.history.add(result);
       this.emitState();
     } finally {
@@ -715,11 +1065,7 @@ export class RelayClient {
 
     await mkdir(this.config.downloadDir, { recursive: true });
     const sourceName = sanitizeFilePart(delivery.source.uploadDeviceName ?? delivery.source.uploadDeviceId);
-    const fileName = [
-      formatTimestamp(delivery.createdAt),
-      sourceName,
-      delivery.image.id.slice(0, 8),
-    ].join("_");
+    const fileName = [sourceName, formatTimestamp(delivery.createdAt)].join("_");
     const filePath = await writeFileWithUniqueSuffix(
       path.join(this.config.downloadDir, `${fileName}${extensionForMime(delivery.image.mimeType)}`),
       buffer,
@@ -734,6 +1080,7 @@ export class RelayClient {
     const record: DownloadRecord = {
       deliveryId: delivery.deliveryId,
       imageId: delivery.image.id,
+      sha256: delivery.image.sha256,
       sourceDeviceName: sourceName,
       savedPath: filePath,
       receivedAt: new Date().toISOString(),
@@ -741,6 +1088,7 @@ export class RelayClient {
       clipboardError: clipboardResult.error,
       status: "downloaded",
     };
+    this.receivedHashes.add(delivery.image.sha256);
     this.showDownloadedNotification(record);
     logInfo("Delivery downloaded", { deliveryId: delivery.deliveryId, imageId: delivery.image.id });
     return record;

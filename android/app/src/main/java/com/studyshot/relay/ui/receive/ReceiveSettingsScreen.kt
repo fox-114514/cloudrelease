@@ -46,6 +46,11 @@ fun ReceiveSettingsScreen(
                 text = "未绑定时，App 不会接收任何图片。",
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
             )
+        } else if (!settings.serverAllowsAutoReceive()) {
+            HelpCallout(
+                text = "服务端当前未允许本设备自动接收；本地开关不会建立连接。",
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
         }
 
         Spacer(Modifier.height(8.dp))
@@ -60,7 +65,7 @@ fun ReceiveSettingsScreen(
                     onCheckedChange = { state.saveReceiveSettings(autoReceiveEnabled = it) },
                 ),
                 isLast = false,
-                enabled = bound,
+                enabled = bound && settings.serverAllowsAutoReceive(),
             )
             SettingsRow(
                 icon = Icons.Outlined.Notifications,

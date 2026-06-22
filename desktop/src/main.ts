@@ -3,13 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import { ConfigStore } from "./config-store";
 import { HistoryStore } from "./history-store";
-import { logError, logInfo } from "./logger";
+import { logError, logInfo, logWarn } from "./logger";
 import { RelayClient } from "./relay-client";
 import type {
   AdminLoginInput,
   CreateBindCodeInput,
   DevicePermissions,
+  DeviceProfile,
   ManualUploadResult,
+  LibraryImage,
   RegisterDeviceInput,
   SaveSettingsInput,
 } from "./shared";
@@ -21,6 +23,7 @@ let configStore: ConfigStore;
 let historyStore: HistoryStore;
 let relayClient: RelayClient;
 let directoryWatcher: DirectoryWatcher | null = null;
+let permissionRefreshTimer: NodeJS.Timeout | undefined;
 let isQuitting = false;
 
 function rendererPath(file: string): string {
@@ -104,10 +107,23 @@ async function setAutoReceive(enabled: boolean): Promise<void> {
   broadcastState();
 }
 
+function effectiveWatchExcludedDirs(dir: string): string[] {
+  const excludedDirs = [...configStore.watchExcludedDirs];
+  const relativeDownload = path.relative(path.resolve(dir), path.resolve(configStore.downloadDir));
+  if (
+    relativeDownload === "" ||
+    (!relativeDownload.startsWith("..") && !path.isAbsolute(relativeDownload))
+  ) {
+    excludedDirs.push(configStore.downloadDir);
+  }
+  return [...new Set(excludedDirs.map((value) => path.resolve(value)))];
+}
+
 function buildWatcher(dir: string): DirectoryWatcher {
+  const excludedDirs = effectiveWatchExcludedDirs(dir);
   return new DirectoryWatcher({
     watchDir: dir,
-    excludedDirs: configStore.watchExcludedDirs,
+    excludedDirs,
     onLog: (message) => logInfo(`[watch] ${message}`),
     onError: (message) => {
       logError(`[watch] ${message}`);
@@ -142,6 +158,10 @@ async function startDirectoryWatcher(): Promise<void> {
     return;
   }
   if (!relayClient) return;
+  if (configStore.settings.lastKnownPermissions?.canAutoUpload === false) {
+    relayClient.updateWatchState({ active: false, lastError: "服务端未允许本设备自动上传" });
+    return;
+  }
   const dir = configStore.watchDir;
   if (!dir) {
     relayClient.updateWatchState({ active: false, lastError: "未配置监听目录" });
@@ -171,19 +191,33 @@ async function stopDirectoryWatcher(): Promise<void> {
 }
 
 async function applyWatcherConfig(): Promise<void> {
-  const enabled = configStore.autoUpload && configStore.settings.isBound;
+  const enabled =
+    configStore.autoUpload &&
+    configStore.settings.isBound &&
+    configStore.settings.lastKnownPermissions?.canAutoUpload !== false;
   relayClient?.updateWatchState({
     enabled,
     dir: configStore.watchDir,
   });
   if (enabled) {
-    if (!directoryWatcher || !directoryWatcher.matches(configStore.watchDir, configStore.watchExcludedDirs)) {
+    if (!directoryWatcher || !directoryWatcher.matches(
+      configStore.watchDir,
+      effectiveWatchExcludedDirs(configStore.watchDir),
+    )) {
       await stopDirectoryWatcher();
       await startDirectoryWatcher();
     }
   } else {
     await stopDirectoryWatcher();
   }
+}
+
+async function refreshPermissionsAndApply(): Promise<void> {
+  if (!configStore.settings.isBound) return;
+  await relayClient.refreshEffectivePermissions();
+  await relayClient.handleSettingsChanged();
+  await applyWatcherConfig();
+  broadcastState();
 }
 
 function updateTrayMenu(): void {
@@ -267,8 +301,42 @@ function registerIpcHandlers(): void {
     return relayClient.getState();
   });
 
-  ipcMain.handle("bindCode:createWithLogin", async (_event, input: CreateBindCodeInput) => {
-    const result = await relayClient.createBindCodeWithLogin(input);
+  ipcMain.handle("bindCode:preview", async (_event, serverBaseUrl: string, bindCode: string) => {
+    return relayClient.previewBindCode(serverBaseUrl, bindCode);
+  });
+
+  ipcMain.handle("device:me", async () => {
+    return relayClient.getDeviceMe();
+  });
+
+  ipcMain.handle("device:refreshPermissions", async () => {
+    try {
+      const result = await relayClient.refreshEffectivePermissions();
+      await relayClient.handleSettingsChanged();
+      await applyWatcherConfig();
+      broadcastState();
+      return result;
+    } catch (err) {
+      logWarn("Failed to refresh effective permissions", { error: String(err) });
+      return undefined;
+    }
+  });
+
+  ipcMain.handle("device:updateProfile", async (_event, profile) => {
+    await relayClient.updateDeviceProfile(profile);
+    broadcastState();
+    return relayClient.getState();
+  });
+
+  ipcMain.handle("device:updateReceiveConfig", async (_event, mode, sourceDeviceIds) => {
+    await relayClient.updateReceiveConfig(mode, sourceDeviceIds);
+    broadcastState();
+    return relayClient.getState();
+  });
+
+  ipcMain.handle("bind:login", async (_event, input: CreateBindCodeInput) => {
+    const result = await relayClient.bindWithLogin(input);
+    await applyWatcherConfig();
     broadcastState();
     return result;
   });
@@ -296,6 +364,11 @@ function registerIpcHandlers(): void {
     return relayClient.getState();
   });
 
+  ipcMain.handle("deliveries:skipPending", async () => {
+    await relayClient.skipPending();
+    return relayClient.getState();
+  });
+
   ipcMain.handle("upload:chooseAndUpload", async (): Promise<ManualUploadResult | undefined> => {
     const options = {
       title: "选择要上传的图片",
@@ -313,6 +386,11 @@ function registerIpcHandlers(): void {
     }
     return relayClient.uploadManualImage(result.filePaths[0]);
   });
+
+  ipcMain.handle("library:list", async () => relayClient.listLibraryImages());
+  ipcMain.handle("library:download", async (_event, image: LibraryImage) =>
+    relayClient.downloadLibraryImage(image)
+  );
 
   ipcMain.handle("dialog:chooseDownloadDir", async () => {
     const options = {
@@ -392,6 +470,16 @@ function registerIpcHandlers(): void {
     return relayClient.getState();
   });
 
+  ipcMain.handle("watch:hideRecord", async (_event, uploadedAt: string) => {
+    relayClient.hideWatchUpload(uploadedAt);
+    return relayClient.getState();
+  });
+
+  ipcMain.handle("watch:clearRecords", async () => {
+    relayClient.clearWatchUploads();
+    return relayClient.getState();
+  });
+
   ipcMain.handle("history:copyToClipboard", async (_event, deliveryId: string) => {
     const record = await relayClient.copyRecordToClipboard(deliveryId);
     broadcastState();
@@ -405,6 +493,18 @@ function registerIpcHandlers(): void {
     }
     shell.showItemInFolder(record.savedPath);
     return true;
+  });
+
+  ipcMain.handle("history:hide", async (_event, deliveryId: string) => {
+    await historyStore.remove(deliveryId);
+    broadcastState();
+    return relayClient.getState();
+  });
+
+  ipcMain.handle("history:clear", async () => {
+    await historyStore.clear();
+    broadcastState();
+    return relayClient.getState();
   });
 
   ipcMain.handle("admin:login", async (_event, input: AdminLoginInput) => {
@@ -430,6 +530,27 @@ function registerIpcHandlers(): void {
     broadcastState();
     return relayClient.getState();
   });
+
+  ipcMain.handle("admin:updateProfile", async (_event, deviceId: string, profile: DeviceProfile) => {
+    await relayClient.adminUpdateDeviceProfile(deviceId, profile);
+    await applyWatcherConfig();
+    broadcastState();
+    return relayClient.getState();
+  });
+
+  ipcMain.handle(
+    "admin:updateReceiveConfig",
+    async (
+      _event,
+      deviceId: string,
+      mode: "disabled" | "same_user_only" | "selected_devices" | "all_authorized_sources",
+      sourceDeviceIds: string[],
+    ) => {
+      await relayClient.adminUpdateReceiveConfig(deviceId, mode, sourceDeviceIds);
+      broadcastState();
+      return relayClient.getState();
+    },
+  );
 
   ipcMain.handle("admin:renameDevice", async (_event, deviceId: string, name: string) => {
     await relayClient.adminRenameDevice(deviceId, name);
@@ -458,11 +579,31 @@ async function start(): Promise<void> {
   createWindow();
   createTray();
 
-  if (configStore.autoReceive && configStore.settings.isBound) {
+  if (configStore.settings.isBound) {
+    try {
+      await relayClient.refreshEffectivePermissions();
+    } catch (err) {
+      logWarn("Unable to refresh effective permissions at startup; using cached permissions", {
+        error: String(err),
+      });
+    }
+  }
+
+  if (
+    configStore.autoReceive &&
+    configStore.settings.isBound &&
+    configStore.settings.lastKnownPermissions?.canAutoReceive !== false
+  ) {
     relayClient.connect();
   }
 
   await applyWatcherConfig();
+
+  permissionRefreshTimer = setInterval(() => {
+    refreshPermissionsAndApply().catch((err) => {
+      logWarn("Periodic effective-permission refresh failed", { error: String(err) });
+    });
+  }, 5 * 60 * 1000);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -475,6 +616,11 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin" && isQuitting) {
     app.quit();
   }
+});
+
+app.on("before-quit", () => {
+  if (permissionRefreshTimer) clearInterval(permissionRefreshTimer);
+  permissionRefreshTimer = undefined;
 });
 
 start().catch((err) => {

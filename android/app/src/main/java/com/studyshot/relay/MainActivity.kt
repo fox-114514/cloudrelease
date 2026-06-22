@@ -44,6 +44,8 @@ class MainActivity : ComponentActivity() {
                         stopRealtimeService = ::stopRealtimeService,
                         startReceiveService = ::startReceiveService,
                         stopReceiveService = ::stopReceiveService,
+                        acceptPendingDeliveries = ::acceptPendingDeliveries,
+                        skipPendingDeliveries = ::skipPendingDeliveries,
                     )
                 }
             }
@@ -63,6 +65,7 @@ class MainActivity : ComponentActivity() {
             @Suppress("DEPRECATION")
             intent.getParcelableExtra(Intent.EXTRA_STREAM)
         } ?: return
+        if (!app.secureSettings.settings.value.serverAllowsManualUpload()) return
         lifecycleScope.launch(Dispatchers.IO) {
             app.uploadRepository.enqueueManualUpload(
                 uri,
@@ -113,5 +116,20 @@ class MainActivity : ComponentActivity() {
 
     private fun stopReceiveService() {
         stopService(Intent(this, RelayReceiveService::class.java))
+    }
+
+    private fun acceptPendingDeliveries() {
+        app.secureSettings.setPendingOfflineCount(0)
+        startReceiveServiceWithAction(RelayReceiveService.ACTION_ACCEPT_PENDING)
+    }
+
+    private fun skipPendingDeliveries() {
+        app.secureSettings.setPendingOfflineCount(0)
+        startReceiveServiceWithAction(RelayReceiveService.ACTION_SKIP_PENDING)
+    }
+
+    private fun startReceiveServiceWithAction(action: String) {
+        val intent = Intent(this, RelayReceiveService::class.java).setAction(action)
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
     }
 }

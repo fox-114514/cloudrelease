@@ -34,6 +34,62 @@ export interface RendererSettings {
   isBound: boolean;
   tokenStorage: "safeStorage" | "plainFile" | "none";
   tokenStorageWarning?: string;
+  boundUser?: BoundUserInfo;
+  lastKnownProfile?: string;
+  lastKnownPermissions?: DevicePermissions;
+  permissionsFetchedAt?: string;
+}
+
+export interface BoundUserInfo {
+  id: string;
+  ownerUserId: string;
+  role: string;
+  displayName?: string;
+}
+
+export type DeviceProfile =
+  | "manual_only"
+  | "upload_only"
+  | "receive_own"
+  | "sync_own"
+  | "custom";
+
+export const SELECTABLE_DEVICE_PROFILES: DeviceProfile[] = [
+  "manual_only",
+  "upload_only",
+  "receive_own",
+  "sync_own",
+];
+
+export interface BindCodeTargetUser {
+  id: string;
+  role: string;
+  displayName?: string;
+}
+
+export interface BindCodePreview {
+  expiresAt: string;
+  space: {
+    ownerUserId: string;
+    displayName: string;
+  };
+  targetUser: BindCodeTargetUser;
+}
+
+export interface DeviceSelfInfo {
+  device: {
+    id: string;
+    name: string;
+    platform: string;
+    appVersion: string;
+    osVersion: string;
+    createdAt: string;
+    lastSeenAt?: string;
+    revokedAt?: string;
+  };
+  user: BoundUserInfo;
+  profile: DeviceProfile;
+  permissions: DevicePermissions;
 }
 
 export interface ConnectionState {
@@ -46,6 +102,7 @@ export interface ConnectionState {
 export interface DownloadRecord {
   deliveryId: string;
   imageId: string;
+  sha256?: string;
   sourceDeviceName: string;
   savedPath?: string;
   receivedAt: string;
@@ -59,6 +116,7 @@ export interface RendererState {
   settings: RendererSettings;
   connection: ConnectionState;
   recentDownloads: DownloadRecord[];
+  pendingOfflineCount: number;
   admin: AdminState;
   watch: WatchState;
 }
@@ -83,6 +141,7 @@ export interface RegisterDeviceInput {
   serverBaseUrl: string;
   bindCode: string;
   deviceName: string;
+  profile?: DeviceProfile;
 }
 
 export interface CreateBindCodeInput {
@@ -90,11 +149,13 @@ export interface CreateBindCodeInput {
   login: string;
   password: string;
   deviceNameHint?: string;
+  profile?: DeviceProfile;
 }
 
 export interface CreateBindCodeResult {
   bindCode: string;
   expiresAt: string;
+  targetUser?: BindCodeTargetUser;
 }
 
 export interface SaveSettingsInput {
@@ -108,6 +169,10 @@ export interface SaveSettingsInput {
   copyToClipboard?: boolean;
   showNotification?: boolean;
   startAtLogin?: boolean;
+  boundUser?: BoundUserInfo;
+  lastKnownProfile?: DeviceProfile;
+  lastKnownPermissions?: DevicePermissions;
+  permissionsFetchedAt?: string;
 }
 
 export interface ManualUploadResult {
@@ -119,6 +184,32 @@ export interface ManualUploadResult {
   sha256: string;
 }
 
+export interface LibraryImage {
+  id: string;
+  mimeType: string;
+  fileSize: number;
+  sha256: string;
+  sourceDisplayName?: string;
+  createdAt: string;
+  expiresAt: string;
+  isExpired: boolean;
+  uploadedBy: {
+    userDisplayName: string;
+    deviceName: string;
+  };
+}
+
+export interface ImageLibraryPage {
+  images: LibraryImage[];
+  nextCursor?: string;
+}
+
+export interface ManualLibraryDownloadResult {
+  imageId: string;
+  savedPath: string;
+  copiedToClipboard: boolean;
+}
+
 export interface AdminLoginInput {
   serverBaseUrl: string;
   login: string;
@@ -128,6 +219,7 @@ export interface AdminLoginInput {
 export interface AdminState {
   isLoggedIn: boolean;
   login?: string;
+  user?: BoundUserInfo;
   lastError?: string;
   devices: ManagedDevice[];
 }
@@ -136,6 +228,7 @@ export interface ManagedDevice {
   id: string;
   userId: string;
   userDisplayName: string;
+  userRole?: string;
   name: string;
   platform: string;
   appVersion: string;
@@ -143,6 +236,8 @@ export interface ManagedDevice {
   lastSeenAt?: string;
   createdAt: string;
   revokedAt?: string;
+  profile?: DeviceProfile;
+  receiveSourceDeviceIds?: string[];
   permissions: DevicePermissions;
 }
 

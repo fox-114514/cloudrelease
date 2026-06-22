@@ -1,8 +1,11 @@
 package com.studyshot.relay.upload
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
+import android.util.Log
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.Data
@@ -53,11 +56,20 @@ class UploadRepository(
         sourceDisplayName: String?,
         sourceMediaIdHash: String?,
         wifiOnly: Boolean,
+        uploadImmediately: Boolean = false,
     ): String {
         val taskId = UUID.nameUUIDFromBytes(uri.toString().toByteArray()).toString()
         // MediaStore commonly emits several callbacks for the same image. Once a URI
         // has a local task, do not rewrite it or schedule another WorkManager job.
-        if (database.dao().getUploadTask(taskId) != null) {
+        val existing = database.dao().getUploadTask(taskId)
+        if (existing != null) {
+            if (
+                uploadImmediately &&
+                existing.status in setOf("queued", "uploading") &&
+                canUploadNow(wifiOnly)
+            ) {
+                runImmediateWithFallback(taskId, wifiOnly)
+            }
             return taskId
         }
         val now = System.currentTimeMillis()
@@ -78,11 +90,36 @@ class UploadRepository(
                 updatedAt = now,
             )
         )
-        enqueueWorker(taskId, wifiOnly, expedited = true)
+        if (uploadImmediately && canUploadNow(wifiOnly)) {
+            runImmediateWithFallback(taskId, wifiOnly)
+        } else {
+            enqueueWorker(taskId, wifiOnly, expedited = true)
+        }
         return taskId
     }
 
-    private fun enqueueWorker(taskId: String, wifiOnly: Boolean, expedited: Boolean = false) {
+    private suspend fun runImmediateWithFallback(taskId: String, wifiOnly: Boolean) {
+        // Schedule a delayed safety net before touching the network. If the process
+        // is killed mid-upload, WorkManager will resume the queued task later.
+        enqueueWorker(
+            taskId = taskId,
+            wifiOnly = wifiOnly,
+            initialDelayMillis = REALTIME_FALLBACK_DELAY_MS,
+        )
+        val startedAt = System.currentTimeMillis()
+        val result = UploadTaskExecutor(context).execute(taskId, runAttemptCount = 0)
+        Log.d(TAG, "realtime upload $taskId finished as $result in ${System.currentTimeMillis() - startedAt}ms")
+        if (result != UploadExecutionResult.Retry) {
+            WorkManager.getInstance(context).cancelUniqueWork("upload:$taskId")
+        }
+    }
+
+    private fun enqueueWorker(
+        taskId: String,
+        wifiOnly: Boolean,
+        expedited: Boolean = false,
+        initialDelayMillis: Long = 0,
+    ) {
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(if (wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
             .build()
@@ -91,7 +128,11 @@ class UploadRepository(
             .setConstraints(constraints)
             .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 30, TimeUnit.SECONDS)
 
-        if (expedited && Build.VERSION.SDK_INT >= 31) {
+        if (initialDelayMillis > 0) {
+            requestBuilder.setInitialDelay(initialDelayMillis, TimeUnit.MILLISECONDS)
+        }
+
+        if (expedited && initialDelayMillis == 0L && Build.VERSION.SDK_INT >= 31) {
             requestBuilder.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
         }
 
@@ -123,6 +164,14 @@ class UploadRepository(
         WorkManager.getInstance(context).cancelUniqueWork(POWER_SAVE_SCAN_WORK_NAME)
     }
 
+    private fun canUploadNow(wifiOnly: Boolean): Boolean {
+        val manager = context.getSystemService(ConnectivityManager::class.java)
+        val network = manager.activeNetwork ?: return false
+        val capabilities = manager.getNetworkCapabilities(network) ?: return false
+        if (!capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) return false
+        return !wifiOnly || capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+    }
+
     private fun copyToUploadCache(uri: Uri, taskId: String): Uri {
         val dir = java.io.File(context.cacheDir, "manual-uploads")
         dir.mkdirs()
@@ -137,5 +186,7 @@ class UploadRepository(
 
     companion object {
         private const val POWER_SAVE_SCAN_WORK_NAME = "studyshot-power-save-scan"
+        private const val REALTIME_FALLBACK_DELAY_MS = 30_000L
+        private const val TAG = "UploadRepository"
     }
 }

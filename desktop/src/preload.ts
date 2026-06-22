@@ -1,10 +1,15 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
   AdminLoginInput,
+  BindCodePreview,
   CreateBindCodeInput,
-  CreateBindCodeResult,
   DevicePermissions,
+  DeviceProfile,
+  DeviceSelfInfo,
   ManualUploadResult,
+  ImageLibraryPage,
+  LibraryImage,
+  ManualLibraryDownloadResult,
   RegisterDeviceInput,
   RendererState,
   SaveSettingsInput,
@@ -14,15 +19,31 @@ const api = {
   getState: (): Promise<RendererState> => ipcRenderer.invoke("state:get"),
   registerDevice: (input: RegisterDeviceInput): Promise<RendererState> =>
     ipcRenderer.invoke("device:register", input),
-  createBindCodeWithLogin: (input: CreateBindCodeInput): Promise<CreateBindCodeResult> =>
-    ipcRenderer.invoke("bindCode:createWithLogin", input),
+  previewBindCode: (serverBaseUrl: string, bindCode: string): Promise<BindCodePreview> =>
+    ipcRenderer.invoke("bindCode:preview", serverBaseUrl, bindCode),
+  getDeviceMe: (): Promise<DeviceSelfInfo> => ipcRenderer.invoke("device:me"),
+  refreshEffectivePermissions: (): Promise<DeviceSelfInfo | undefined> =>
+    ipcRenderer.invoke("device:refreshPermissions"),
+  updateDeviceProfile: (profile: DeviceProfile): Promise<RendererState> =>
+    ipcRenderer.invoke("device:updateProfile", profile),
+  updateReceiveConfig: (
+    mode: "disabled" | "same_user_only" | "selected_devices" | "all_authorized_sources",
+    sourceDeviceIds: string[]
+  ): Promise<RendererState> =>
+    ipcRenderer.invoke("device:updateReceiveConfig", mode, sourceDeviceIds),
+  bindWithLogin: (input: CreateBindCodeInput): Promise<DeviceSelfInfo> =>
+    ipcRenderer.invoke("bind:login", input),
   saveSettings: (input: SaveSettingsInput): Promise<RendererState> =>
     ipcRenderer.invoke("settings:save", input),
   connect: (): Promise<RendererState> => ipcRenderer.invoke("connection:connect"),
   disconnect: (): Promise<RendererState> => ipcRenderer.invoke("connection:disconnect"),
   fetchPending: (): Promise<RendererState> => ipcRenderer.invoke("deliveries:fetchPending"),
+  skipPending: (): Promise<RendererState> => ipcRenderer.invoke("deliveries:skipPending"),
   chooseAndUploadImage: (): Promise<ManualUploadResult | undefined> =>
     ipcRenderer.invoke("upload:chooseAndUpload"),
+  listLibraryImages: (): Promise<ImageLibraryPage> => ipcRenderer.invoke("library:list"),
+  downloadLibraryImage: (image: LibraryImage): Promise<ManualLibraryDownloadResult> =>
+    ipcRenderer.invoke("library:download", image),
   chooseDownloadDir: (): Promise<string | undefined> => ipcRenderer.invoke("dialog:chooseDownloadDir"),
   openDownloadDir: (): Promise<boolean> => ipcRenderer.invoke("downloadDir:open"),
   chooseWatchDir: (): Promise<string | undefined> => ipcRenderer.invoke("dialog:chooseWatchDir"),
@@ -31,10 +52,16 @@ const api = {
   openWatchDir: (): Promise<boolean> => ipcRenderer.invoke("watchDir:open"),
   startWatcher: (): Promise<RendererState> => ipcRenderer.invoke("watch:start"),
   stopWatcher: (): Promise<RendererState> => ipcRenderer.invoke("watch:stop"),
+  hideWatchUpload: (uploadedAt: string): Promise<RendererState> =>
+    ipcRenderer.invoke("watch:hideRecord", uploadedAt),
+  clearWatchUploads: (): Promise<RendererState> => ipcRenderer.invoke("watch:clearRecords"),
   copyHistoryToClipboard: (deliveryId: string): Promise<unknown> =>
     ipcRenderer.invoke("history:copyToClipboard", deliveryId),
   showHistoryInFolder: (deliveryId: string): Promise<boolean> =>
     ipcRenderer.invoke("history:showInFolder", deliveryId),
+  hideHistory: (deliveryId: string): Promise<RendererState> =>
+    ipcRenderer.invoke("history:hide", deliveryId),
+  clearHistory: (): Promise<RendererState> => ipcRenderer.invoke("history:clear"),
   adminLogin: (input: AdminLoginInput): Promise<RendererState> => ipcRenderer.invoke("admin:login", input),
   adminLogout: (): Promise<RendererState> => ipcRenderer.invoke("admin:logout"),
   adminRefreshDevices: (): Promise<RendererState> => ipcRenderer.invoke("admin:refreshDevices"),
@@ -42,6 +69,14 @@ const api = {
     deviceId: string,
     permissions: Partial<DevicePermissions>
   ): Promise<RendererState> => ipcRenderer.invoke("admin:updatePermissions", deviceId, permissions),
+  adminUpdateProfile: (deviceId: string, profile: DeviceProfile): Promise<RendererState> =>
+    ipcRenderer.invoke("admin:updateProfile", deviceId, profile),
+  adminUpdateReceiveConfig: (
+    deviceId: string,
+    mode: "disabled" | "same_user_only" | "selected_devices" | "all_authorized_sources",
+    sourceDeviceIds: string[],
+  ): Promise<RendererState> =>
+    ipcRenderer.invoke("admin:updateReceiveConfig", deviceId, mode, sourceDeviceIds),
   adminRenameDevice: (deviceId: string, name: string): Promise<RendererState> =>
     ipcRenderer.invoke("admin:renameDevice", deviceId, name),
   adminRevokeDevice: (deviceId: string): Promise<RendererState> =>

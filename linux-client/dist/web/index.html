@@ -284,7 +284,10 @@
         </div>
         <div>
           <div class="card">
-            <h2>最近投递</h2>
+            <div class="row" style="justify-content:space-between;align-items:center;">
+              <h2>最近投递</h2>
+              <button class="secondary" id="btnClearRecent" type="button">清空记录</button>
+            </div>
             <div id="recentDeliveries"><p class="empty">暂无数据</p></div>
           </div>
         </div>
@@ -308,9 +311,32 @@
               设备名称
               <input type="text" id="cfgName" placeholder="LinuxPC">
             </label>
+            <label>
+              设备用途
+              <select id="cfgProfile">
+                <option value="manual_only">只手动分享</option>
+                <option value="upload_only">只上传截图</option>
+                <option value="receive_own" selected>只接收我的图片</option>
+                <option value="sync_own">我的设备双向同步</option>
+              </select>
+            </label>
             <div class="actions">
-              <button id="btnBind">绑定</button>
+              <button id="btnBind">预览并绑定</button>
               <button id="btnUnbind" class="danger">解绑</button>
+            </div>
+            <hr>
+            <h3>使用成员账号绑定</h3>
+            <label>
+              登录名
+              <input type="text" id="cfgLogin" autocomplete="username">
+            </label>
+            <label>
+              密码
+              <input type="password" id="cfgPassword" autocomplete="current-password">
+            </label>
+            <div class="actions">
+              <button id="btnBindLogin">登录并绑定本设备</button>
+              <button id="btnRefreshPermissions">刷新身份与权限</button>
             </div>
           </div>
         </div>
@@ -330,6 +356,9 @@
             </label>
             <label class="checkbox">
               <input type="checkbox" id="cfgAutoReceive"> 启用自动接收
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" id="cfgCopyToClipboard"> 下载后自动复制到剪贴板
             </label>
             <div class="actions">
               <button id="btnSaveConfig">保存配置</button>
@@ -418,7 +447,20 @@
         <img id="imageModalImg" alt="预览" />
         <div id="imageModalMeta" class="image-modal-meta"></div>
         <div class="actions" style="justify-content:flex-end;">
+          <button class="secondary" id="imageModalDownload" type="button">下载图片</button>
           <button class="danger" id="imageModalDelete" type="button">删除图片</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="pendingModal" class="modal hidden" role="dialog" aria-modal="true" aria-label="离线图片确认">
+      <div class="modal-content" style="max-width:520px;">
+        <h2>发现离线图片</h2>
+        <p id="pendingModalText"></p>
+        <p style="color:var(--muted);">只有设备离线时累积的图片需要确认；在线时收到的新图片仍会自动下载。</p>
+        <div class="actions" style="justify-content:flex-end;">
+          <button class="danger" id="btnSkipPending" type="button">忽略这些图片</button>
+          <button id="btnAcceptPending" type="button">全部接收</button>
         </div>
       </div>
     </div>
@@ -428,6 +470,7 @@
     const $ = id => document.getElementById(id);
     let adminJwt = localStorage.getItem('ssr_admin_jwt') || '';
     let eventSource;
+    let currentConfig;
 
     function showMessage(text, type) {
       const el = $('message');
@@ -446,7 +489,7 @@
     }
 
     function escapeHtml(s) {
-      return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+      return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
     }
 
     async function api(method, path, body) {
@@ -463,12 +506,19 @@
 
     async function loadConfig() {
       const cfg = await api('GET', '/api/config');
+      currentConfig = cfg;
       $('cfgServer').value = cfg.device?.serverBaseUrl || '';
       $('cfgName').value = cfg.device?.deviceName || '';
+      if (cfg.device?.profile && cfg.device.profile !== 'custom') $('cfgProfile').value = cfg.device.profile;
       $('cfgWatchDir').value = cfg.watchDir || '';
       $('cfgDownloadDir').value = cfg.downloadDir || '';
       $('cfgAutoUpload').checked = cfg.autoUpload;
       $('cfgAutoReceive').checked = cfg.autoReceive;
+      $('cfgCopyToClipboard').checked = cfg.copyToClipboard !== false;
+      $('cfgAutoUpload').disabled = Boolean(cfg.device && cfg.device.permissions && !cfg.device.permissions.canAutoUpload);
+      $('cfgAutoReceive').disabled = Boolean(cfg.device && cfg.device.permissions && !cfg.device.permissions.canAutoReceive);
+      $('btnStartWatch').disabled = $('cfgAutoUpload').disabled;
+      $('btnStartReceive').disabled = $('cfgAutoReceive').disabled;
       renderDeviceInfo(cfg);
     }
 
@@ -501,12 +551,13 @@
         panel.innerHTML = '<p class="empty">暂无数据</p>';
         return;
       }
-      panel.innerHTML = '<table><thead><tr><th>文件</th><th>来源</th><th>大小</th><th>时间</th></tr></thead><tbody>' +
+      panel.innerHTML = '<table><thead><tr><th>文件</th><th>来源</th><th>大小</th><th>时间</th><th>操作</th></tr></thead><tbody>' +
         items.map(d => '<tr>' +
           '<td>' + escapeHtml(d.fileName) + '</td>' +
           '<td>' + escapeHtml(d.sourceDevice) + '</td>' +
           '<td>' + fmtSize(d.size) + '</td>' +
           '<td>' + fmtTime(d.savedAt) + '</td>' +
+          '<td><button class="secondary recent-hide" data-delivery-id="' + escapeHtml(d.deliveryId) + '">隐藏</button></td>' +
           '</tr>').join('') + '</tbody></table>';
     }
 
@@ -517,6 +568,9 @@
         $('svcReceive').className = 'status-pill ' + (data.receive ? 'connected' : 'disconnected');
         $('svcWatch').textContent = data.watch ? '运行中' : '未启动';
         $('svcWatch').className = 'status-pill ' + (data.watch ? 'connected' : 'disconnected');
+        const pendingCount = Number(data.pendingDeliveryCount || 0);
+        $('pendingModalText').textContent = `设备离线期间收到 ${pendingCount} 张图片，是否现在接收？`;
+        $('pendingModal').classList.toggle('hidden', pendingCount === 0);
       } catch {
         // ignore
       }
@@ -532,23 +586,65 @@
         <p><strong>服务器：</strong>${escapeHtml(cfg.device.serverBaseUrl)}</p>
         <p><strong>设备 ID：</strong>${cfg.device.deviceId}</p>
         <p><strong>设备名：</strong>${escapeHtml(cfg.device.deviceName)}</p>
+        <p><strong>绑定成员：</strong>${escapeHtml(cfg.device.user?.displayName || cfg.device.user?.id || '未知')} · ${escapeHtml(cfg.device.user?.role || '')}</p>
+        <p><strong>设备用途：</strong>${escapeHtml(cfg.device.profile || '未知')}</p>
+        <p><strong>有效权限：</strong>${escapeHtml(JSON.stringify(cfg.device.permissions || {}))}</p>
+        <p><strong>权限刷新：</strong>${escapeHtml(fmtTime(cfg.device.permissionsFetchedAt))}</p>
         <p><strong>监听目录：</strong>${escapeHtml(cfg.watchDir || '未设置')}</p>
         <p><strong>接收目录：</strong>${escapeHtml(cfg.downloadDir || '默认')}</p>
+        <p><strong>自动剪贴板：</strong>${cfg.copyToClipboard !== false ? '开启' : '关闭'}</p>
       `;
     }
 
     async function bindDevice() {
       try {
+        const previewResponse = await api('POST', '/api/bind/preview', {
+          serverBaseUrl: $('cfgServer').value,
+          bindCode: $('cfgCode').value
+        });
+        const preview = previewResponse.data;
+        const target = preview.targetUser.displayName || preview.targetUser.id;
+        if (!confirm(`绑定目标：${target}（${preview.targetUser.role}）\n空间：${preview.space.displayName}\n确认继续吗？`)) return;
         const body = {
           serverBaseUrl: $('cfgServer').value,
           bindCode: $('cfgCode').value,
-          deviceName: $('cfgName').value
+          deviceName: $('cfgName').value,
+          profile: $('cfgProfile').value,
+          confirmedTargetUserId: preview.targetUser.id
         };
         await api('POST', '/api/bind', body);
         showMessage('绑定成功', 'success');
         await loadConfig();
       } catch (err) {
         showMessage('绑定失败：' + err.message, 'error');
+      }
+    }
+
+    async function bindWithLogin() {
+      try {
+        await api('POST', '/api/bind-login', {
+          serverBaseUrl: $('cfgServer').value,
+          login: $('cfgLogin').value,
+          password: $('cfgPassword').value,
+          deviceName: $('cfgName').value,
+          profile: $('cfgProfile').value
+        });
+        $('cfgPassword').value = '';
+        showMessage('账号绑定成功', 'success');
+        await loadConfig();
+      } catch (err) {
+        showMessage('账号绑定失败：' + err.message, 'error');
+      }
+    }
+
+    async function refreshPermissions() {
+      try {
+        await api('POST', '/api/permissions/refresh');
+        showMessage('身份与权限已刷新', 'success');
+        await loadConfig();
+        await loadServiceStatus();
+      } catch (err) {
+        showMessage('刷新失败：' + err.message, 'error');
       }
     }
 
@@ -570,7 +666,8 @@
           watchDir: $('cfgWatchDir').value,
           downloadDir: $('cfgDownloadDir').value,
           autoUpload: $('cfgAutoUpload').checked,
-          autoReceive: $('cfgAutoReceive').checked
+          autoReceive: $('cfgAutoReceive').checked,
+          copyToClipboard: $('cfgCopyToClipboard').checked
         };
         await api('POST', '/api/config', body);
         if (!silent) showMessage('配置已保存', 'success');
@@ -656,7 +753,7 @@
         el.addEventListener('change', scheduleAutoSave);
         el.addEventListener('blur', scheduleAutoSave);
       });
-      ['cfgAutoUpload', 'cfgAutoReceive'].forEach(id => {
+      ['cfgAutoUpload', 'cfgAutoReceive', 'cfgCopyToClipboard'].forEach(id => {
         $(id).addEventListener('change', scheduleAutoSave);
       });
     }
@@ -673,7 +770,8 @@
     };
 
     async function adminApi(method, path, body) {
-      const opts = { method, headers: { Authorization: 'Bearer ' + adminJwt } };
+      const opts = { method, headers: {} };
+      if (adminJwt) opts.headers.Authorization = 'Bearer ' + adminJwt;
       if (body) {
         opts.headers['Content-Type'] = 'application/json';
         opts.body = JSON.stringify(body);
@@ -704,7 +802,8 @@
         ? '<div class="image-card-actions"><span class="image-card-selected-hint">' + (isSelected ? '已选中' : '点击选中') + '</span></div>'
         : '<div class="image-card-actions">' +
             '<button class="secondary" data-action="image-preview" type="button">预览</button>' +
-            '<button class="danger" data-action="image-delete" type="button">删除</button>' +
+            '<button class="secondary" data-action="image-download" type="button">下载</button>' +
+            (adminJwt ? '<button class="danger" data-action="image-delete" type="button">删除</button>' : '') +
           '</div>';
       return '<div class="image-card' + (img.isExpired ? ' is-expired' : '') + selectClass + selectedClass + '" data-image-id="' + escapeHtmlAttr(img.id) + '">' +
         checkbox +
@@ -750,7 +849,7 @@
       if (!card) return null;
       try {
         const res = await fetch('/api/proxy/images/' + encodeURIComponent(imageId) + '/download', {
-          headers: { Authorization: 'Bearer ' + adminJwt },
+          headers: adminJwt ? { Authorization: 'Bearer ' + adminJwt } : {},
         });
         if (!res.ok) {
           if (card.isConnected) card.innerHTML = '<span>预览失败</span>';
@@ -855,10 +954,6 @@
 
     async function loadImages(reset) {
       if (reset === undefined) reset = true;
-      if (!adminJwt) {
-        showMessage('请先在"服务器管理"页登录管理账号', 'error');
-        return;
-      }
       showMessage('', 'ok');
       try {
         const params = new URLSearchParams();
@@ -911,7 +1006,26 @@
         '<dt>过期</dt><dd>' + fmtTime(img.expiresAt) + '</dd>' +
         '</dl>';
       $('imageModalDelete').dataset.imageId = imageId;
+      $('imageModalDelete').hidden = !adminJwt;
+      $('imageModalDownload').dataset.imageId = imageId;
       $('imageModal').classList.remove('hidden');
+    }
+
+    async function downloadLibraryImage(imageId) {
+      const img = imgState.images.find(item => item.id === imageId);
+      if (!img || img.isExpired) throw new Error('图片已过期，无法下载');
+      const url = imgState.previewBlobUrls[imageId] || await loadImagePreview(imageId);
+      if (!url) throw new Error('图片下载失败');
+      const source = ((img.uploadedBy && img.uploadedBy.deviceName) || '设备')
+        .replace(/[^A-Za-z0-9._\u4e00-\u9fff-]+/g, '_');
+      const stamp = String(img.createdAt || '').replace(/\D/g, '').slice(0, 14) || Date.now();
+      const ext = img.mimeType === 'image/jpeg' ? '.jpg' : img.mimeType === 'image/webp' ? '.webp' : '.png';
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = source + '_' + stamp + ext;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
     }
 
     function closeImagePreview() {
@@ -980,6 +1094,8 @@
       const action = actionEl && actionEl.dataset.action;
       if (action === 'image-delete') {
         deleteImage(id);
+      } else if (action === 'image-download') {
+        downloadLibraryImage(id).catch(err => showMessage(err.message || String(err), 'error'));
       } else {
         openImagePreview(id);
       }
@@ -1008,6 +1124,10 @@
     $('imageModalDelete').addEventListener('click', (e) => {
       const id = e.currentTarget.dataset.imageId;
       if (id) deleteImage(id);
+    });
+    $('imageModalDownload').addEventListener('click', (e) => {
+      const id = e.currentTarget.dataset.imageId;
+      if (id) downloadLibraryImage(id).catch(err => showMessage(err.message || String(err), 'error'));
     });
     $('imageModal').addEventListener('click', (e) => {
       if (e.target === $('imageModal')) closeImagePreview();
@@ -1046,6 +1166,8 @@
     });
 
     $('btnBind').addEventListener('click', bindDevice);
+    $('btnBindLogin').addEventListener('click', bindWithLogin);
+    $('btnRefreshPermissions').addEventListener('click', refreshPermissions);
     $('btnUnbind').addEventListener('click', unbind);
     $('btnSaveConfig').addEventListener('click', saveConfig);
     $('btnAdminLogin').addEventListener('click', adminLogin);
@@ -1061,6 +1183,14 @@
     $('btnStopReceive').addEventListener('click', () => api('POST', '/api/service/receive/stop').then(() => { showMessage('接收服务已停止', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
     $('btnStartWatch').addEventListener('click', () => api('POST', '/api/service/watch/start').then(() => { showMessage('监听服务已启动', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
     $('btnStopWatch').addEventListener('click', () => api('POST', '/api/service/watch/stop').then(() => { showMessage('监听服务已停止', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
+    $('btnAcceptPending').addEventListener('click', () => api('POST', '/api/service/receive/pending/accept').then(() => { showMessage('离线图片已接收', 'success'); loadServiceStatus(); loadRecentDeliveries(); }).catch(e => showMessage(e.message, 'error')));
+    $('btnSkipPending').addEventListener('click', () => api('POST', '/api/service/receive/pending/skip').then(() => { showMessage('离线图片已忽略', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
+    $('btnClearRecent').addEventListener('click', () => api('DELETE', '/api/recent-deliveries').then(loadRecentDeliveries).catch(e => showMessage(e.message, 'error')));
+    $('recentDeliveries').addEventListener('click', event => {
+      const button = event.target.closest('.recent-hide');
+      if (!button) return;
+      api('DELETE', '/api/recent-deliveries/' + encodeURIComponent(button.dataset.deliveryId)).then(loadRecentDeliveries).catch(e => showMessage(e.message, 'error'));
+    });
 
     bindAutoSave();
     loadConfig().then(connectLogStream);

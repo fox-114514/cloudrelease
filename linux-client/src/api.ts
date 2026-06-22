@@ -1,12 +1,10 @@
 import fs from "node:fs/promises";
 import { Readable } from "node:stream";
-import { apiUrl, sha256File } from "./utils.js";
+import { apiUrl, detectImageMimeType, sha256File } from "./utils.js";
 import type { DeviceConfig } from "./config.js";
 
 export interface DeliveryPayload {
-  id: string;
-  imageId: string;
-  status: string;
+  deliveryId: string;
   image: {
     id: string;
     mimeType: string;
@@ -27,6 +25,28 @@ export interface UploadResult {
   imageId: string;
   deduplicated: boolean;
   createdDeliveriesCount: number;
+}
+
+export interface PendingDeliveriesResult {
+  deliveries: DeliveryPayload[];
+  totalPending?: number;
+  hasMore?: boolean;
+}
+
+export async function createImageUploadForm(
+  filePath: string,
+  sourceKind: string,
+): Promise<FormData> {
+  const sha256 = await sha256File(filePath);
+  const buffer = await fs.readFile(filePath);
+  const mimeType = detectImageMimeType(buffer);
+  if (!mimeType) throw new Error("Only PNG, JPEG and WebP images are supported");
+
+  const form = new FormData();
+  form.append("sha256", sha256);
+  form.append("sourceKind", sourceKind);
+  form.append("image", new Blob([buffer], { type: mimeType }), filePath.split("/").pop() || "image");
+  return form;
 }
 
 class ApiError extends Error {
@@ -82,7 +102,7 @@ export class ApiClient {
     return parseEnvelope(response);
   }
 
-  async getPendingDeliveries(): Promise<{ deliveries: DeliveryPayload[] }> {
+  async getPendingDeliveries(): Promise<PendingDeliveriesResult> {
     const response = await fetch(
       apiUrl(this.device.serverBaseUrl, "/api/v1/deliveries/pending"),
       { headers: this.authHeaders() }
@@ -90,7 +110,7 @@ export class ApiClient {
     return parseEnvelope(response);
   }
 
-  async ackDelivery(deliveryId: string, status: "downloaded" | "failed"): Promise<void> {
+  async ackDelivery(deliveryId: string, status: "downloaded" | "failed" | "skipped"): Promise<void> {
     const response = await fetch(
       apiUrl(this.device.serverBaseUrl, `/api/v1/deliveries/${deliveryId}/ack`),
       {
@@ -128,15 +148,7 @@ export class ApiClient {
   }
 
   async uploadImage(filePath: string, sourceKind = "manual_share"): Promise<UploadResult> {
-    const sha256 = await sha256File(filePath);
-    const stats = await fs.stat(filePath);
-    const form = new FormData();
-    form.append("sha256", sha256);
-    form.append("sourceKind", sourceKind);
-    const buffer = await fs.readFile(filePath);
-    const blob = new Blob([buffer]);
-    const fileName = filePath.split("/").pop() || "image";
-    form.append("image", blob, fileName);
+    const form = await createImageUploadForm(filePath, sourceKind);
 
     const response = await fetch(apiUrl(this.device.serverBaseUrl, "/api/v1/images"), {
       method: "POST",

@@ -5,10 +5,10 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { bindDevice, loadConfig, saveConfig, unbind } from "../config.js";
+import { bindDevice, bindWithLogin, loadConfig, previewBindCode, refreshDeviceIdentity, saveConfig, serverAllows, unbind, } from "../config.js";
 import { startWatcher } from "../watcher.js";
 import { WsReceiveClient } from "../ws-client.js";
-import { ensureAllowedDir, isAllowedDir, normalizeBaseUrl } from "../utils.js";
+import { defaultDownloadDir, ensureAllowedDir, isAllowedDir, normalizeBaseUrl } from "../utils.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const logEmitter = new EventEmitter();
 logEmitter.setMaxListeners(100);
@@ -16,24 +16,36 @@ function broadcastLog(text, type = "info") {
     logEmitter.emit("log", JSON.stringify({ text, type }));
 }
 const services = {};
+let pendingDeliveryCount = 0;
 async function startReceive() {
     if (services.receiveClient)
         return;
     const config = await loadConfig();
     if (!config.device)
         throw new Error("Not bound");
+    config.device = await refreshDeviceIdentity(config.device);
+    await saveConfig(config);
+    if (!serverAllows(config.device, "canAutoReceive")) {
+        throw new Error("服务端未允许本设备自动接收");
+    }
     const client = new WsReceiveClient({
         device: config.device,
         config,
         onStatus: (line) => broadcastLog(line, "info"),
-        onDownload: async (filePath, imageId) => {
+        onPending: (count) => {
+            pendingDeliveryCount = count;
+            if (count > 0)
+                broadcastLog(`有 ${count} 张离线图片等待确认`, "pending");
+        },
+        onDownload: async (filePath, imageId, deliveryId, sourceDeviceName) => {
             broadcastLog(`Received ${filePath}`, "success");
             try {
                 const stat = await fs.stat(filePath);
                 recordRecentDelivery({
+                    deliveryId,
                     imageId,
                     fileName: path.basename(filePath),
-                    sourceDevice: config.device?.deviceName ?? "unknown",
+                    sourceDevice: sourceDeviceName,
                     size: stat.size,
                     savedAt: new Date().toISOString(),
                 });
@@ -51,6 +63,7 @@ async function startReceive() {
 async function stopReceive() {
     services.receiveClient?.stop();
     services.receiveClient = undefined;
+    pendingDeliveryCount = 0;
     broadcastLog("Receive service stopped", "info");
 }
 async function startWatch() {
@@ -59,11 +72,17 @@ async function startWatch() {
     const config = await loadConfig();
     if (!config.device)
         throw new Error("Not bound");
+    config.device = await refreshDeviceIdentity(config.device);
+    await saveConfig(config);
     if (!config.watchDir)
         throw new Error("Watch directory not configured");
+    if (!serverAllows(config.device, "canAutoUpload")) {
+        throw new Error("服务端未允许本设备自动上传");
+    }
     services.watcher = startWatcher({
         device: config.device,
         watchDir: config.watchDir,
+        excludedDirs: config.downloadDir ? [config.downloadDir] : [],
         onLog: (line) => broadcastLog(line, "info"),
         onError: (message) => broadcastLog(message, "error"),
     });
@@ -84,12 +103,34 @@ export function recordRecentDelivery(entry) {
 }
 export async function startWebServer(port = 0) {
     const app = fastify({ logger: false });
+    const permissionTimer = setInterval(() => {
+        void (async () => {
+            const config = await loadConfig();
+            if (!config.device)
+                return;
+            config.device = await refreshDeviceIdentity(config.device);
+            await saveConfig(config);
+            if (!serverAllows(config.device, "canAutoUpload"))
+                await stopWatch();
+            if (!serverAllows(config.device, "canAutoReceive"))
+                await stopReceive();
+        })().catch((err) => broadcastLog(`定时刷新服务端权限失败：${err.message}`, "warn"));
+    }, 5 * 60 * 1000);
     await app.register(fastifyStatic, {
         root: __dirname,
         prefix: "/",
     });
     app.get("/api/config", async (_req, reply) => {
         const config = await loadConfig();
+        if (config.device) {
+            try {
+                config.device = await refreshDeviceIdentity(config.device);
+                await saveConfig(config);
+            }
+            catch (err) {
+                broadcastLog(`刷新服务端权限失败：${err.message}`, "warn");
+            }
+        }
         return reply.send(config);
     });
     app.post("/api/config", async (req, reply) => {
@@ -99,14 +140,19 @@ export async function startWebServer(port = 0) {
         const allowUnsafe = body.allowUnsafePath === true;
         try {
             if (body.watchDir !== undefined) {
-                const resolved = await ensureAllowedDir(body.watchDir, allowUnsafe);
-                if (allowUnsafe && !isAllowedDir(resolved).ok) {
-                    broadcastLog(`警告：watchDir 设置为非安全路径 ${resolved}`, "warn");
+                if (!body.watchDir.trim()) {
+                    config.watchDir = undefined;
                 }
-                config.watchDir = resolved;
+                else {
+                    const resolved = await ensureAllowedDir(body.watchDir, allowUnsafe);
+                    if (allowUnsafe && !isAllowedDir(resolved).ok) {
+                        broadcastLog(`警告：watchDir 设置为非安全路径 ${resolved}`, "warn");
+                    }
+                    config.watchDir = resolved;
+                }
             }
             if (body.downloadDir !== undefined) {
-                const resolved = await ensureAllowedDir(body.downloadDir, allowUnsafe);
+                const resolved = await ensureAllowedDir(body.downloadDir.trim() || defaultDownloadDir(), allowUnsafe);
                 if (allowUnsafe && !isAllowedDir(resolved).ok) {
                     broadcastLog(`警告：downloadDir 设置为非安全路径 ${resolved}`, "warn");
                 }
@@ -116,17 +162,31 @@ export async function startWebServer(port = 0) {
         catch (err) {
             return reply.status(400).send({ success: false, error: { message: err.message } });
         }
-        if (body.autoUpload !== undefined)
+        if (body.autoUpload !== undefined) {
+            if (body.autoUpload && config.device && !serverAllows(config.device, "canAutoUpload")) {
+                return reply.status(403).send({ success: false, error: { message: "服务端未允许本设备自动上传" } });
+            }
             config.autoUpload = body.autoUpload;
-        if (body.autoReceive !== undefined)
+        }
+        if (body.autoReceive !== undefined) {
+            if (body.autoReceive && config.device && !serverAllows(config.device, "canAutoReceive")) {
+                return reply.status(403).send({ success: false, error: { message: "服务端未允许本设备自动接收" } });
+            }
             config.autoReceive = body.autoReceive;
-        const dirChanged = (body.watchDir !== undefined && config.watchDir !== oldConfig.watchDir) ||
-            (body.downloadDir !== undefined && config.downloadDir !== oldConfig.downloadDir);
+        }
+        if (body.copyToClipboard !== undefined) {
+            config.copyToClipboard = body.copyToClipboard;
+        }
+        const watchDirChanged = body.watchDir !== undefined && config.watchDir !== oldConfig.watchDir;
+        const receiveConfigChanged = (body.downloadDir !== undefined && config.downloadDir !== oldConfig.downloadDir) ||
+            (body.copyToClipboard !== undefined &&
+                config.copyToClipboard !== oldConfig.copyToClipboard);
         const autoUploadChanged = body.autoUpload !== undefined && config.autoUpload !== oldConfig.autoUpload;
+        const autoReceiveChanged = body.autoReceive !== undefined && config.autoReceive !== oldConfig.autoReceive;
         await saveConfig(config);
         // If watchDir changed and auto upload is on, restart the watcher so
         // it picks up the new path. Similarly toggle watcher when autoUpload flips.
-        if (dirChanged && body.watchDir !== undefined && config.autoUpload) {
+        if (watchDirChanged && config.autoUpload) {
             await stopWatch().catch(() => undefined);
             await startWatch().catch((err) => broadcastLog(`重启监听失败：${err.message}`, "error"));
         }
@@ -138,15 +198,67 @@ export async function startWebServer(port = 0) {
                 await stopWatch().catch(() => undefined);
             }
         }
+        // WsReceiveClient holds the config snapshot it was started with. Restart
+        // only an already-running receiver so directory/clipboard changes apply
+        // immediately without changing the user's service state.
+        if (receiveConfigChanged && services.receiveClient) {
+            await stopReceive();
+            await startReceive().catch((err) => broadcastLog(`重启接收失败：${err.message}`, "error"));
+        }
+        if (autoReceiveChanged) {
+            if (config.autoReceive) {
+                await startReceive().catch((err) => broadcastLog(`启动接收失败：${err.message}`, "error"));
+            }
+            else {
+                await stopReceive();
+            }
+        }
         return reply.send({ success: true });
     });
+    app.post("/api/bind/preview", async (req, reply) => {
+        const preview = await previewBindCode(req.body.serverBaseUrl, req.body.bindCode);
+        return reply.send({ success: true, data: preview });
+    });
     app.post("/api/bind", async (req, reply) => {
-        const { serverBaseUrl, bindCode, deviceName } = req.body;
-        const device = await bindDevice(serverBaseUrl, bindCode, deviceName || "Linux");
+        const { serverBaseUrl, bindCode, deviceName, profile, confirmedTargetUserId } = req.body;
+        const preview = await previewBindCode(serverBaseUrl, bindCode);
+        if (!confirmedTargetUserId || confirmedTargetUserId !== preview.targetUser.id) {
+            return reply.status(409).send({
+                success: false,
+                error: { message: "请先预览并确认绑定目标" },
+            });
+        }
+        const device = await bindDevice(serverBaseUrl, bindCode, deviceName || "Linux", profile);
         const config = await loadConfig();
         config.device = device;
         await saveConfig(config);
-        return reply.send({ success: true });
+        if (config.autoReceive) {
+            await startReceive().catch((err) => broadcastLog(`绑定成功，但启动接收失败：${err.message}`, "warn"));
+        }
+        return reply.send({ success: true, data: device });
+    });
+    app.post("/api/bind-login", async (req, reply) => {
+        const { serverBaseUrl, login, password, deviceName, profile } = req.body;
+        const device = await bindWithLogin(serverBaseUrl, login, password, deviceName || "Linux", profile);
+        const config = await loadConfig();
+        config.device = device;
+        await saveConfig(config);
+        if (config.autoReceive) {
+            await startReceive().catch((err) => broadcastLog(`绑定成功，但启动接收失败：${err.message}`, "warn"));
+        }
+        return reply.send({ success: true, data: device });
+    });
+    app.post("/api/permissions/refresh", async (_req, reply) => {
+        const config = await loadConfig();
+        if (!config.device)
+            return reply.status(400).send({ success: false, error: { message: "Not bound" } });
+        config.device = await refreshDeviceIdentity(config.device);
+        await saveConfig(config);
+        if (!serverAllows(config.device, "canAutoUpload"))
+            await stopWatch();
+        if (!serverAllows(config.device, "canAutoReceive"))
+            await stopReceive();
+        return reply.send({ success: true, data: config.device });
     });
     app.post("/api/unbind", async (_req, reply) => {
         await stopReceive();
@@ -174,10 +286,34 @@ export async function startWebServer(port = 0) {
         return reply.send({
             receive: Boolean(services.receiveClient),
             watch: Boolean(services.watcher),
+            pendingDeliveryCount,
         });
+    });
+    app.post("/api/service/receive/pending/accept", async (_req, reply) => {
+        if (!services.receiveClient)
+            return reply.status(409).send({ success: false, error: { message: "接收服务未启动" } });
+        await services.receiveClient.acceptPending();
+        return reply.send({ success: true });
+    });
+    app.post("/api/service/receive/pending/skip", async (_req, reply) => {
+        if (!services.receiveClient)
+            return reply.status(409).send({ success: false, error: { message: "接收服务未启动" } });
+        await services.receiveClient.skipPending();
+        return reply.send({ success: true });
     });
     app.get("/api/recent-deliveries", async (_req, reply) => {
         return reply.send({ deliveries: recentDeliveries });
+    });
+    app.delete("/api/recent-deliveries/:deliveryId", async (req, reply) => {
+        const { deliveryId } = req.params;
+        const index = recentDeliveries.findIndex((item) => item.deliveryId === deliveryId);
+        if (index >= 0)
+            recentDeliveries.splice(index, 1);
+        return reply.send({ success: true });
+    });
+    app.delete("/api/recent-deliveries", async (_req, reply) => {
+        recentDeliveries.length = 0;
+        return reply.send({ success: true });
     });
     // ---- admin image library proxy ----
     // The Linux-client Web UI does not store the admin JWT itself; the browser
@@ -192,21 +328,38 @@ export async function startWebServer(port = 0) {
         }
         return auth.slice(7);
     }
-    app.get("/api/proxy/images", async (req, reply) => {
-        const jwt = await requireAdminJwt(req, reply);
-        if (!jwt)
-            return;
+    async function resolveImageLibraryToken(req, reply) {
         const config = await loadConfig();
-        if (!config.device)
-            return reply.status(400).send({ success: false, error: { message: "Not bound" } });
-        const baseUrl = normalizeBaseUrl(config.device.serverBaseUrl);
+        if (!config.device) {
+            reply.status(400).send({ success: false, error: { message: "Not bound" } });
+            return null;
+        }
+        const auth = req.headers.authorization;
+        if (auth?.startsWith("Bearer ") && auth.slice(7).trim()) {
+            return { token: auth.slice(7).trim(), device: config.device };
+        }
+        if (config.device.permissions?.canManualDownload) {
+            return { token: config.device.deviceToken, device: config.device };
+        }
+        reply.status(403).send({
+            success: false,
+            error: { message: "需要登录成员账号，或为本设备开启手动下载权限" },
+        });
+        return null;
+    }
+    app.get("/api/proxy/images", async (req, reply) => {
+        const resolved = await resolveImageLibraryToken(req, reply);
+        if (!resolved)
+            return;
+        const { token, device } = resolved;
+        const baseUrl = normalizeBaseUrl(device.serverBaseUrl);
         const url = new URL(`${baseUrl}/api/v1/images`);
         const query = req.query;
         for (const [k, v] of Object.entries(query)) {
             if (typeof v === "string" && v !== "")
                 url.searchParams.set(k, v);
         }
-        const response = await fetch(url, { headers: { Authorization: `Bearer ${jwt}` } });
+        const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
         const body = await response.text();
         return reply.status(response.status).type("application/json").send(body);
     });
@@ -223,14 +376,12 @@ export async function startWebServer(port = 0) {
         return reply.status(response.status).type("application/json").send(body);
     });
     app.get("/api/proxy/images/:imageId/download", async (req, reply) => {
-        const jwt = await requireAdminJwt(req, reply);
-        if (!jwt)
+        const resolved = await resolveImageLibraryToken(req, reply);
+        if (!resolved)
             return;
+        const { token, device } = resolved;
         const { imageId } = req.params;
-        const config = await loadConfig();
-        if (!config.device)
-            return reply.status(400).send({ success: false, error: { message: "Not bound" } });
-        const response = await fetch(`${normalizeBaseUrl(config.device.serverBaseUrl)}/api/v1/images/${encodeURIComponent(imageId)}/download`, { headers: { Authorization: `Bearer ${jwt}` } });
+        const response = await fetch(`${normalizeBaseUrl(device.serverBaseUrl)}/api/v1/images/${encodeURIComponent(imageId)}/download`, { headers: { Authorization: `Bearer ${token}` } });
         if (!response.ok) {
             const body = await response.text();
             return reply.status(response.status).type("application/json").send(body);
@@ -288,9 +439,17 @@ export async function startWebServer(port = 0) {
     const address = await app.listen({ port, host: "127.0.0.1" });
     const actualPort = app.server.address().port;
     const url = `http://127.0.0.1:${actualPort}`;
+    const startupConfig = await loadConfig();
+    if (startupConfig.device && startupConfig.autoReceive) {
+        await startReceive().catch((err) => broadcastLog(`自动启动接收失败：${err.message}`, "error"));
+    }
+    if (startupConfig.device && startupConfig.autoUpload && startupConfig.watchDir) {
+        await startWatch().catch((err) => broadcastLog(`自动启动监听失败：${err.message}`, "error"));
+    }
     return {
         url,
         close: async () => {
+            clearInterval(permissionTimer);
             await stopReceive();
             await stopWatch();
             await app.close();

@@ -2,6 +2,7 @@ package com.studyshot.relay
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.ContentValues
 import android.content.Intent
@@ -36,7 +37,6 @@ import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
 import java.time.Instant
-import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -47,7 +47,6 @@ class RelayReceiveService : Service() {
     private val reconnectJob = AtomicReference<Job?>(null)
     private val reconnectDelayMs = AtomicLong(1_000L)
     private val lastMessageAt = AtomicLong(0L)
-    private val reconnectAttempts = AtomicInteger(0)
     private val processingDeliveries = mutableSetOf<String>()
     private val connectMutex = Mutex()
     @Volatile
@@ -71,7 +70,11 @@ class RelayReceiveService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        scope.launch { connect() }
+        when (intent?.action) {
+            ACTION_ACCEPT_PENDING -> scope.launch { acceptPending() }
+            ACTION_SKIP_PENDING -> scope.launch { skipPending() }
+            else -> scope.launch { connect() }
+        }
         return START_STICKY
     }
 
@@ -90,7 +93,7 @@ class RelayReceiveService : Service() {
         if (destroyed) return@withLock
         val settings = app.secureSettings.settings.value
         val token = app.secureSettings.getDeviceToken()
-        if (!settings.autoReceiveEnabled || settings.serverBaseUrl.isBlank() || token.isNullOrBlank()) {
+        if (!settings.autoReceiveEnabled || !settings.serverAllowsAutoReceive() || settings.serverBaseUrl.isBlank() || token.isNullOrBlank()) {
             stopSelf()
             return@withLock
         }
@@ -108,7 +111,6 @@ class RelayReceiveService : Service() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 if (destroyed || socket.get() !== webSocket) return
                 reconnectDelayMs.set(1_000L)
-                reconnectAttempts.set(0)
                 webSocket.send("""{"type":"hello"}""")
                 startHeartbeat()
             }
@@ -123,7 +125,15 @@ class RelayReceiveService : Service() {
                 if (socket.get() === webSocket) {
                     socket.set(null)
                     heartbeatJob.getAndSet(null)?.cancel()
-                    if (!destroyed) scheduleReconnect()
+                    if (code == 1008) {
+                        app.secureSettings.clearBinding()
+                        stopSelf()
+                    } else if (code == 4001) {
+                        Log.w(TAG, "Device connected from another client instance")
+                        stopSelf()
+                    } else if (!destroyed) {
+                        scheduleReconnect()
+                    }
                 }
             }
 
@@ -132,7 +142,12 @@ class RelayReceiveService : Service() {
                 if (socket.get() === webSocket) {
                     socket.set(null)
                     heartbeatJob.getAndSet(null)?.cancel()
-                    if (!destroyed) scheduleReconnect()
+                    if (response?.code == 401 || response?.code == 403) {
+                        app.secureSettings.clearBinding()
+                        stopSelf()
+                    } else if (!destroyed) {
+                        scheduleReconnect()
+                    }
                 }
             }
         })
@@ -142,7 +157,7 @@ class RelayReceiveService : Service() {
     private fun handleSocketMessage(raw: String) {
         val json = runCatching { JSONObject(raw) }.getOrNull() ?: return
         when (json.optString("type")) {
-            "hello.ack" -> scope.launch { fetchPending() }
+            "hello.ack" -> scope.launch { checkPending() }
             "pong" -> Unit
             "image.created" -> scope.launch {
                 processDelivery(app.apiClient.parseDelivery(json))
@@ -150,16 +165,45 @@ class RelayReceiveService : Service() {
         }
     }
 
-    private suspend fun fetchPending() {
+    private suspend fun checkPending() {
         val settings = app.secureSettings.settings.value
         val token = app.secureSettings.getDeviceToken() ?: return
-        if (!settings.autoReceiveEnabled || settings.serverBaseUrl.isBlank()) return
+        if (!settings.autoReceiveEnabled || !settings.serverAllowsAutoReceive() || settings.serverBaseUrl.isBlank()) return
 
         runCatching {
-            app.apiClient.getPendingDeliveries(settings.serverBaseUrl, token).deliveries.forEach {
-                processDelivery(it)
+            val pending = app.apiClient.getPendingDeliveries(settings.serverBaseUrl, token)
+            app.secureSettings.setPendingOfflineCount(pending.totalPending)
+            updateReceiveNotification(pending.totalPending)
+        }.onFailure { err -> Log.w(TAG, "Unable to check pending deliveries", err) }
+    }
+
+    private suspend fun acceptPending() = drainPending(skip = false)
+
+    private suspend fun skipPending() = drainPending(skip = true)
+
+    private suspend fun drainPending(skip: Boolean) {
+        val seen = mutableSetOf<String>()
+        while (!destroyed) {
+            val settings = app.secureSettings.settings.value
+            val token = app.secureSettings.getDeviceToken() ?: break
+            val response = try {
+                app.apiClient.getPendingDeliveries(settings.serverBaseUrl, token)
+            } catch (err: Exception) {
+                Log.w(TAG, "Unable to load pending deliveries", err)
+                break
+            }
+            val batch = response.deliveries.filter { seen.add(it.deliveryId) }
+            if (batch.isEmpty()) break
+            batch.forEach { delivery ->
+                if (skip) {
+                    safeAck(delivery.deliveryId, "skipped", "User skipped offline delivery", null)
+                } else {
+                    processDelivery(delivery)
+                }
             }
         }
+        checkPending()
+        if (socket.get() == null && !destroyed) connect()
     }
 
     private suspend fun processDelivery(delivery: DeliveryPayload) {
@@ -169,7 +213,10 @@ class RelayReceiveService : Service() {
 
         try {
             val existing = app.database.dao().getDownloadRecord(delivery.deliveryId)
-            if (existing?.status == "downloaded") return
+            if (existing?.status == "downloaded") {
+                safeAck(delivery.deliveryId, "downloaded", null, existing.localUri)
+                return
+            }
             downloadWithRetries(delivery)
         } finally {
             synchronized(processingDeliveries) {
@@ -325,6 +372,7 @@ class RelayReceiveService : Service() {
     private fun startHeartbeat() {
         heartbeatJob.getAndSet(null)?.cancel()
         heartbeatJob.set(scope.launch {
+            var ticks = 0
             while (true) {
                 delay(30_000)
                 if (destroyed) return@launch
@@ -334,18 +382,59 @@ class RelayReceiveService : Service() {
                     return@launch
                 }
                 current.send("""{"type":"ping"}""")
+                ticks += 1
+                if (ticks % 10 == 0 && !refreshEffectivePermissions()) {
+                    current.close(1000, "Server permission disabled auto receive")
+                    stopSelf()
+                    return@launch
+                }
             }
         })
     }
 
+    private suspend fun refreshEffectivePermissions(): Boolean {
+        val settings = app.secureSettings.settings.value
+        val token = app.secureSettings.getDeviceToken() ?: return false
+        return try {
+            val info = app.apiClient.getDeviceMe(settings.serverBaseUrl, token)
+            val permissionsJson = JSONObject()
+                .put("canAutoUpload", info.permissions.canAutoUpload)
+                .put("canManualUpload", info.permissions.canManualUpload)
+                .put("canAutoReceive", info.permissions.canAutoReceive)
+                .put("canManualDownload", info.permissions.canManualDownload)
+                .put("canManageSpace", info.permissions.canManageSpace)
+                .put("canCreateInvite", info.permissions.canCreateInvite)
+                .put("autoUploadScope", info.permissions.autoUploadScope)
+                .put("autoReceiveScope", info.permissions.autoReceiveScope)
+                .toString()
+            app.secureSettings.saveBinding(
+                serverBaseUrl = settings.serverBaseUrl,
+                deviceId = info.device.id,
+                deviceToken = token,
+                deviceName = info.device.name,
+                boundUserId = info.user.id,
+                boundOwnerUserId = info.user.ownerUserId,
+                boundUserDisplayName = info.user.displayName ?: "",
+                boundUserRole = info.user.role,
+                lastKnownDeviceProfile = info.profile,
+                lastKnownPermissionsJson = permissionsJson,
+            )
+            info.permissions.canAutoReceive
+        } catch (err: ApiException) {
+            if (err.statusCode == 401 || err.statusCode == 403) {
+                app.secureSettings.clearBinding()
+                false
+            } else {
+                settings.serverAllowsAutoReceive()
+            }
+        } catch (_: Exception) {
+            settings.serverAllowsAutoReceive()
+        }
+    }
+
     private fun scheduleReconnect() {
         val settings = app.secureSettings.settings.value
-        if (!settings.autoReceiveEnabled || destroyed) return
-        if (reconnectAttempts.incrementAndGet() > MAX_RECONNECT_ATTEMPTS) {
-            Log.w(TAG, "Giving up WebSocket reconnect after $MAX_RECONNECT_ATTEMPTS attempts")
-            stopSelf()
-            return
-        }
+        if (!settings.autoReceiveEnabled || !settings.serverAllowsAutoReceive() || destroyed) return
         reconnectJob.getAndSet(null)?.cancel()
         reconnectJob.set(scope.launch {
             val delayMs = reconnectDelayMs.get().coerceAtMost(60_000L)
@@ -360,9 +449,8 @@ class RelayReceiveService : Service() {
             ?.resolve("studyshot-received")
             ?: File(filesDir, "studyshot-received")
         val base = listOf(
-            delivery.createdAt.toFileTimestamp(),
             sanitizeFilePart(delivery.source.uploadDeviceName ?: delivery.source.uploadDeviceId),
-            delivery.image.id.take(8),
+            delivery.createdAt.toFileTimestamp(),
         ).joinToString("_")
         val extension = extensionForMime(mimeType.ifBlank { delivery.image.mimeType })
 
@@ -393,6 +481,28 @@ class RelayReceiveService : Service() {
             .setAutoCancel(true)
             .build()
         manager.notify((System.currentTimeMillis() % Int.MAX_VALUE).toInt(), notification)
+    }
+
+    private fun updateReceiveNotification(pendingCount: Int) {
+        val openApp = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val text = if (pendingCount > 0) {
+            "有 $pendingCount 张离线图片等待确认"
+        } else {
+            "正在接收学习截图"
+        }
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setContentTitle("StudyShot Relay")
+            .setContentText(text)
+            .setContentIntent(openApp)
+            .setOngoing(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification)
     }
 
     private fun createNotificationChannel() {
@@ -443,6 +553,7 @@ class RelayReceiveService : Service() {
         private const val CHANNEL_ID = "studyshot_receive"
         private const val NOTIFICATION_ID = 1002
         private const val TAG = "RelayReceiveService"
-        private const val MAX_RECONNECT_ATTEMPTS = 20
+        const val ACTION_ACCEPT_PENDING = "com.studyshot.relay.ACCEPT_PENDING"
+        const val ACTION_SKIP_PENDING = "com.studyshot.relay.SKIP_PENDING"
     }
 }

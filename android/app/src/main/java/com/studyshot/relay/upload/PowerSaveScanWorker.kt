@@ -13,8 +13,10 @@ class PowerSaveScanWorker(
     params: WorkerParameters,
 ) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        val settings = SecureSettings(applicationContext).settings.value
-        if (!settings.autoUploadEnabled || settings.realtimeModeEnabled) {
+        val settings = (applicationContext as? com.studyshot.relay.StudyShotApp)
+            ?.secureSettings?.settings?.value
+            ?: SecureSettings(applicationContext).settings.value
+        if (!settings.autoUploadEnabled || !settings.serverAllowsAutoUpload() || settings.realtimeModeEnabled) {
             return@withContext Result.success()
         }
         if (settings.autoUploadScope !in setOf("screenshot_only", "selected_album")) {

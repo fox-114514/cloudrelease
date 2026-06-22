@@ -1,5 +1,17 @@
 import fs from "node:fs/promises";
-import { apiUrl, sha256File } from "./utils.js";
+import { apiUrl, detectImageMimeType, sha256File } from "./utils.js";
+export async function createImageUploadForm(filePath, sourceKind) {
+    const sha256 = await sha256File(filePath);
+    const buffer = await fs.readFile(filePath);
+    const mimeType = detectImageMimeType(buffer);
+    if (!mimeType)
+        throw new Error("Only PNG, JPEG and WebP images are supported");
+    const form = new FormData();
+    form.append("sha256", sha256);
+    form.append("sourceKind", sourceKind);
+    form.append("image", new Blob([buffer], { type: mimeType }), filePath.split("/").pop() || "image");
+    return form;
+}
 class ApiError extends Error {
     status;
     code;
@@ -75,15 +87,7 @@ export class ApiClient {
         return response.body;
     }
     async uploadImage(filePath, sourceKind = "manual_share") {
-        const sha256 = await sha256File(filePath);
-        const stats = await fs.stat(filePath);
-        const form = new FormData();
-        form.append("sha256", sha256);
-        form.append("sourceKind", sourceKind);
-        const buffer = await fs.readFile(filePath);
-        const blob = new Blob([buffer]);
-        const fileName = filePath.split("/").pop() || "image";
-        form.append("image", blob, fileName);
+        const form = await createImageUploadForm(filePath, sourceKind);
         const response = await fetch(apiUrl(this.device.serverBaseUrl, "/api/v1/images"), {
             method: "POST",
             headers: this.authHeaders(),

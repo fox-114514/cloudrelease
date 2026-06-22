@@ -1,8 +1,6 @@
 import type { DeviceConfig } from "./config.js";
 export interface DeliveryPayload {
-    id: string;
-    imageId: string;
-    status: string;
+    deliveryId: string;
     image: {
         id: string;
         mimeType: string;
@@ -23,6 +21,12 @@ export interface UploadResult {
     deduplicated: boolean;
     createdDeliveriesCount: number;
 }
+export interface PendingDeliveriesResult {
+    deliveries: DeliveryPayload[];
+    totalPending?: number;
+    hasMore?: boolean;
+}
+export declare function createImageUploadForm(filePath: string, sourceKind: string): Promise<FormData>;
 export declare class ApiClient {
     private readonly device;
     constructor(device: DeviceConfig);
@@ -30,10 +34,8 @@ export declare class ApiClient {
     healthz(): Promise<{
         status: string;
     }>;
-    getPendingDeliveries(): Promise<{
-        deliveries: DeliveryPayload[];
-    }>;
-    ackDelivery(deliveryId: string, status: "downloaded" | "failed"): Promise<void>;
+    getPendingDeliveries(): Promise<PendingDeliveriesResult>;
+    ackDelivery(deliveryId: string, status: "downloaded" | "failed" | "skipped"): Promise<void>;
     downloadImage(imageId: string): Promise<ReadableStream<Uint8Array>>;
     uploadImage(filePath: string, sourceKind?: string): Promise<UploadResult>;
 }

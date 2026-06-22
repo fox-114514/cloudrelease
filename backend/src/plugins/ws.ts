@@ -7,7 +7,10 @@ import { prisma } from "../lib/prisma.js";
 interface WsClient {
   deviceId: string;
   socket: WebSocket.WebSocket;
-  lastPongAt: number;
+  // Wall-clock timestamp of the last inbound message we saw from this client.
+  // Updated on hello/ping (and ignored if the type is something else). The
+  // heartbeat sweeper uses this to decide which sockets are stale.
+  lastClientActivityAt: number;
 }
 
 const connections = new Map<string, WsClient>();
@@ -47,7 +50,14 @@ export function notifyDevicesForImage(imageId: string): void {
           expiresAt: delivery.image.expiresAt.toISOString(),
         };
 
-        client.socket.send(JSON.stringify(event));
+        try {
+          if (client.socket.readyState !== 1) continue;
+          client.socket.send(JSON.stringify(event));
+        } catch {
+          // A broken socket must not prevent later target devices from being
+          // notified. This delivery remains pending for reconnect recovery.
+          continue;
+        }
 
         prisma.delivery
           .update({
@@ -100,14 +110,16 @@ export const wsPlugin = fp(async (app: FastifyInstance) => {
     // Close any existing connection for this device.
     const existing = connections.get(device.id);
     if (existing) {
-      existing.socket.close(1008, "New connection established");
+      // 1008 is reserved for invalid/revoked credentials. A distinct code
+      // prevents the displaced client from deleting an otherwise valid bind.
+      existing.socket.close(4001, "New connection established elsewhere");
       connections.delete(device.id);
     }
 
     const client: WsClient = {
       deviceId: device.id,
       socket,
-      lastPongAt: Date.now(),
+      lastClientActivityAt: Date.now(),
     };
     connections.set(device.id, client);
 
@@ -120,6 +132,7 @@ export const wsPlugin = fp(async (app: FastifyInstance) => {
       try {
         const msg = JSON.parse(raw.toString());
         if (msg.type === "hello") {
+          client.lastClientActivityAt = Date.now();
           socket.send(
             JSON.stringify({
               type: "hello.ack",
@@ -127,7 +140,7 @@ export const wsPlugin = fp(async (app: FastifyInstance) => {
             })
           );
         } else if (msg.type === "ping") {
-          client.lastPongAt = Date.now();
+          client.lastClientActivityAt = Date.now();
           socket.send(JSON.stringify({ type: "pong" }));
         }
       } catch {
@@ -151,13 +164,16 @@ export const wsPlugin = fp(async (app: FastifyInstance) => {
   });
 
   // Heartbeat checker: disconnect stale clients.
-  setInterval(() => {
+  const heartbeatTimer = setInterval(() => {
     const now = Date.now();
     for (const [deviceId, client] of connections.entries()) {
-      if (now - client.lastPongAt > HEARTBEAT_TIMEOUT_MS) {
+      if (now - client.lastClientActivityAt > HEARTBEAT_TIMEOUT_MS) {
         client.socket.close(1001, "Heartbeat timeout");
         connections.delete(deviceId);
       }
     }
   }, HEARTBEAT_INTERVAL_MS);
+  app.addHook("onClose", async () => {
+    clearInterval(heartbeatTimer);
+  });
 });

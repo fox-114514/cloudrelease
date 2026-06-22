@@ -38,6 +38,7 @@
           <button class="nav-item" data-tab="receive" type="button">接收</button>
           <button class="nav-item" data-tab="upload" type="button">上传</button>
           <button class="nav-item" data-tab="history" type="button">记录</button>
+          <button class="nav-item" data-tab="library" type="button">图库</button>
           <button class="nav-item" data-tab="admin" type="button">管理</button>
         </nav>
 
@@ -75,10 +76,27 @@
 
             <div class="banner banner-error" id="errorLine" hidden></div>
 
+            <div class="card" id="identityCard" hidden>
+              <header class="card-head">
+                <h2>当前绑定身份</h2>
+                <p class="card-sub" id="boundUserValue">-</p>
+              </header>
+              <div class="metrics">
+                <article class="metric">
+                  <span class="metric-label">设备用途</span>
+                  <strong class="metric-value" id="profileValue">-</strong>
+                </article>
+                <article class="metric">
+                  <span class="metric-label">有效权限</span>
+                  <strong class="metric-value" id="effectivePermissionsValue">-</strong>
+                </article>
+              </div>
+            </div>
+
             <div class="card">
               <header class="card-head">
                 <h2>设备绑定</h2>
-                <p class="card-sub">用主用户登录生成绑定码,或直接粘贴已有的码。</p>
+                <p class="card-sub">可以用自己的成员账号直接绑定，或预览并确认已有绑定码的目标成员。</p>
               </header>
 
               <form id="bindForm" class="form-grid">
@@ -105,8 +123,17 @@
                   <span class="field-label">设备名</span>
                   <input class="input" id="bindDeviceNameInput" name="deviceName" />
                 </label>
+                <label class="field">
+                  <span class="field-label">设备用途</span>
+                  <select class="select" id="bindProfileInput">
+                    <option value="manual_only">只手动分享</option>
+                    <option value="upload_only">只上传截图</option>
+                    <option value="receive_own">只接收我的图片</option>
+                    <option value="sync_own" selected>我的设备双向同步</option>
+                  </select>
+                </label>
                 <div class="form-actions">
-                  <button type="submit" class="btn primary">绑定设备</button>
+                  <button type="submit" class="btn primary">预览并绑定</button>
                 </div>
               </form>
 
@@ -137,8 +164,17 @@
                     autocomplete="current-password"
                   />
                 </label>
+                <label class="field">
+                  <span class="field-label">设备用途</span>
+                  <select class="select" id="loginProfileInput">
+                    <option value="manual_only">只手动分享</option>
+                    <option value="upload_only">只上传截图</option>
+                    <option value="receive_own">只接收我的图片</option>
+                    <option value="sync_own" selected>我的设备双向同步</option>
+                  </select>
+                </label>
                 <div class="form-actions">
-                  <button type="submit" class="btn">生成绑定码</button>
+                  <button type="submit" class="btn">使用账号绑定本设备</button>
                 </div>
               </form>
             </div>
@@ -285,8 +321,11 @@
 
             <div class="card">
               <header class="card-head">
-                <h2>监听历史</h2>
-                <p class="card-sub">最近 30 条监听上传记录。</p>
+                <div>
+                  <h2>监听历史</h2>
+                  <p class="card-sub">最近 30 条监听上传记录。</p>
+                </div>
+                <button class="btn" id="clearWatchRecordsButton">清空记录</button>
               </header>
               <ul class="event-list" id="watchEventList"></ul>
             </div>
@@ -300,17 +339,30 @@
               </div>
               <div class="actions">
                 <button class="btn" id="fetchPendingButton">补收 pending</button>
+                <button class="btn" id="clearHistoryButton">清空记录</button>
               </div>
             </div>
 
             <ul class="record-list" id="historyList"></ul>
           </section>
 
+          <section class="view" id="view-library">
+            <div class="view-head">
+              <div>
+                <h1>图片库</h1>
+                <p class="view-sub">登录成员账号，或开启本设备的手动下载权限后，可下载权限范围内的图片。</p>
+              </div>
+              <button class="btn" id="refreshLibraryButton">刷新</button>
+            </div>
+            <div class="banner banner-error" id="libraryError" hidden></div>
+            <ul class="record-list" id="libraryList"></ul>
+          </section>
+
           <section class="view" id="view-admin">
             <div class="view-head">
               <div>
                 <h1>设备管理</h1>
-                <p class="view-sub">以主用户身份登录,可查看和修改本空间内所有设备。</p>
+                <p class="view-sub">owner 可管理空间全部设备，成员只能管理自己名下的设备。</p>
               </div>
               <div class="actions">
                 <button class="btn" id="refreshDevicesButton">刷新</button>
@@ -320,8 +372,8 @@
 
             <div class="card" id="adminLoginCard">
               <header class="card-head">
-                <h2>主用户登录</h2>
-                <p class="card-sub">登录后可以在此应用内管理设备。</p>
+                <h2>账号登录</h2>
+                <p class="card-sub">登录后按当前账号角色显示可执行的设备操作。</p>
               </header>
               <form id="adminLoginForm" class="form-grid">
                 <label class="field">
@@ -360,6 +412,18 @@
         </section>
       </div>
     </main>
+
+    <div class="prompt-overlay" id="pendingPrompt" hidden>
+      <section class="prompt-card" role="dialog" aria-modal="true" aria-labelledby="pendingPromptTitle">
+        <h2 id="pendingPromptTitle">发现离线图片</h2>
+        <p id="pendingPromptText"></p>
+        <p class="view-sub">在线期间的新图片仍会自动接收。此选择只处理设备离线时累积的图片。</p>
+        <div class="actions prompt-actions">
+          <button class="btn danger" id="skipPendingButton">忽略这些图片</button>
+          <button class="btn primary" id="acceptPendingButton">全部接收</button>
+        </div>
+      </section>
+    </div>
 
     <script src="./renderer.js"></script>
   </body>

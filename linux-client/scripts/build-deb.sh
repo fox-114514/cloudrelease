@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG_NAME="studyshot-relay-linux"
-VERSION="0.4.0"
+VERSION="0.5.0"
 ARCH="amd64"
 BUILD_DIR="${ROOT_DIR}/release/deb-build"
 DEB_FILE="${ROOT_DIR}/release/${PKG_NAME}_${VERSION}_${ARCH}.deb"
@@ -55,6 +55,7 @@ Section: utils
 Priority: optional
 Architecture: ${ARCH}
 Depends: nodejs (>= 18)
+Recommends: wl-clipboard, xclip
 Maintainer: StudyShot <relay@studyshot.local>
 Description: StudyShot Relay Linux Client
  Web-based Linux client for StudyShot Relay, supporting

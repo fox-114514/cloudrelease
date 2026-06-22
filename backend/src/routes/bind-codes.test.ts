@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { randomUUID } from "crypto";
 import { buildApp } from "../app.js";
 import { createOwner, createChildUser, login, createBindCode, registerDevice, updateDevicePermissions } from "../test/helpers.js";
+import { prisma } from "../lib/prisma.js";
 
 describe("POST /api/v1/bind-codes", () => {
   it("allows owner user token to create a bind code", async () => {
@@ -42,6 +43,11 @@ describe("POST /api/v1/bind-codes", () => {
     expect(res.statusCode).toBe(201);
     const body = JSON.parse(res.payload);
     expect(body.success).toBe(true);
+    const audit = await prisma.auditLog.findFirst({
+      where: { action: "bind_code.created", actorDeviceId: deviceId },
+      orderBy: { createdAt: "desc" },
+    });
+    expect(audit?.actorDeviceId).toBe(deviceId);
   });
 
   it("forbids a device with only canCreateInvite from creating bind codes for other users", async () => {
@@ -69,7 +75,7 @@ describe("POST /api/v1/bind-codes", () => {
     expect(body.error.code).toBe("FORBIDDEN");
   });
 
-  it("forbids unauthenticated requests", async () => {
+  it("returns 401 for unauthenticated requests", async () => {
     const app = await buildApp();
     const res = await app.inject({
       method: "POST",
@@ -77,6 +83,6 @@ describe("POST /api/v1/bind-codes", () => {
       payload: { purpose: "bind_device" },
     });
 
-    expect(res.statusCode).toBe(403);
+    expect(res.statusCode).toBe(401);
   });
 });

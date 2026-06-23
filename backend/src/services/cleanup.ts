@@ -48,7 +48,7 @@ export async function cleanupOnce(now = new Date()): Promise<void> {
   logger.info("Cleanup task completed", { ...stats });
 }
 
-export function startCleanupTask(): void {
+export function startCleanupTask(): () => void {
   const run = async (): Promise<void> => {
     try {
       await cleanupOnce();
@@ -57,7 +57,13 @@ export function startCleanupTask(): void {
     }
   };
 
-  // Run once at startup, then periodically.
+  // Run once at startup, then periodically. unref() so the timer doesn't
+  // keep the Node process alive on its own; useful for tests and for clean
+  // SIGTERM exit when the HTTP server has already stopped accepting requests.
   run().catch(() => undefined);
-  setInterval(run, CLEANUP_INTERVAL_MS);
+  const timer = setInterval(run, CLEANUP_INTERVAL_MS);
+  timer.unref();
+  return () => {
+    clearInterval(timer);
+  };
 }

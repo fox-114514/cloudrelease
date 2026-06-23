@@ -132,6 +132,10 @@
                     <option value="sync_own" selected>我的设备双向同步</option>
                   </select>
                 </label>
+                <label class="toggle toggle-inline" for="bindAllowInsecureHttpInput">
+                  <input type="checkbox" id="bindAllowInsecureHttpInput">
+                  <span>允许明文 HTTP（仅限受信 VPN/局域网）</span>
+                </label>
                 <div class="form-actions">
                   <button type="submit" class="btn primary">预览并绑定</button>
                 </div>
@@ -172,6 +176,10 @@
                     <option value="receive_own">只接收我的图片</option>
                     <option value="sync_own" selected>我的设备双向同步</option>
                   </select>
+                </label>
+                <label class="toggle toggle-inline" for="ownerAllowInsecureHttpInput">
+                  <input type="checkbox" id="ownerAllowInsecureHttpInput">
+                  <span>允许明文 HTTP（仅限受信 VPN/局域网）</span>
                 </label>
                 <div class="form-actions">
                   <button type="submit" class="btn">使用账号绑定本设备</button>
@@ -245,6 +253,15 @@
               </div>
 
               <div class="banner banner-warn" id="tokenWarning" hidden></div>
+
+              <label class="toggle" for="allowInsecureHttpInput">
+                <input type="checkbox" id="allowInsecureHttpInput">
+                <div class="toggle-body">
+                  <strong>允许明文 HTTP（不安全）</strong>
+                  <span>仅在受信 VPN/局域网内部自部署场景下勾选；勾选后 token、密码、图片均以明文传输。</span>
+                </div>
+              </label>
+              <div class="banner banner-warn" id="insecureHttpBanner" hidden></div>
             </form>
           </section>
 
@@ -399,6 +416,10 @@
                     type="password"
                     autocomplete="current-password"
                   />
+                </label>
+                <label class="toggle toggle-inline" for="adminAllowInsecureHttpInput">
+                  <input type="checkbox" id="adminAllowInsecureHttpInput">
+                  <span>允许明文 HTTP（仅限受信 VPN/局域网）</span>
                 </label>
                 <div class="form-actions">
                   <button type="submit" class="btn primary">登录管理</button>

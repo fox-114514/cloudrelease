@@ -30,6 +30,11 @@ const els = {
   notificationInput: document.getElementById("notificationInput"),
   startAtLoginInput: document.getElementById("startAtLoginInput"),
   tokenWarning: document.getElementById("tokenWarning"),
+  allowInsecureHttpInput: document.getElementById("allowInsecureHttpInput"),
+  insecureHttpBanner: document.getElementById("insecureHttpBanner"),
+  bindAllowInsecureHttpInput: document.getElementById("bindAllowInsecureHttpInput"),
+  ownerAllowInsecureHttpInput: document.getElementById("ownerAllowInsecureHttpInput"),
+  adminAllowInsecureHttpInput: document.getElementById("adminAllowInsecureHttpInput"),
   watchForm: document.getElementById("watchForm"),
   watchDirInput: document.getElementById("watchDirInput"),
   chooseWatchDirButton: document.getElementById("chooseWatchDirButton"),
@@ -747,6 +752,28 @@ function renderState(state) {
   els.tokenWarning.textContent = settings.tokenStorageWarning || "";
   els.tokenWarning.hidden = !settings.tokenStorageWarning;
 
+  // Reflect the stored allowInsecureHttp flag and surface a persistent banner
+  // whenever the stored URL is a non-loopback http:// address. Bind/admin
+  // forms default their per-form checkbox to this saved value so a user
+  // rebinding to the same server doesn't have to re-check the box each time.
+  const allowInsecureHttp = settings.allowInsecureHttp === true;
+  if (els.allowInsecureHttpInput) {
+    els.allowInsecureHttpInput.checked = allowInsecureHttp;
+  }
+  if (els.bindAllowInsecureHttpInput) {
+    els.bindAllowInsecureHttpInput.checked = allowInsecureHttp;
+  }
+  if (els.ownerAllowInsecureHttpInput) {
+    els.ownerAllowInsecureHttpInput.checked = allowInsecureHttp;
+  }
+  if (els.adminAllowInsecureHttpInput) {
+    els.adminAllowInsecureHttpInput.checked = allowInsecureHttp;
+  }
+  if (els.insecureHttpBanner) {
+    els.insecureHttpBanner.textContent = settings.insecureHttpWarning || "";
+    els.insecureHttpBanner.hidden = !settings.insecureHttpWarning;
+  }
+
   els.watchDirInput.value = settings.watchDir || "";
   renderWatchExcludedDirs(settings.watchExcludedDirs || []);
   els.autoUploadInput.checked = Boolean(settings.autoUpload);
@@ -814,6 +841,7 @@ els.ownerLoginForm.addEventListener("submit", async (event) => {
       password: els.ownerPasswordInput.value,
       deviceNameHint: els.bindDeviceNameInput.value,
       profile: els.loginProfileInput.value,
+      allowInsecureHttp: els.ownerAllowInsecureHttpInput.checked,
     });
     els.ownerPasswordInput.value = "";
     await loadState();
@@ -833,6 +861,7 @@ els.bindForm.addEventListener("submit", async (event) => {
     const preview = await window.studyshot.previewBindCode(
       els.bindServerInput.value,
       els.bindCodeInput.value,
+      els.bindAllowInsecureHttpInput.checked,
     );
     const target = preview.targetUser.displayName || preview.targetUser.id;
     const role = preview.targetUser.role === "owner" ? "空间管理员" : "成员";
@@ -844,6 +873,7 @@ els.bindForm.addEventListener("submit", async (event) => {
       bindCode: els.bindCodeInput.value,
       deviceName: els.bindDeviceNameInput.value,
       profile: els.bindProfileInput.value,
+      allowInsecureHttp: els.bindAllowInsecureHttpInput.checked,
     });
     els.bindCodeInput.value = "";
     renderState(state);
@@ -866,6 +896,7 @@ els.saveSettingsButton.addEventListener("click", async () => {
       copyToClipboard: els.copyInput.checked,
       showNotification: els.notificationInput.checked,
       startAtLogin: els.startAtLoginInput.checked,
+      allowInsecureHttp: els.allowInsecureHttpInput.checked,
     });
     renderState(state);
   } catch (err) {
@@ -911,8 +942,17 @@ els.watchForm.addEventListener("submit", async (event) => {
 
 els.chooseWatchDirButton.addEventListener("click", async () => {
   const selected = await window.studyshot.chooseWatchDir();
-  if (selected) {
+  if (!selected) return;
+  try {
+    // Persist immediately so an asynchronous state refresh cannot restore the
+    // old watchDir input value before the user clicks "保存" on the form.
+    // This mirrors how the download-dir chooser behaves and stops the
+    // "watchDir reverted after selection" symptom from iteration 0.5.1.
     els.watchDirInput.value = selected;
+    const state = await window.studyshot.saveSettings({ watchDir: selected });
+    renderState(state);
+  } catch (err) {
+    showWatchError(err.message || String(err));
   }
 });
 
@@ -1048,6 +1088,7 @@ els.adminLoginForm.addEventListener("submit", async (event) => {
       serverBaseUrl: els.adminServerInput.value,
       login: els.adminLoginInput.value,
       password: els.adminPasswordInput.value,
+      allowInsecureHttp: els.adminAllowInsecureHttpInput.checked,
     });
     els.adminPasswordInput.value = "";
     renderState(state);

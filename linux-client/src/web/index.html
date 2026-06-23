@@ -360,6 +360,13 @@
             <label class="checkbox">
               <input type="checkbox" id="cfgCopyToClipboard"> 下载后自动复制到剪贴板
             </label>
+            <label class="checkbox">
+              <input type="checkbox" id="cfgAllowInsecureHttp">
+              允许明文 HTTP（仅限受信 VPN/局域网内自部署场景）
+            </label>
+            <div id="insecureHttpBanner" class="message show error" style="display:none;">
+              ⚠ 当前允许明文 HTTP 连接。token、密码与图片均可被同网段窃听。请仅在受信 VPN/局域网内部自部署场景下使用。
+            </div>
             <div class="actions">
               <button id="btnSaveConfig">保存配置</button>
             </div>
@@ -515,11 +522,30 @@
       $('cfgAutoUpload').checked = cfg.autoUpload;
       $('cfgAutoReceive').checked = cfg.autoReceive;
       $('cfgCopyToClipboard').checked = cfg.copyToClipboard !== false;
+      $('cfgAllowInsecureHttp').checked = cfg.allowInsecureHttp === true;
+      updateInsecureHttpBanner();
       $('cfgAutoUpload').disabled = Boolean(cfg.device && cfg.device.permissions && !cfg.device.permissions.canAutoUpload);
       $('cfgAutoReceive').disabled = Boolean(cfg.device && cfg.device.permissions && !cfg.device.permissions.canAutoReceive);
       $('btnStartWatch').disabled = $('cfgAutoUpload').disabled;
       $('btnStartReceive').disabled = $('cfgAutoReceive').disabled;
       renderDeviceInfo(cfg);
+    }
+
+    function updateInsecureHttpBanner() {
+      const baseUrl = (currentConfig && currentConfig.device && currentConfig.device.serverBaseUrl) || '';
+      const isHttp = /^http:\/\//i.test(baseUrl);
+      const loopback = /^http:\/\/(localhost|127\.0\.0\.1|::1)([:\/]|$)/i.test(baseUrl);
+      const httpUnsafe = isHttp && !loopback;
+      const banner = $('insecureHttpBanner');
+      const showBanner = httpUnsafe || $('cfgAllowInsecureHttp').checked;
+      banner.style.display = showBanner ? 'block' : 'none';
+      if (showBanner && !httpUnsafe) {
+        banner.textContent = '提示：已开启“允许明文 HTTP”。此项仅用于受信 VPN/局域网内自部署场景。';
+        banner.className = 'message show error';
+      } else if (httpUnsafe) {
+        banner.textContent = '⚠ 当前设备连接使用明文 HTTP。token、密码、图片可被同网段窃听，请尽快切换到 HTTPS 或仅在受信 VPN/局域网内继续使用。';
+        banner.className = 'message show error';
+      }
     }
 
     function fmtSize(n) {
@@ -598,9 +624,11 @@
 
     async function bindDevice() {
       try {
+        const allowInsecureHttp = $('cfgAllowInsecureHttp').checked;
         const previewResponse = await api('POST', '/api/bind/preview', {
           serverBaseUrl: $('cfgServer').value,
-          bindCode: $('cfgCode').value
+          bindCode: $('cfgCode').value,
+          allowInsecureHttp,
         });
         const preview = previewResponse.data;
         const target = preview.targetUser.displayName || preview.targetUser.id;
@@ -610,7 +638,8 @@
           bindCode: $('cfgCode').value,
           deviceName: $('cfgName').value,
           profile: $('cfgProfile').value,
-          confirmedTargetUserId: preview.targetUser.id
+          confirmedTargetUserId: preview.targetUser.id,
+          allowInsecureHttp,
         };
         await api('POST', '/api/bind', body);
         showMessage('绑定成功', 'success');
@@ -622,12 +651,14 @@
 
     async function bindWithLogin() {
       try {
+        const allowInsecureHttp = $('cfgAllowInsecureHttp').checked;
         await api('POST', '/api/bind-login', {
           serverBaseUrl: $('cfgServer').value,
           login: $('cfgLogin').value,
           password: $('cfgPassword').value,
           deviceName: $('cfgName').value,
-          profile: $('cfgProfile').value
+          profile: $('cfgProfile').value,
+          allowInsecureHttp,
         });
         $('cfgPassword').value = '';
         showMessage('账号绑定成功', 'success');
@@ -667,7 +698,8 @@
           downloadDir: $('cfgDownloadDir').value,
           autoUpload: $('cfgAutoUpload').checked,
           autoReceive: $('cfgAutoReceive').checked,
-          copyToClipboard: $('cfgCopyToClipboard').checked
+          copyToClipboard: $('cfgCopyToClipboard').checked,
+          allowInsecureHttp: $('cfgAllowInsecureHttp').checked,
         };
         await api('POST', '/api/config', body);
         if (!silent) showMessage('配置已保存', 'success');
@@ -753,9 +785,10 @@
         el.addEventListener('change', scheduleAutoSave);
         el.addEventListener('blur', scheduleAutoSave);
       });
-      ['cfgAutoUpload', 'cfgAutoReceive', 'cfgCopyToClipboard'].forEach(id => {
+      ['cfgAutoUpload', 'cfgAutoReceive', 'cfgCopyToClipboard', 'cfgAllowInsecureHttp'].forEach(id => {
         $(id).addEventListener('change', scheduleAutoSave);
       });
+      $('cfgAllowInsecureHttp').addEventListener('change', updateInsecureHttpBanner);
     }
 
     // -------- Image library (admin) --------

@@ -19,8 +19,8 @@ const api = {
   getState: (): Promise<RendererState> => ipcRenderer.invoke("state:get"),
   registerDevice: (input: RegisterDeviceInput): Promise<RendererState> =>
     ipcRenderer.invoke("device:register", input),
-  previewBindCode: (serverBaseUrl: string, bindCode: string): Promise<BindCodePreview> =>
-    ipcRenderer.invoke("bindCode:preview", serverBaseUrl, bindCode),
+  previewBindCode: (serverBaseUrl: string, bindCode: string, allowInsecureHttp?: boolean): Promise<BindCodePreview> =>
+    ipcRenderer.invoke("bindCode:preview", serverBaseUrl, bindCode, allowInsecureHttp),
   getDeviceMe: (): Promise<DeviceSelfInfo> => ipcRenderer.invoke("device:me"),
   refreshEffectivePermissions: (): Promise<DeviceSelfInfo | undefined> =>
     ipcRenderer.invoke("device:refreshPermissions"),

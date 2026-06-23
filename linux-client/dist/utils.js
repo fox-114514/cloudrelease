@@ -6,10 +6,55 @@ export function normalizeBaseUrl(raw) {
     let url = raw.trim();
     if (!url)
         return "";
+    // 0.5.1: default to https:// when no scheme is given. Spelling-only
+    // mistakes no longer silently downgrade to plaintext; explicit consent via
+    // the allowInsecureHttp flag is required for non-loopback http:// URLs.
     if (!/^https?:\/\//i.test(url)) {
-        url = `http://${url}`;
+        url = `https://${url}`;
     }
     return url.replace(/\/$/, "");
+}
+/**
+ * Returns true when host is loopback — http:// is fine for these because
+ * traffic never leaves the machine. Used to relax the explicit-consent rule.
+ */
+export function isLoopbackHost(baseUrl) {
+    try {
+        const u = new URL(normalizeBaseUrl(baseUrl));
+        const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+        if (host === "localhost" || host === "127.0.0.1" || host === "::1")
+            return true;
+        // IPv4 loopback 127.0.0.0/8
+        if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host))
+            return true;
+        return false;
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * Enforce the explicit-consent rule for plaintext HTTP. Throws when the URL is
+ * a non-loopback http:// address and the caller did not opt in. Loopback is
+ * always allowed because the request never traverses the network.
+ */
+export function assertExplicitInsecureHttp(baseUrl, opts) {
+    let u;
+    try {
+        u = new URL(normalizeBaseUrl(baseUrl));
+    }
+    catch {
+        throw new Error("服务器地址无效");
+    }
+    if (u.protocol !== "http:")
+        return;
+    if (isLoopbackHost(baseUrl))
+        return;
+    if (!opts.allowInsecureHttp) {
+        throw new Error("服务器地址使用了明文 http://，但未显式启用不安全 HTTP。" +
+            "明文连接下 token、密码和图片均可能被窃听。" +
+            "请改用 https://，或在受信 VPN/局域网场景下显式启用 --allow-insecure-http。");
+    }
 }
 export function wsUrl(baseUrl) {
     const url = new URL(normalizeBaseUrl(baseUrl));

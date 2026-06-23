@@ -20,6 +20,7 @@ import { startWatcher } from "./watcher.js";
 import { uploadSingle } from "./uploader.js";
 import { WsReceiveClient } from "./ws-client.js";
 import { defaultDownloadDir, ensureAllowedDir, ensureDir, isAllowedDir, normalizeBaseUrl } from "./utils.js";
+import { assertExplicitInsecureHttp } from "./utils.js";
 
 /** Run `cleanup` on SIGINT/SIGTERM and exit with code 0. */
 function installShutdown(cleanup: () => Promise<void> | void): void {
@@ -107,14 +108,18 @@ program.name("studyshot-relay").description("StudyShot Relay Linux CLI").version
 program
   .command("bind")
   .description("Bind this Linux client to a StudyShot Relay server")
-  .requiredOption("-s, --server <url>", "Server base URL, e.g. http://64.90.30.102:3000")
+  .requiredOption("-s, --server <url>", "Server base URL, e.g. https://relay.example.com")
   .requiredOption("-c, --code <code>", "Bind code from server")
   .option("-n, --name <name>", "Device name", os.hostname())
   .option("--profile <profile>", "manual_only|upload_only|receive_own|sync_own", "receive_own")
   .option("--yes", "Confirm the preview without prompting", false)
+  .option("--allow-insecure-http", "Allow plaintext http:// for non-loopback hosts (VPN/LAN only, logs a warning)", false)
   .action(async (options) => {
     try {
-      const preview = await previewBindCode(options.server, options.code);
+      assertExplicitInsecureHttp(options.server, { allowInsecureHttp: options.allowInsecureHttp === true });
+      const preview = await previewBindCode(options.server, options.code, {
+        allowInsecureHttp: options.allowInsecureHttp === true,
+      });
       const target = preview.targetUser.displayName || preview.targetUser.id;
       console.log(`Target user: ${target} [${preview.targetUser.role}]`);
       console.log(`Space: ${preview.space.displayName}`);
@@ -122,11 +127,17 @@ program
         console.log("Binding cancelled.");
         return;
       }
-      const device = await bindDevice(options.server, options.code, options.name, options.profile);
+      const device = await bindDevice(options.server, options.code, options.name, options.profile, {
+        allowInsecureHttp: options.allowInsecureHttp === true,
+      });
       const config = await loadConfig();
       config.device = device;
       config.downloadDir = config.downloadDir || defaultDownloadDir();
+      config.allowInsecureHttp = config.allowInsecureHttp || options.allowInsecureHttp === true;
       await saveConfig(config);
+      if (options.allowInsecureHttp) {
+        console.warn("[bind] 警告：明文 HTTP 已启用，token/密码/图片可被窃听，仅限受信 VPN/局域网场景。");
+      }
       console.log(`Bound as device ${device.deviceId}`);
       console.log(`Config saved to ${path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "studyshot-relay", "config.json")}`);
     } catch (err) {
@@ -142,8 +153,10 @@ program
   .requiredOption("-u, --user <login>", "Member login")
   .option("-n, --name <name>", "Device name", os.hostname())
   .option("--profile <profile>", "manual_only|upload_only|receive_own|sync_own", "receive_own")
+  .option("--allow-insecure-http", "Allow plaintext http:// for non-loopback hosts (VPN/LAN only, logs a warning)", false)
   .action(async (options) => {
     try {
+      assertExplicitInsecureHttp(options.server, { allowInsecureHttp: options.allowInsecureHttp === true });
       const password = await readHiddenPassword();
       const device = await bindWithLogin(
         options.server,
@@ -151,11 +164,16 @@ program
         password,
         options.name,
         options.profile,
+        { allowInsecureHttp: options.allowInsecureHttp === true },
       );
       const config = await loadConfig();
       config.device = device;
       config.downloadDir = config.downloadDir || defaultDownloadDir();
+      config.allowInsecureHttp = config.allowInsecureHttp || options.allowInsecureHttp === true;
       await saveConfig(config);
+      if (options.allowInsecureHttp) {
+        console.warn("[bind-login] 警告：明文 HTTP 已启用；token/密码/图片可被窃听。");
+      }
       printIdentity(device);
     } catch (err) {
       console.error(`Bind failed: ${(err as Error).message}`);
@@ -403,7 +421,9 @@ program
       const port = parseInt(options.port, 10) || 0;
       const server = await startWebServer(port);
       console.log(`Web UI: ${server.url}`);
-      openBrowser(server.url);
+      // Open via the one-time boot URL so the browser can mint a session
+      // cookie without exposing the device token to anyone scanning ports.
+      openBrowser(server.bootUrl);
 
       installShutdown(async () => {
         await server.close();

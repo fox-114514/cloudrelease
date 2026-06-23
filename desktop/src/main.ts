@@ -125,9 +125,20 @@ function buildWatcher(dir: string): DirectoryWatcher {
     watchDir: dir,
     excludedDirs,
     onLog: (message) => logInfo(`[watch] ${message}`),
-    onError: (message) => {
+    // Single-file upload failures record themselves via appendWatchUpload
+    // inside onFile below; they MUST NOT flip watch.active=false, otherwise
+    // the UI would tell the user the watcher died when only one image
+    // failed. Plan 0.5.1 §2.4.2.
+    onUploadError: (message) => {
       logError(`[watch] ${message}`);
-      relayClient?.updateWatchState({ lastError: message, active: false });
+    },
+    // Fatal watcher errors (chokidar 'error' event) tear down the watcher
+    // inside DirectoryWatcher. We additionally clear our module-level
+    // handle and update UI state so the user can click "start" again.
+    onFatal: (message) => {
+      logError(`[watch] ${message}`);
+      directoryWatcher = null;
+      relayClient?.updateWatchState({ active: false, lastError: message });
     },
     onFile: async (filePath) => {
       if (!relayClient) return;
@@ -301,8 +312,8 @@ function registerIpcHandlers(): void {
     return relayClient.getState();
   });
 
-  ipcMain.handle("bindCode:preview", async (_event, serverBaseUrl: string, bindCode: string) => {
-    return relayClient.previewBindCode(serverBaseUrl, bindCode);
+  ipcMain.handle("bindCode:preview", async (_event, serverBaseUrl: string, bindCode: string, allowInsecureHttp?: boolean) => {
+    return relayClient.previewBindCode(serverBaseUrl, bindCode, { allowInsecureHttp: allowInsecureHttp === true });
   });
 
   ipcMain.handle("device:me", async () => {

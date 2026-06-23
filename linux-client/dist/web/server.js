@@ -1,6 +1,7 @@
 import fastify from "fastify";
 import fastifyStatic from "@fastify/static";
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -10,6 +11,72 @@ import { startWatcher } from "../watcher.js";
 import { WsReceiveClient } from "../ws-client.js";
 import { defaultDownloadDir, ensureAllowedDir, isAllowedDir, normalizeBaseUrl } from "../utils.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// ---- Local Web UI session auth ----
+// The Web UI listens on 127.0.0.1 but the same machine can host other users
+// or processes that would otherwise be able to scan ports and read device
+// tokens. We authenticate every /api/* request with an HttpOnly, SameSite=Strict
+// session cookie. The cookie is minted by exchanging a one-time boot token
+// that `launch` puts in the initial URL.
+//
+//   http://127.0.0.1:<port>/?boot=<base64url token>
+//         |
+//         v  server validates token, clears it, sets cookie, 302 -> /
+//
+// After that, all API access relies solely on the cookie. State-changing
+// requests additionally require Origin == http://127.0.0.1:<port> to block
+// CSRF via cross-origin form submissions.
+const SESSION_COOKIE_NAME = "ssr_session";
+const SESSION_MAX_AGE_SECONDS = 60 * 60 * 12; // 12h
+function randomToken(bytes) {
+    return crypto.randomBytes(bytes).toString("base64url");
+}
+function safeEqual(a, b) {
+    const ab = Buffer.from(a);
+    const bb = Buffer.from(b);
+    if (ab.length !== bb.length)
+        return false;
+    return crypto.timingSafeEqual(ab, bb);
+}
+function parseCookies(header) {
+    const out = {};
+    if (!header)
+        return out;
+    for (const part of header.split(";")) {
+        const idx = part.indexOf("=");
+        if (idx <= 0)
+            continue;
+        const key = part.slice(0, idx).trim();
+        const val = part.slice(idx + 1).trim();
+        if (key)
+            out[key] = decodeURIComponent(val);
+    }
+    return out;
+}
+const CSP_HEADER = "default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; " +
+    "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; " +
+    "object-src 'none'; base-uri 'self'; frame-ancestors 'none';";
+function buildSanitizedDevice(device) {
+    return {
+        serverBaseUrl: device.serverBaseUrl,
+        deviceId: device.deviceId,
+        deviceName: device.deviceName,
+        user: device.user,
+        profile: device.profile,
+        permissions: device.permissions,
+        permissionsFetchedAt: device.permissionsFetchedAt,
+    };
+}
+function buildConfigDto(config) {
+    return {
+        device: config.device ? buildSanitizedDevice(config.device) : undefined,
+        autoUpload: config.autoUpload,
+        autoReceive: config.autoReceive,
+        copyToClipboard: config.copyToClipboard,
+        watchDir: config.watchDir,
+        downloadDir: config.downloadDir,
+        allowInsecureHttp: config.allowInsecureHttp === true,
+    };
+}
 const logEmitter = new EventEmitter();
 logEmitter.setMaxListeners(100);
 function broadcastLog(text, type = "info") {
@@ -103,6 +170,14 @@ export function recordRecentDelivery(entry) {
 }
 export async function startWebServer(port = 0) {
     const app = fastify({ logger: false });
+    // Per-startup session state. Closed over by the onRequest hook so each
+    // invocation (including tests) gets fresh credentials and the boot token
+    // can never leak to another instance.
+    const sessionState = {
+        sessionToken: randomToken(32),
+        bootToken: randomToken(32),
+        expectedOrigin: "",
+    };
     const permissionTimer = setInterval(() => {
         void (async () => {
             const config = await loadConfig();
@@ -116,9 +191,57 @@ export async function startWebServer(port = 0) {
                 await stopReceive();
         })().catch((err) => broadcastLog(`定时刷新服务端权限失败：${err.message}`, "warn"));
     }, 5 * 60 * 1000);
+    // Authentication gate. Every /api/* request must carry a valid session
+    // cookie. State-changing requests additionally require Origin ==
+    // http://127.0.0.1:<port> to block CSRF via cross-origin form posts.
+    // /api/auth/boot is the only public endpoint — it trades a one-time boot
+    // token for the cookie that unlocks the rest of the API.
+    app.addHook("onRequest", async (req, reply) => {
+        reply.header("X-Content-Type-Options", "nosniff");
+        reply.header("Referrer-Policy", "no-referrer");
+        reply.header("X-Frame-Options", "DENY");
+        reply.header("Content-Security-Policy", CSP_HEADER);
+        const urlPath = req.url.split("?", 1)[0];
+        if (!urlPath.startsWith("/api/"))
+            return;
+        if (urlPath === "/api/auth/boot")
+            return;
+        const cookies = parseCookies(req.headers.cookie);
+        const token = cookies[SESSION_COOKIE_NAME];
+        if (!token || !safeEqual(token, sessionState.sessionToken)) {
+            return reply.code(401).send({
+                success: false,
+                error: { message: "未鉴权或会话已过期，请通过 studyshot-relay launch 打开的 URL 进入" },
+            });
+        }
+        const method = req.method.toUpperCase();
+        if (method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE") {
+            const origin = req.headers.origin;
+            if (typeof origin !== "string" || !safeEqual(origin, sessionState.expectedOrigin)) {
+                return reply.code(403).send({
+                    success: false,
+                    error: { message: "Origin 不被允许" },
+                });
+            }
+        }
+    });
     await app.register(fastifyStatic, {
         root: __dirname,
         prefix: "/",
+    });
+    app.get("/api/auth/boot", async (req, reply) => {
+        const token = req.query.token;
+        if (typeof token !== "string" || !token || !sessionState.bootToken || !safeEqual(token, sessionState.bootToken)) {
+            return reply.code(403).send({
+                success: false,
+                error: { message: "引导令牌无效或已过期" },
+            });
+        }
+        // One-time use: invalidate the boot token before minting the cookie so a
+        // replay (e.g. via browser history) cannot mint a second session.
+        sessionState.bootToken = null;
+        reply.header("Set-Cookie", `${SESSION_COOKIE_NAME}=${encodeURIComponent(sessionState.sessionToken)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MAX_AGE_SECONDS}`);
+        return reply.redirect("/", 303);
     });
     app.get("/api/config", async (_req, reply) => {
         const config = await loadConfig();
@@ -131,7 +254,7 @@ export async function startWebServer(port = 0) {
                 broadcastLog(`刷新服务端权限失败：${err.message}`, "warn");
             }
         }
-        return reply.send(config);
+        return reply.send(buildConfigDto(config));
     });
     app.post("/api/config", async (req, reply) => {
         const oldConfig = await loadConfig();
@@ -177,6 +300,11 @@ export async function startWebServer(port = 0) {
         if (body.copyToClipboard !== undefined) {
             config.copyToClipboard = body.copyToClipboard;
         }
+        // Persists the user's explicit choice to allow plaintext HTTP for non-
+        // loopback hosts. UI displays a persistent warning when this is on.
+        if (body.allowInsecureHttp !== undefined) {
+            config.allowInsecureHttp = body.allowInsecureHttp === true;
+        }
         const watchDirChanged = body.watchDir !== undefined && config.watchDir !== oldConfig.watchDir;
         const receiveConfigChanged = (body.downloadDir !== undefined && config.downloadDir !== oldConfig.downloadDir) ||
             (body.copyToClipboard !== undefined &&
@@ -216,37 +344,64 @@ export async function startWebServer(port = 0) {
         return reply.send({ success: true });
     });
     app.post("/api/bind/preview", async (req, reply) => {
-        const preview = await previewBindCode(req.body.serverBaseUrl, req.body.bindCode);
-        return reply.send({ success: true, data: preview });
+        try {
+            const preview = await previewBindCode(req.body.serverBaseUrl, req.body.bindCode, {
+                allowInsecureHttp: req.body.allowInsecureHttp === true,
+            });
+            return reply.send({ success: true, data: preview });
+        }
+        catch (err) {
+            return reply.status(400).send({ success: false, error: { message: err.message } });
+        }
     });
     app.post("/api/bind", async (req, reply) => {
-        const { serverBaseUrl, bindCode, deviceName, profile, confirmedTargetUserId } = req.body;
-        const preview = await previewBindCode(serverBaseUrl, bindCode);
-        if (!confirmedTargetUserId || confirmedTargetUserId !== preview.targetUser.id) {
-            return reply.status(409).send({
-                success: false,
-                error: { message: "请先预览并确认绑定目标" },
+        const { serverBaseUrl, bindCode, deviceName, profile, confirmedTargetUserId, allowInsecureHttp } = req.body;
+        const userOptedIn = allowInsecureHttp === true;
+        try {
+            const preview = await previewBindCode(serverBaseUrl, bindCode, { allowInsecureHttp: userOptedIn });
+            if (!confirmedTargetUserId || confirmedTargetUserId !== preview.targetUser.id) {
+                return reply.status(409).send({
+                    success: false,
+                    error: { message: "请先预览并确认绑定目标" },
+                });
+            }
+            const device = await bindDevice(serverBaseUrl, bindCode, deviceName || "Linux", profile, {
+                allowInsecureHttp: userOptedIn,
             });
+            const config = await loadConfig();
+            config.device = device;
+            // Persist the user's choice so subsequent refreshes against a stored
+            // http:// URL keep working without re-prompting.
+            config.allowInsecureHttp = config.allowInsecureHttp || userOptedIn;
+            await saveConfig(config);
+            if (config.autoReceive) {
+                await startReceive().catch((err) => broadcastLog(`绑定成功，但启动接收失败：${err.message}`, "warn"));
+            }
+            return reply.send({ success: true, data: buildSanitizedDevice(device) });
         }
-        const device = await bindDevice(serverBaseUrl, bindCode, deviceName || "Linux", profile);
-        const config = await loadConfig();
-        config.device = device;
-        await saveConfig(config);
-        if (config.autoReceive) {
-            await startReceive().catch((err) => broadcastLog(`绑定成功，但启动接收失败：${err.message}`, "warn"));
+        catch (err) {
+            return reply.status(400).send({ success: false, error: { message: err.message } });
         }
-        return reply.send({ success: true, data: device });
     });
     app.post("/api/bind-login", async (req, reply) => {
-        const { serverBaseUrl, login, password, deviceName, profile } = req.body;
-        const device = await bindWithLogin(serverBaseUrl, login, password, deviceName || "Linux", profile);
-        const config = await loadConfig();
-        config.device = device;
-        await saveConfig(config);
-        if (config.autoReceive) {
-            await startReceive().catch((err) => broadcastLog(`绑定成功，但启动接收失败：${err.message}`, "warn"));
+        const { serverBaseUrl, login, password, deviceName, profile, allowInsecureHttp } = req.body;
+        const userOptedIn = allowInsecureHttp === true;
+        try {
+            const device = await bindWithLogin(serverBaseUrl, login, password, deviceName || "Linux", profile, {
+                allowInsecureHttp: userOptedIn,
+            });
+            const config = await loadConfig();
+            config.device = device;
+            config.allowInsecureHttp = config.allowInsecureHttp || userOptedIn;
+            await saveConfig(config);
+            if (config.autoReceive) {
+                await startReceive().catch((err) => broadcastLog(`绑定成功，但启动接收失败：${err.message}`, "warn"));
+            }
+            return reply.send({ success: true, data: buildSanitizedDevice(device) });
         }
-        return reply.send({ success: true, data: device });
+        catch (err) {
+            return reply.status(400).send({ success: false, error: { message: err.message } });
+        }
     });
     app.post("/api/permissions/refresh", async (_req, reply) => {
         const config = await loadConfig();
@@ -258,7 +413,7 @@ export async function startWebServer(port = 0) {
             await stopWatch();
         if (!serverAllows(config.device, "canAutoReceive"))
             await stopReceive();
-        return reply.send({ success: true, data: config.device });
+        return reply.send({ success: true, data: buildSanitizedDevice(config.device) });
     });
     app.post("/api/unbind", async (_req, reply) => {
         await stopReceive();
@@ -426,12 +581,8 @@ export async function startWebServer(port = 0) {
         if (req.method === "GET" && !req.url.startsWith("/api/")) {
             const indexPath = path.join(__dirname, "index.html");
             const html = await fs.readFile(indexPath, "utf-8");
-            // Inline <style>/<script> need 'unsafe-inline'. We cannot tighten
-            // connect-src further because serverBaseUrl is user-configured; the
-            // other directives still close off plugin/object/base-tag attacks.
-            reply.header("Content-Security-Policy", "default-src 'self'; connect-src *; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; frame-ancestors 'none';");
-            reply.header("X-Content-Type-Options", "nosniff");
-            reply.header("Referrer-Policy", "no-referrer");
+            // Security headers (CSP / nosniff / referrer-policy / X-Frame-Options)
+            // are attached globally in the onRequest hook above; just send the HTML.
             return reply.type("text/html").send(html);
         }
         return reply.status(404).send({ error: { message: "Not found" } });
@@ -439,6 +590,14 @@ export async function startWebServer(port = 0) {
     const address = await app.listen({ port, host: "127.0.0.1" });
     const actualPort = app.server.address().port;
     const url = `http://127.0.0.1:${actualPort}`;
+    // Pin the expected Origin now that the listening port is known. State-
+    // changing API requests must come from this exact origin so a malicious
+    // page served from another origin cannot drive the local management API.
+    sessionState.expectedOrigin = url;
+    // The first browser window is opened through /api/auth/boot so it can
+    // exchange the one-time boot token for a session cookie. The printed `url`
+    // (without token) is what we surface to the user in the terminal.
+    const bootUrl = `${url}/api/auth/boot?token=${encodeURIComponent(sessionState.bootToken ?? "")}`;
     const startupConfig = await loadConfig();
     if (startupConfig.device && startupConfig.autoReceive) {
         await startReceive().catch((err) => broadcastLog(`自动启动接收失败：${err.message}`, "error"));
@@ -448,6 +607,7 @@ export async function startWebServer(port = 0) {
     }
     return {
         url,
+        bootUrl,
         close: async () => {
             clearInterval(permissionTimer);
             await stopReceive();

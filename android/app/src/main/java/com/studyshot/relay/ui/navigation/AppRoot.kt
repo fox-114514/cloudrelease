@@ -52,6 +52,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.studyshot.relay.upload.MediaStoreScanner
+import com.studyshot.relay.data.StorageStatus
 import com.studyshot.relay.ui.bind.BindScreen
 import com.studyshot.relay.ui.help.HelpAboutScreen
 import com.studyshot.relay.ui.help.HelpBackgroundScreen
@@ -92,6 +93,31 @@ fun AppRoot(
 
     val settings by state.app.secureSettings.settings.collectAsState()
     val transient by state.transient.collectAsState()
+    val storageUnavailable = remember(settings.storageStatus) {
+        (settings.storageStatus as? StorageStatus.Unavailable)
+    }
+
+    if (storageUnavailable != null) {
+        // Persistent error: a transient Snackbar would disappear in seconds
+        // and leave the user clicking bind/upload in the dark. An AlertDialog
+        // stays open until dismissed and makes the blocked state explicit.
+        AlertDialog(
+            onDismissRequest = {},
+            title = { Text("加密存储不可用") },
+            text = {
+                Text(
+                    storageUnavailable.message +
+                        "\n\n在此问题解决前，绑定、上传、接收功能均被禁用。" +
+                        "已尝试过的迁移会保留非敏感设置；恢复 KeyStore 后请重新绑定设备。",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { /* acknowledged — dialog is informational */ }) {
+                    Text("我知道了")
+                }
+            },
+        )
+    }
 
     if (settings.pendingOfflineCount > 0) {
         AlertDialog(

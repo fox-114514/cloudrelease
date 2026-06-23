@@ -1,3 +1,6 @@
+import java.io.File
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -20,12 +23,57 @@ android {
         }
     }
 
+    // ---- Signing ----
+    // Two layers of variables feed the release signing config:
+    //   1. keystore.properties next to the app module (gitignored), populated
+    //      by `scripts/generate-keystore.sh` for the dev/test key, or by a
+    //      release engineer with the production key.
+    //   2. Environment variables SSR_KEYSTORE_PATH / SSR_KEYSTORE_PASSWORD /
+    //      SSR_KEY_ALIAS / SSR_KEY_PASSWORD, used by CI.
+    // Env vars win over the properties file. If neither supplies a keystore
+    // path, the **release** build fails fast instead of silently falling back
+    // to the test key. debug builds are unaffected.
+    val keystoreProps = run {
+        val propsFile = rootProject.file("app/keystore.properties")
+        if (propsFile.isFile) {
+            Properties().apply { propsFile.inputStream().use { load(it) } }
+        } else {
+            null
+        }
+    }
+    fun signingProp(envKey: String, propsKey: String, default: String? = null): String? {
+        System.getenv(envKey)?.takeIf { it.isNotBlank() }?.let { return it }
+        keystoreProps?.getProperty(propsKey)?.takeIf { it.isNotBlank() }?.let { return it }
+        return default
+    }
+    val releaseKeystorePath = signingProp("SSR_KEYSTORE_PATH", "storeFile")
+    val releaseKeystorePassword = signingProp("SSR_KEYSTORE_PASSWORD", "storePassword")
+    val releaseKeyAlias = signingProp("SSR_KEY_ALIAS", "keyAlias")
+    val releaseKeyPassword = signingProp("SSR_KEY_PASSWORD", "keyPassword")
+    val hasReleaseSigning = !releaseKeystorePath.isNullOrBlank() &&
+        !releaseKeystorePassword.isNullOrBlank() &&
+        !releaseKeyAlias.isNullOrBlank() &&
+        !releaseKeyPassword.isNullOrBlank()
+
     signingConfigs {
-        create("release") {
-            storeFile = file("keystore/studyshot.keystore")
-            storePassword = "studyshot"
-            keyAlias = "studyshot"
-            keyPassword = "studyshot"
+        if (hasReleaseSigning) {
+            create("release") {
+                // Resolve relative paths against the project root (not the app
+                // module dir) so keystore.properties can use the conventional
+                // "app/keystore/..." form and env vars can use absolute paths.
+                val resolvedStoreFile = File(releaseKeystorePath!!).let { f ->
+                    if (f.isAbsolute) f else rootProject.file(f.path)
+                }
+                storeFile = resolvedStoreFile
+                storePassword = releaseKeystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+                // Enable V2/V3 signature schemes so Android 7+ and 11+ verify
+                // the production build correctly.
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+            }
         }
     }
 
@@ -36,7 +84,42 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            signingConfig = signingConfigs.getByName("release")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+            // If no signing material is configured we leave signingConfig null.
+            // The hard-fail below (registered on the task graph) prevents
+            // actually producing an unsigned release APK/AAB, instead of
+            // silently using a dev/test key for production as before.
+        }
+        debug {
+            // Debug builds keep using the AGP default debug signing config.
+        }
+    }
+
+    // Hard-fail release-oriented assemble/package tasks when no signing
+    // material exists. Evaluated lazily so debug/config-only builds still
+    // work in CI without a keystore.
+    gradle.taskGraph.whenReady {
+        val releaseTaskScheduled = allTasks.any { task ->
+            task.name.startsWith("assemble") || task.name.startsWith("bundle") || task.name.startsWith("package")
+        }.let { _ ->
+            allTasks.any { task ->
+                val n = task.name
+                // assembleRelease, bundleRelease, packageRelease, :app:assembleRelease ...
+                n.endsWith("Release", ignoreCase = true) ||
+                    n.endsWith("ReleaseUnitTest", ignoreCase = true) ||
+                    n.endsWith("ReleaseAndroidTest", ignoreCase = true)
+            }
+        }
+        if (releaseTaskScheduled && !hasReleaseSigning) {
+            throw GradleException(
+                "Release build requires signing configuration. Provide " +
+                    "either app/keystore.properties or environment variables " +
+                    "SSR_KEYSTORE_PATH / SSR_KEYSTORE_PASSWORD / SSR_KEY_ALIAS / " +
+                    "SSR_KEY_PASSWORD. For local dev/test builds run " +
+                    "scripts/generate-keystore.sh first.",
+            )
         }
     }
 

@@ -193,6 +193,14 @@ class AppState internal constructor(
             return
         }
         val finalName = name.ifBlank { android.os.Build.MODEL }
+        if (!app.secureSettings.isEncryptionAvailable) {
+            emit(TransientMessage(
+                "加密存储当前不可用，无法保存设备凭证。请检查设备 KeyStore 后重试。",
+                StatusTone.Critical,
+            ))
+            onComplete()
+            return
+        }
         scope.launch {
             try {
                 val response = app.apiClient.registerDevice(
@@ -250,6 +258,14 @@ class AppState internal constructor(
             return
         }
         val finalName = deviceName.ifBlank { android.os.Build.MODEL }
+        if (!app.secureSettings.isEncryptionAvailable) {
+            emit(TransientMessage(
+                "加密存储当前不可用，无法保存设备凭证。请检查设备 KeyStore 后重试。",
+                StatusTone.Critical,
+            ))
+            onComplete()
+            return
+        }
         scope.launch {
             try {
                 val loginResp = withContext(Dispatchers.IO) {

@@ -9,6 +9,7 @@ interface RecentDelivery {
 export declare function recordRecentDelivery(entry: RecentDelivery): void;
 export declare function startWebServer(port?: number): Promise<{
     url: string;
+    bootUrl: string;
     close: () => Promise<void>;
 }>;
 export declare function openBrowser(url: string): void;

@@ -62,6 +62,7 @@ fun HelpFirstRunScreen(
             description = "回到本 App，底部 Tab「设置 → 设备与服务器」，填入服务器地址和绑定码。绑定成功后会自动保存。",
             onAction = "去绑定",
             onActionTarget = Destination.Bind,
+            onNavigate = onNavigate,
         )
         StepRow(
             step = 3,
@@ -69,6 +70,7 @@ fun HelpFirstRunScreen(
             description = "底部 Tab「设置 → 上传设置」打开「自动上传」。第一次可先勾「实时学习模式」感受一下延迟。",
             onAction = "去上传设置",
             onActionTarget = Destination.UploadSettings,
+            onNavigate = onNavigate,
         )
 
         Spacer(Modifier.height(12.dp))
@@ -87,6 +89,7 @@ private fun StepRow(
     description: String,
     onAction: String? = null,
     onActionTarget: Destination? = null,
+    onNavigate: (String) -> Unit = {},
 ) {
     Row(
         modifier = Modifier
@@ -122,7 +125,7 @@ private fun StepRow(
             if (onAction != null && onActionTarget != null) {
                 Spacer(Modifier.height(8.dp))
                 androidx.compose.material3.TextButton(
-                    onClick = { },
+                    onClick = { onNavigate(onActionTarget.route) },
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
                 ) {
                     Text(onAction, color = Teal600)

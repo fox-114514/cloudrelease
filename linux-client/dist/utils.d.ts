@@ -1,4 +1,17 @@
 export declare function normalizeBaseUrl(raw: string): string;
+/**
+ * Returns true when host is loopback — http:// is fine for these because
+ * traffic never leaves the machine. Used to relax the explicit-consent rule.
+ */
+export declare function isLoopbackHost(baseUrl: string): boolean;
+/**
+ * Enforce the explicit-consent rule for plaintext HTTP. Throws when the URL is
+ * a non-loopback http:// address and the caller did not opt in. Loopback is
+ * always allowed because the request never traverses the network.
+ */
+export declare function assertExplicitInsecureHttp(baseUrl: string, opts: {
+    allowInsecureHttp: boolean;
+}): void;
 export declare function wsUrl(baseUrl: string): string;
 export declare function apiUrl(baseUrl: string, pathname: string): string;
 export declare function sanitizeFilePart(value: string): string;

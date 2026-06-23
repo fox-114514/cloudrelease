@@ -29,6 +29,8 @@ interface StoredConfig {
   lastKnownProfile?: DeviceProfile;
   lastKnownPermissions?: DevicePermissions;
   permissionsFetchedAt?: string;
+  /** Whether the user explicitly opted into plaintext HTTP for non-loopback hosts. */
+  allowInsecureHttp?: boolean;
 }
 
 const CONFIG_FILE = "config.json";
@@ -48,10 +50,62 @@ function defaultDeviceName(): string {
 function normalizeBaseUrl(raw: string): string {
   const trimmed = raw.trim().replace(/\/+$/, "");
   if (!trimmed) return "";
+  // 0.5.1: default to https:// when no scheme is given. A missing scheme no
+  // longer silently downgrades to plaintext; callers must opt in via the
+  // allowInsecureHttp flag for non-loopback http:// URLs.
   if (!/^https?:\/\//i.test(trimmed)) {
     return `https://${trimmed}`;
   }
   return trimmed;
+}
+
+/** True when host is loopback — http:// is safe because traffic never leaves the machine. */
+function isLoopbackHost(baseUrl: string): boolean {
+  try {
+    const u = new URL(normalizeBaseUrl(baseUrl));
+    const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    if (host === "localhost" || host === "127.0.0.1" || host === "::1") return true;
+    if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Throws when the URL is a non-loopback http:// address and the caller has not
+ * opted in. Loopback is always allowed. Use at every bind/login path so an
+ * accidental `http://` typo never leaks the device token or member password.
+ */
+function assertExplicitInsecureHttp(
+  baseUrl: string,
+  opts: { allowInsecureHttp: boolean },
+): void {
+  let u: URL;
+  try {
+    u = new URL(normalizeBaseUrl(baseUrl));
+  } catch {
+    throw new Error("服务器地址无效");
+  }
+  if (u.protocol !== "http:") return;
+  if (isLoopbackHost(baseUrl)) return;
+  if (!opts.allowInsecureHttp) {
+    throw new Error(
+      "服务器地址使用了明文 http://，但未启用“允许不安全 HTTP”。" +
+        "明文连接下 token、密码和图片均可能被窃听。" +
+        "请改用 https://，或在受信 VPN/局域网场景下显式启用“允许不安全 HTTP”。",
+    );
+  }
+}
+
+/** True when the URL is http:// AND not loopback — UI shows persistent banner. */
+function isInsecureHttpUrl(baseUrl: string): boolean {
+  try {
+    const u = new URL(normalizeBaseUrl(baseUrl));
+    return u.protocol === "http:" && !isLoopbackHost(baseUrl);
+  } catch {
+    return false;
+  }
 }
 
 export class ConfigStore {
@@ -97,6 +151,8 @@ export class ConfigStore {
   }
 
   get settings(): RendererSettings {
+    const insecureHttp = isInsecureHttpUrl(this.config.serverBaseUrl);
+    const allowInsecureHttp = this.config.allowInsecureHttp === true;
     return {
       serverBaseUrl: this.config.serverBaseUrl,
       deviceId: this.config.deviceId,
@@ -119,6 +175,10 @@ export class ConfigStore {
       lastKnownProfile: this.config.lastKnownProfile,
       lastKnownPermissions: this.config.lastKnownPermissions,
       permissionsFetchedAt: this.config.permissionsFetchedAt,
+      allowInsecureHttp,
+      insecureHttpWarning: insecureHttp
+        ? "⚠ 当前使用明文 HTTP。token、密码与图片可被同网段窃听，请尽快切换到 HTTPS 或仅在受信 VPN/局域网内继续使用。"
+        : undefined,
     };
   }
 
@@ -164,7 +224,13 @@ export class ConfigStore {
 
   async saveSettings(input: SaveSettingsInput): Promise<void> {
     if (input.serverBaseUrl !== undefined) {
-      this.config.serverBaseUrl = normalizeBaseUrl(input.serverBaseUrl);
+      const normalized = normalizeBaseUrl(input.serverBaseUrl);
+      // If the new URL is a non-loopback http:// URL, require that the user
+      // either already has allowInsecureHttp=true or is simultaneously setting
+      // it to true in this same call.
+      const allowInsecure = input.allowInsecureHttp ?? this.config.allowInsecureHttp === true;
+      assertExplicitInsecureHttp(normalized, { allowInsecureHttp: allowInsecure });
+      this.config.serverBaseUrl = normalized;
     }
     if (input.deviceName !== undefined) {
       this.config.deviceName = input.deviceName.trim() || defaultDeviceName();
@@ -222,6 +288,9 @@ export class ConfigStore {
     if (input.permissionsFetchedAt !== undefined) {
       this.config.permissionsFetchedAt = input.permissionsFetchedAt;
     }
+    if (input.allowInsecureHttp !== undefined) {
+      this.config.allowInsecureHttp = input.allowInsecureHttp === true;
+    }
     await this.persist();
   }
 
@@ -233,10 +302,22 @@ export class ConfigStore {
     boundUser?: BoundUserInfo;
     lastKnownProfile?: DeviceProfile;
     lastKnownPermissions?: DevicePermissions;
+    allowInsecureHttp?: boolean;
   }): Promise<void> {
-    this.config.serverBaseUrl = normalizeBaseUrl(input.serverBaseUrl);
+    const normalized = normalizeBaseUrl(input.serverBaseUrl);
+    // bindDevice is called after the server already minted the device token,
+    // so the URL is implicitly authorised by the preceding bind/preview code
+    // path. But we double-check here as a defensive guard in case someone
+    // calls bindDevice directly from a new entry point.
+    assertExplicitInsecureHttp(normalized, {
+      allowInsecureHttp: input.allowInsecureHttp === true || this.config.allowInsecureHttp === true,
+    });
+    this.config.serverBaseUrl = normalized;
     this.config.deviceId = input.deviceId;
     this.config.deviceName = input.deviceName.trim() || defaultDeviceName();
+    if (input.allowInsecureHttp === true) {
+      this.config.allowInsecureHttp = true;
+    }
     this.setDeviceToken(input.deviceToken);
     if (input.boundUser) this.config.boundUser = input.boundUser;
     if (input.lastKnownProfile) this.config.lastKnownProfile = input.lastKnownProfile;
@@ -299,7 +380,7 @@ export class ConfigStore {
   }
 }
 
-export { normalizeBaseUrl };
+export { normalizeBaseUrl, isLoopbackHost, assertExplicitInsecureHttp, isInsecureHttpUrl };
 
 function normalizeExcludedDirs(watchDir: string, candidates: string[]): string[] {
   const root = path.resolve(watchDir);

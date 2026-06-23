@@ -1,12 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { configDir, defaultDownloadDir, ensureDir, normalizeBaseUrl } from "./utils.js";
+import { assertExplicitInsecureHttp, configDir, defaultDownloadDir, ensureDir, normalizeBaseUrl } from "./utils.js";
 const DEFAULT_CONFIG = {
     autoUpload: true,
     autoReceive: true,
     copyToClipboard: true,
     uploadedHashes: [],
     receivedHashes: [],
+    allowInsecureHttp: false,
 };
 const CONFIG_FILE = "config.json";
 let saveChain = Promise.resolve();
@@ -24,6 +25,7 @@ export async function loadConfig() {
             downloadDir: parsed.downloadDir?.trim() || defaultDownloadDir(),
             uploadedHashes: parsed.uploadedHashes ?? [],
             receivedHashes: parsed.receivedHashes ?? [],
+            allowInsecureHttp: parsed.allowInsecureHttp === true,
         };
     }
     catch (err) {
@@ -45,8 +47,9 @@ export async function saveConfig(config) {
     saveChain = run;
     await run;
 }
-export async function bindDevice(serverBaseUrl, bindCode, deviceName, profile = "receive_own") {
+export async function bindDevice(serverBaseUrl, bindCode, deviceName, profile = "receive_own", opts = {}) {
     const url = normalizeBaseUrl(serverBaseUrl);
+    assertExplicitInsecureHttp(url, { allowInsecureHttp: opts.allowInsecureHttp === true });
     const response = await fetch(`${url}/api/v1/devices/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -81,8 +84,9 @@ async function parseData(response) {
     }
     return body.data;
 }
-export async function previewBindCode(serverBaseUrl, bindCode) {
+export async function previewBindCode(serverBaseUrl, bindCode, opts = {}) {
     const url = normalizeBaseUrl(serverBaseUrl);
+    assertExplicitInsecureHttp(url, { allowInsecureHttp: opts.allowInsecureHttp === true });
     const response = await fetch(`${url}/api/v1/bind-codes/preview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -90,8 +94,9 @@ export async function previewBindCode(serverBaseUrl, bindCode) {
     });
     return parseData(response);
 }
-export async function bindWithLogin(serverBaseUrl, login, password, deviceName, profile = "receive_own") {
+export async function bindWithLogin(serverBaseUrl, login, password, deviceName, profile = "receive_own", opts = {}) {
     const url = normalizeBaseUrl(serverBaseUrl);
+    assertExplicitInsecureHttp(url, { allowInsecureHttp: opts.allowInsecureHttp === true });
     const loginResponse = await fetch(`${url}/api/v1/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -114,11 +119,11 @@ export async function bindWithLogin(serverBaseUrl, login, password, deviceName, 
     if (code.targetUser && code.targetUser.id !== loginData.user.id) {
         throw new Error("Binding code target does not match the logged-in account");
     }
-    const preview = await previewBindCode(url, code.bindCode);
+    const preview = await previewBindCode(url, code.bindCode, opts);
     if (preview.targetUser.id !== loginData.user.id) {
         throw new Error("Binding preview target does not match the logged-in account");
     }
-    return bindDevice(url, code.bindCode, deviceName, profile);
+    return bindDevice(url, code.bindCode, deviceName, profile, opts);
 }
 export async function refreshDeviceIdentity(device) {
     const response = await fetch(`${normalizeBaseUrl(device.serverBaseUrl)}/api/v1/devices/me`, {

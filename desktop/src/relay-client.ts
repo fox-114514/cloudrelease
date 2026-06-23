@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import WebSocket from "ws";
 import type { ConfigStore } from "./config-store";
-import { normalizeBaseUrl } from "./config-store";
+import { normalizeBaseUrl, assertExplicitInsecureHttp } from "./config-store";
 import type { HistoryStore } from "./history-store";
 import { logError, logInfo, logWarn } from "./logger";
 import type {
@@ -360,6 +360,9 @@ export class RelayClient {
     if (!input.bindCode.trim()) {
       throw new Error("绑定码不能为空");
     }
+    assertExplicitInsecureHttp(serverBaseUrl, {
+      allowInsecureHttp: input.allowInsecureHttp === true,
+    });
 
     const body: Record<string, unknown> = {
       bindCode: input.bindCode.trim(),
@@ -410,7 +413,11 @@ export class RelayClient {
     };
   }
 
-  async previewBindCode(serverBaseUrl: string, bindCode: string): Promise<BindCodePreview> {
+  async previewBindCode(
+    serverBaseUrl: string,
+    bindCode: string,
+    opts: { allowInsecureHttp?: boolean } = {},
+  ): Promise<BindCodePreview> {
     const normalized = normalizeBaseUrl(serverBaseUrl);
     if (!normalized) {
       throw new Error("服务器地址不能为空");
@@ -418,6 +425,9 @@ export class RelayClient {
     if (!bindCode.trim()) {
       throw new Error("绑定码不能为空");
     }
+    assertExplicitInsecureHttp(normalized, {
+      allowInsecureHttp: opts.allowInsecureHttp === true,
+    });
     const response = await fetch(apiUrl(normalized, "/api/v1/bind-codes/preview"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -458,8 +468,14 @@ export class RelayClient {
     } catch (err) {
       if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
         // Auth failure likely means the device was revoked or disabled; the
-        // UI should stop the watcher/receiver and prompt for rebind.
+        // UI should stop the watcher/receiver and prompt for rebind. Set the
+        // connection error BEFORE clearBinding so the renderer keeps the
+        // reason visible next to the bind form (plan 0.5.1 §2.4.4).
         this.disconnect();
+        this.setConnection({
+          status: "stopped",
+          lastError: "设备已被撤销或凭证失效，请重新绑定",
+        });
         await this.config.clearBinding();
         this.emitState();
       }
@@ -526,6 +542,9 @@ export class RelayClient {
     if (!input.login.trim() || !input.password) {
       throw new Error("主用户登录名和密码不能为空");
     }
+    assertExplicitInsecureHttp(serverBaseUrl, {
+      allowInsecureHttp: input.allowInsecureHttp === true,
+    });
 
     const loginResponse = await fetch(apiUrl(serverBaseUrl, "/api/v1/auth/login"), {
       method: "POST",
@@ -567,6 +586,9 @@ export class RelayClient {
     if (!input.login.trim() || !input.password) {
       throw new Error("成员账号和密码不能为空");
     }
+    assertExplicitInsecureHttp(serverBaseUrl, {
+      allowInsecureHttp: input.allowInsecureHttp === true,
+    });
     const loginResponse = await fetch(apiUrl(serverBaseUrl, "/api/v1/auth/login"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -592,7 +614,9 @@ export class RelayClient {
       throw new Error("服务端返回的绑定码不属于当前账号，已中止绑定");
     }
 
-    const preview = await this.previewBindCode(serverBaseUrl, bindData.bindCode);
+    const preview = await this.previewBindCode(serverBaseUrl, bindData.bindCode, {
+      allowInsecureHttp: input.allowInsecureHttp === true,
+    });
     if (preview.targetUser.id !== loginData.user.id) {
       throw new Error("绑定码预览身份与当前账号不一致，已中止绑定");
     }
@@ -602,6 +626,7 @@ export class RelayClient {
       bindCode: bindData.bindCode,
       deviceName: input.deviceNameHint ?? os.hostname(),
       profile: input.profile,
+      allowInsecureHttp: input.allowInsecureHttp === true,
     });
     logInfo("Member bind-with-login succeeded", { userId: loginData.user.id });
     return self;
@@ -623,6 +648,9 @@ export class RelayClient {
     if (!input.login.trim() || !input.password) {
       throw new Error("登录名和密码不能为空");
     }
+    assertExplicitInsecureHttp(serverBaseUrl, {
+      allowInsecureHttp: input.allowInsecureHttp === true || this.config.settings.allowInsecureHttp,
+    });
 
     const response = await fetch(apiUrl(serverBaseUrl, "/api/v1/auth/login"), {
       method: "POST",

@@ -1,6 +1,15 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { configDir, defaultDownloadDir, ensureDir, normalizeBaseUrl } from "./utils.js";
+import { assertExplicitInsecureHttp, configDir, defaultDownloadDir, ensureDir, normalizeBaseUrl } from "./utils.js";
+
+export interface HttpSafetyOpts {
+  /**
+   * Whether the caller has explicitly opted into plaintext HTTP for non-
+   * loopback hosts. Bind/preview/login/identity-refresh will reject http://
+   * for non-loopback hosts unless this is true. Loopback is always allowed.
+   */
+  allowInsecureHttp?: boolean;
+}
 
 export interface DeviceConfig {
   serverBaseUrl: string;
@@ -46,6 +55,13 @@ export interface AppConfig {
   downloadDir?: string;
   uploadedHashes: string[];
   receivedHashes: string[];
+  /**
+   * Whether the user explicitly allowed plaintext HTTP for the stored
+   * serverBaseUrl. Set via the launch Web UI checkbox or the CLI's
+   * --allow-insecure-http flag at bind time. Refreshes against an already-
+   * bound device inherit this setting.
+   */
+  allowInsecureHttp: boolean;
 }
 
 const DEFAULT_CONFIG: AppConfig = {
@@ -54,6 +70,7 @@ const DEFAULT_CONFIG: AppConfig = {
   copyToClipboard: true,
   uploadedHashes: [],
   receivedHashes: [],
+  allowInsecureHttp: false,
 };
 
 const CONFIG_FILE = "config.json";
@@ -74,6 +91,7 @@ export async function loadConfig(): Promise<AppConfig> {
       downloadDir: parsed.downloadDir?.trim() || defaultDownloadDir(),
       uploadedHashes: parsed.uploadedHashes ?? [],
       receivedHashes: parsed.receivedHashes ?? [],
+      allowInsecureHttp: parsed.allowInsecureHttp === true,
     };
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
@@ -101,8 +119,10 @@ export async function bindDevice(
   bindCode: string,
   deviceName: string,
   profile = "receive_own",
+  opts: HttpSafetyOpts = {},
 ): Promise<DeviceConfig> {
   const url = normalizeBaseUrl(serverBaseUrl);
+  assertExplicitInsecureHttp(url, { allowInsecureHttp: opts.allowInsecureHttp === true });
   const response = await fetch(`${url}/api/v1/devices/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -156,8 +176,13 @@ async function parseData<T>(response: Response): Promise<T> {
   return body.data;
 }
 
-export async function previewBindCode(serverBaseUrl: string, bindCode: string): Promise<BindCodePreview> {
+export async function previewBindCode(
+  serverBaseUrl: string,
+  bindCode: string,
+  opts: HttpSafetyOpts = {},
+): Promise<BindCodePreview> {
   const url = normalizeBaseUrl(serverBaseUrl);
+  assertExplicitInsecureHttp(url, { allowInsecureHttp: opts.allowInsecureHttp === true });
   const response = await fetch(`${url}/api/v1/bind-codes/preview`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -172,8 +197,10 @@ export async function bindWithLogin(
   password: string,
   deviceName: string,
   profile = "receive_own",
+  opts: HttpSafetyOpts = {},
 ): Promise<DeviceConfig> {
   const url = normalizeBaseUrl(serverBaseUrl);
+  assertExplicitInsecureHttp(url, { allowInsecureHttp: opts.allowInsecureHttp === true });
   const loginResponse = await fetch(`${url}/api/v1/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -202,11 +229,11 @@ export async function bindWithLogin(
   if (code.targetUser && code.targetUser.id !== loginData.user.id) {
     throw new Error("Binding code target does not match the logged-in account");
   }
-  const preview = await previewBindCode(url, code.bindCode);
+  const preview = await previewBindCode(url, code.bindCode, opts);
   if (preview.targetUser.id !== loginData.user.id) {
     throw new Error("Binding preview target does not match the logged-in account");
   }
-  return bindDevice(url, code.bindCode, deviceName, profile);
+  return bindDevice(url, code.bindCode, deviceName, profile, opts);
 }
 
 export async function refreshDeviceIdentity(device: DeviceConfig): Promise<DeviceConfig> {

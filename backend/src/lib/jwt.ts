@@ -17,5 +17,12 @@ export function signUserToken(payload: Omit<UserTokenPayload, "type">): string {
 }
 
 export function verifyUserToken(token: string): UserTokenPayload {
-  return jwt.verify(token, config.JWT_SECRET) as UserTokenPayload;
+  // Pin the accepted algorithm to HS256. Without this, a confused-deputy
+  // attacker who could swap the JWT alg header (e.g. "none" or an asymmetric
+  // alg where the public key equals the HMAC secret) might forge a token.
+  // jsonwebtoken v9 refuses "none" by default, but pinning the algorithm
+  // closes the whole class of alg-confusion attacks.
+  return jwt.verify(token, config.JWT_SECRET, {
+    algorithms: ["HS256"],
+  }) as UserTokenPayload;
 }

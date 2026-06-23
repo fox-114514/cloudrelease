@@ -38,6 +38,17 @@ export interface RendererSettings {
   lastKnownProfile?: string;
   lastKnownPermissions?: DevicePermissions;
   permissionsFetchedAt?: string;
+  /**
+   * True when the user explicitly allowed plaintext HTTP for the server URL.
+   * Defaults to false; the renderer shows a persistent warning banner when
+   * the stored serverBaseUrl is a non-loopback http:// URL.
+   */
+  allowInsecureHttp: boolean;
+  /**
+   * Set by the config store when the stored serverBaseUrl is a non-loopback
+   * http:// URL. The renderer surfaces a persistent banner while this is true.
+   */
+  insecureHttpWarning?: string;
 }
 
 export interface BoundUserInfo {
@@ -142,6 +153,8 @@ export interface RegisterDeviceInput {
   bindCode: string;
   deviceName: string;
   profile?: DeviceProfile;
+  /** Set to true to allow non-loopback http:// URLs. */
+  allowInsecureHttp?: boolean;
 }
 
 export interface CreateBindCodeInput {
@@ -150,6 +163,8 @@ export interface CreateBindCodeInput {
   password: string;
   deviceNameHint?: string;
   profile?: DeviceProfile;
+  /** Set to true to allow non-loopback http:// URLs. */
+  allowInsecureHttp?: boolean;
 }
 
 export interface CreateBindCodeResult {
@@ -173,6 +188,7 @@ export interface SaveSettingsInput {
   lastKnownProfile?: DeviceProfile;
   lastKnownPermissions?: DevicePermissions;
   permissionsFetchedAt?: string;
+  allowInsecureHttp?: boolean;
 }
 
 export interface ManualUploadResult {
@@ -214,6 +230,8 @@ export interface AdminLoginInput {
   serverBaseUrl: string;
   login: string;
   password: string;
+  /** Set to true to allow non-loopback http:// URLs. */
+  allowInsecureHttp?: boolean;
 }
 
 export interface AdminState {

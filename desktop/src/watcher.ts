@@ -8,15 +8,30 @@ export interface WatcherOptions {
   excludedDirs?: string[];
   onFile: (filePath: string) => Promise<void> | void;
   onLog?: (message: string) => void;
-  onError?: (message: string) => void;
+  /**
+   * Called for transient errors that should NOT stop the watcher — e.g. a
+   * single upload failure. The watcher keeps running so subsequent valid
+   * images can still upload.
+   */
+  onUploadError?: (message: string) => void;
+  /**
+   * Called for unrecoverable errors emitted by the underlying chokidar
+   * watcher (FSWatcher 'error' event). After this callback the watcher is
+   * already torn down and the caller must clear its handle so the user can
+   * click "start" again.
+   */
+  onFatal?: (message: string) => void;
 }
 
 export class DirectoryWatcher {
   private watcher: chokidar.FSWatcher | null = null;
   private queue: Promise<void> = Promise.resolve();
   private currentDir: string | null = null;
+  private readonly onFatal?: (message: string) => void;
 
-  constructor(private readonly options: WatcherOptions) {}
+  constructor(private readonly options: WatcherOptions) {
+    this.onFatal = options.onFatal;
+  }
 
   get isWatching(): boolean {
     return this.watcher !== null;
@@ -61,17 +76,24 @@ export class DirectoryWatcher {
         try {
           await this.options.onFile(filePath);
         } catch (err) {
+          // Single-file upload failure: record it without tearing down the
+          // watcher. The watcher stays alive so the next valid image can
+          // still be uploaded.
           const message = `上传失败 ${filePath}: ${(err as Error).message}`;
           log(message);
-          this.options.onError?.(message);
+          this.options.onUploadError?.(message);
         }
       });
     });
 
     this.watcher.on("error", (err) => {
-      const message = `监听错误: ${err.message}`;
+      const message = `监听器致命错误: ${err.message}`;
       log(message);
-      this.options.onError?.(message);
+      // Tear down our handle immediately so callers see isWatching=false and
+      // can re-create the watcher when the user clicks start again.
+      this.watcher = null;
+      this.currentDir = null;
+      this.onFatal?.(message);
     });
   }
 

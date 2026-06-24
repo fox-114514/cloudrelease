@@ -3,6 +3,7 @@ import fp from "fastify-plugin";
 import type * as WebSocket from "ws";
 import { hashToken } from "../lib/crypto.js";
 import { prisma } from "../lib/prisma.js";
+import { getAndroidRelease } from "../services/android-update.js";
 
 interface WsClient {
   deviceId: string;
@@ -139,6 +140,14 @@ export const wsPlugin = fp(async (app: FastifyInstance) => {
               serverTime: new Date().toISOString(),
             })
           );
+          if (device.platform === "android") {
+            void getAndroidRelease()
+              .then((release) => {
+                if (!release || socket.readyState !== 1) return;
+                socket.send(JSON.stringify({ type: "app.update.available", release }));
+              })
+              .catch(() => undefined);
+          }
         } else if (msg.type === "ping") {
           client.lastClientActivityAt = Date.now();
           socket.send(JSON.stringify({ type: "pong" }));

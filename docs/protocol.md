@@ -1117,6 +1117,34 @@ Authorization: Bearer <device-token>
 - 下载成功后调用 ACK。
 - WebSocket 消息丢失不影响最终一致性，pending 接口负责补偿。
 
+### Android 版本更新事件
+
+当 Android 设备发送 `hello` 且服务器已配置新版 APK 时，服务端在 `hello.ack` 后发送：
+
+```json
+{
+  "type": "app.update.available",
+  "release": {
+    "versionCode": 9,
+    "versionName": "0.5.1",
+    "releaseNotes": "修复问题并改善更新流程",
+    "fileName": "studyshot-relay.apk",
+    "fileSize": 13631488,
+    "sha256": "64-hex",
+    "downloadPath": "/api/v1/updates/android/apk"
+  }
+}
+```
+
+客户端只在 `release.versionCode` 大于本机 `BuildConfig.VERSION_CODE` 时提示。版本名称只用于显示，不能用于比较。
+
+Android 更新接口均要求设备 token：
+
+- `GET /api/v1/updates/android`：返回 `{ available, release }`，用于启动和定时检查。
+- `GET /api/v1/updates/android/apk`：返回 `application/vnd.android.package-archive`，用于 DownloadManager 下载。
+
+客户端必须校验下载文件 SHA-256；不一致时删除文件且不得打开安装器。APK 仍由 Android 系统安装器完成签名与用户确认。
+
 ## 15. 桌面客户端最小接收流程
 
 1. 用户输入服务器地址和绑定码。

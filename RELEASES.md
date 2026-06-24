@@ -1,7 +1,7 @@
 # StudyShot Relay 安装包
 
-版本：Android / 后端 / 桌面端 / Linux 客户端 0.5.0
-生成时间：2026-06-21
+版本：Android / 后端 0.5.1；桌面端 / Linux 客户端 0.5.0
+生成时间：2026-06-24
 
 ## 可用安装包
 
@@ -12,6 +12,13 @@
 | Linux (桌面) | `StudyShot-Relay-Desktop-Linux-0.5.0_amd64.deb` | ~95 MB | Electron 桌面端，带 GUI |
 | Linux (AppImage) | `StudyShot-Relay-Desktop-Linux-0.5.0.AppImage` | ~121 MB | 免安装桌面端 |
 | Linux (CLI/Web) | `StudyShot-Relay-Linux-Client-0.5.0_amd64.deb` | 待打包 | 命令行 + Web 管理界面，源码已完成多用户 V2 接入 |
+
+## 0.5.1 变更
+
+- 修复 Android 登录或绑定成功时提示文字叠加，以及管理登录表单错误使用全屏宽高约束的问题。
+- Android 帮助页补充可执行的配置、排错、数据位置、权限和更新说明，并修正自动上传与后台连接描述。
+- 新增自托管 Android 更新：设备 token 保护的版本/API 下载接口、WebSocket 更新事件、启动定时检查、用户确认下载、公共 Downloads 保存、SHA-256 校验和系统安装器拉起。
+- Android `versionCode` 更新为 9；以后发布 APK 必须继续递增并使用同一签名证书。
 
 所有文件位于项目根目录 `releases/`（旧 0.4.x 安装包继续保留供回退）。
 

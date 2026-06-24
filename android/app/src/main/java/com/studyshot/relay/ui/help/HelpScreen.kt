@@ -53,13 +53,13 @@ fun HelpScreen(
             ) {
                 QuickActionCard(
                     title = "首次使用引导",
-                    description = "3 步把第一台设备和服务器配对",
+                    description = "服务器地址、账号/绑定码、上传与接收的完整配置",
                     icon = Icons.Outlined.PlayCircle,
                     onClick = { onNavigate(Destination.HelpFirstRun.route) },
                 )
                 QuickActionCard(
                     title = "后台运行原理",
-                    description = "Foreground Service、省电策略、厂商限制",
+                    description = "前台服务、更新推送、省电策略和国产 ROM 限制",
                     icon = Icons.Outlined.School,
                     onClick = { onNavigate(Destination.HelpBackground.route) },
                 )
@@ -120,7 +120,7 @@ private fun HelpHeader(bound: Boolean) {
             )
             Spacer(Modifier.height(2.dp))
             Text(
-                text = if (bound) "已绑定，可以参考以下内容" else "先完成绑定，再来读这些",
+                text = if (bound) "已绑定；下面包含配置、排错和更新说明" else "从首次使用开始，按实际步骤完成配置",
                 style = MaterialTheme.typography.bodyMedium,
                 color = SlateMuted,
             )

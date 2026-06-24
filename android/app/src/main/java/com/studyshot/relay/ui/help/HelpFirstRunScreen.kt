@@ -53,21 +53,21 @@ fun HelpFirstRunScreen(
 
         StepRow(
             step = 1,
-            title = "生成绑定码",
-            description = "在服务器上打开网页管理后台 /admin，用主用户登录；或在你的电脑客户端上点「生成绑定码」。绑定码是一次性、几分钟内过期。",
+            title = "确认服务器可访问",
+            description = "在浏览器访问“服务器地址/api/v1/healthz”，看到 status=ok 才继续。公网部署应使用有效 HTTPS；局域网 HTTP 必须在 App 中明确允许。",
         )
         StepRow(
             step = 2,
-            title = "在这台设备上绑定",
-            description = "回到本 App，底部 Tab「设置 → 设备与服务器」，填入服务器地址和绑定码。绑定成功后会自动保存。",
+            title = "绑定这台设备",
+            description = "进入“设置 → 设备与服务器”。可以直接使用成员账号绑定；也可以先打开“服务器地址/admin”，登录网页管理后台并生成一次性绑定码。绑定码默认 10 分钟内有效且只能使用一次。",
             onAction = "去绑定",
             onActionTarget = Destination.Bind,
             onNavigate = onNavigate,
         )
         StepRow(
             step = 3,
-            title = "开自动上传",
-            description = "底部 Tab「设置 → 上传设置」打开「自动上传」。第一次可先勾「实时学习模式」感受一下延迟。",
+            title = "分别配置上传与接收",
+            description = "在“上传设置”选择监听范围与实时/省电模式；在“接收设置”决定是否自动下载。最终能力还受服务器给本设备分配的权限限制。",
             onAction = "去上传设置",
             onActionTarget = Destination.UploadSettings,
             onNavigate = onNavigate,

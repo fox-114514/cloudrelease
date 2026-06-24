@@ -3,6 +3,7 @@ package com.studyshot.relay.ui.management
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
@@ -85,7 +86,7 @@ fun ManagementLoginScreen(
                 onValueChange = { server = it },
                 singleLine = true,
                 modifier = Modifier
-                    .fillMaxSize()
+                    .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 4.dp),
                 placeholder = { Text("https://studyshot.example.com") },
             )
@@ -107,7 +108,7 @@ fun ManagementLoginScreen(
                 onValueChange = { login = it },
                 singleLine = true,
                 modifier = Modifier
-                    .fillMaxSize()
+                    .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 4.dp),
             )
             SettingsRow(
@@ -123,7 +124,7 @@ fun ManagementLoginScreen(
                 singleLine = true,
                 visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                 modifier = Modifier
-                    .fillMaxSize()
+                    .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 4.dp),
             )
         }
@@ -159,7 +160,7 @@ fun ManagementLoginScreen(
             },
             enabled = !logging && server.isNotBlank() && login.isNotBlank() && password.isNotBlank(),
             modifier = Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
                 .padding(horizontal = 16.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = Teal600,

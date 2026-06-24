@@ -63,7 +63,7 @@ class RelayReceiveService : Service() {
             NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_download_done)
                 .setContentTitle("StudyShot Relay")
-                .setContentText("正在接收学习截图")
+                .setContentText("保持连接并检查图片与更新")
                 .setOngoing(true)
                 .build(),
         )
@@ -103,8 +103,6 @@ class RelayReceiveService : Service() {
         val token = app.secureSettings.getDeviceToken()
         if (!app.secureSettings.isEncryptionAvailable ||
             !settings.isServerTransportAllowed() ||
-            !settings.autoReceiveEnabled ||
-            !settings.serverAllowsAutoReceive() ||
             settings.serverBaseUrl.isBlank() ||
             token.isNullOrBlank()
         ) {
@@ -174,7 +172,13 @@ class RelayReceiveService : Service() {
             "hello.ack" -> scope.launch { checkPending() }
             "pong" -> Unit
             "image.created" -> scope.launch {
-                processDelivery(app.apiClient.parseDelivery(json))
+                val settings = app.secureSettings.settings.value
+                if (settings.autoReceiveEnabled && settings.serverAllowsAutoReceive()) {
+                    processDelivery(app.apiClient.parseDelivery(json))
+                }
+            }
+            "app.update.available" -> json.optJSONObject("release")?.let {
+                app.updateManager.acceptSocketRelease(it)
             }
         }
     }
@@ -406,8 +410,8 @@ class RelayReceiveService : Service() {
                 }
                 current.send("""{"type":"ping"}""")
                 ticks += 1
-                if (ticks % 10 == 0 && !refreshEffectivePermissions()) {
-                    current.close(1000, "Server permission disabled auto receive")
+                if (ticks % 10 == 0 && !refreshDeviceSession()) {
+                    current.close(1000, "Device session is no longer valid")
                     stopSelf()
                     return@launch
                 }
@@ -415,7 +419,7 @@ class RelayReceiveService : Service() {
         })
     }
 
-    private suspend fun refreshEffectivePermissions(): Boolean {
+    private suspend fun refreshDeviceSession(): Boolean {
         val settings = app.secureSettings.settings.value
         if (!settings.isServerTransportAllowed()) return false
         val token = app.secureSettings.getDeviceToken() ?: return false
@@ -443,24 +447,23 @@ class RelayReceiveService : Service() {
                 lastKnownDeviceProfile = info.profile,
                 lastKnownPermissionsJson = permissionsJson,
             )
-            info.permissions.canAutoReceive
+            true
         } catch (err: ApiException) {
             if (err.statusCode == 401 || err.statusCode == 403) {
                 app.secureSettings.clearBinding()
                 false
             } else {
-                settings.serverAllowsAutoReceive()
+                true
             }
         } catch (_: Exception) {
-            settings.serverAllowsAutoReceive()
+            true
         }
     }
 
     private fun scheduleReconnect() {
         val settings = app.secureSettings.settings.value
         if (!settings.isServerTransportAllowed() ||
-            !settings.autoReceiveEnabled ||
-            !settings.serverAllowsAutoReceive() ||
+            !settings.deviceTokenAvailable ||
             destroyed
         ) return
         reconnectJob.getAndSet(null)?.cancel()
@@ -521,7 +524,7 @@ class RelayReceiveService : Service() {
         val text = if (pendingCount > 0) {
             "有 $pendingCount 张离线图片等待确认"
         } else {
-            "正在接收学习截图"
+            "保持连接并检查图片与更新"
         }
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download_done)

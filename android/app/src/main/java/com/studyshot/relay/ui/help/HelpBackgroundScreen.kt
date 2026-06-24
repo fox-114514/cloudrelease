@@ -97,18 +97,18 @@ fun HelpBackgroundScreen() {
 
         SettingsGroup(
             title = "接收端",
-            footer = "接收走 WebSocket。失败会重连。",
+            footer = "图片事件与版本更新走 WebSocket，失败会重连。",
         ) {
             ExpandableRow(
                 icon = Icons.Outlined.Sync,
                 title = "WebSocket 长连接",
-                subtitle = "新图片事件秒级推送到接收端",
+                subtitle = "新图片与 Android 更新事件秒级推送",
                 expanded = false,
                 onToggle = { },
                 content = {
                     Text(
-                        text = "绑定后，App 启动另一个 Foreground Service 与服务器保持 WebSocket 连接，接收 image.created 事件。\n\n" +
-                            "断线时按指数退避重连，间隔 1-60 秒。被撤销的设备连接会被服务端拒绝。",
+                        text = "绑定后，App 启动 Foreground Service 与服务器保持 WebSocket 连接。开启自动接收时处理 image.created；服务端发布新版 APK 时处理 app.update.available。\n\n" +
+                            "断线时按指数退避重连，间隔 1-60 秒。被撤销的设备连接会被服务端拒绝。即使关闭自动接收，更新通道仍保持连接。",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 },

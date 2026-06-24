@@ -138,6 +138,16 @@ data class DownloadedImage(
     val mimeType: String,
 )
 
+data class AndroidUpdateInfo(
+    val versionCode: Int,
+    val versionName: String,
+    val releaseNotes: String,
+    val fileName: String,
+    val fileSize: Long,
+    val sha256: String,
+    val downloadPath: String,
+)
+
 data class ManagedDevice(
     val id: String,
     val userId: String,

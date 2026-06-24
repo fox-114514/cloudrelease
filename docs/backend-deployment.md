@@ -1,6 +1,6 @@
 # Backend Deployment
 
-文档版本：2026-06-18
+文档版本：2026-06-24
 
 本文说明如何把 StudyShot Relay 后端部署到一台 Linux 服务器。推荐服务器使用 Docker Compose、PostgreSQL 和 Caddy。Caddy 负责 HTTPS 和 WSS，后端只在 Docker 内部监听 `3000`。
 
@@ -219,6 +219,39 @@ curl -fsS http://你的服务器:3000/api/v1/healthz
 ```
 
 返回的 `version` 必须为 `0.4.1`。Android `0.4.1` 同时修复了 `0.4.0` 将大小写敏感绑定码转换为大写的问题。
+
+### 发布 Android 客户端更新
+
+Android 自更新不依赖应用商店。生产 Compose 会把 `backend/releases/` 只读挂载到容器的 `/var/lib/studyshot/releases/`。发布步骤如下：
+
+1. 使用与已安装版本相同的正式签名证书构建 APK，并确保 `versionCode` 严格递增。
+2. 把 APK 放到服务器的 `backend/releases/studyshot-relay.apk`。
+3. 在 `backend/.env.production` 设置：
+
+```dotenv
+ANDROID_UPDATE_APK_PATH=/var/lib/studyshot/releases/studyshot-relay.apk
+ANDROID_UPDATE_VERSION_CODE=9
+ANDROID_UPDATE_VERSION_NAME=0.5.1
+ANDROID_UPDATE_RELEASE_NOTES=修复登录提示并加入应用内更新
+```
+
+4. 重新创建后端容器，使发布元数据生效：
+
+```bash
+cd backend
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build backend
+```
+
+重启会断开客户端 WebSocket；Android 前台服务重连后，服务器发送 `app.update.available`。客户端只在服务端 `versionCode` 大于本机时提示。用户确认后，APK 经带设备令牌的接口下载到 `Downloads/StudyShot Relay/`，客户端校验服务端给出的 SHA-256，随后打开 Android 系统安装器。首次安装需要用户在系统页允许 StudyShot Relay“安装未知应用”。Android 系统仍会要求用户确认安装，应用不能绕过该确认。
+
+可用已绑定设备令牌检查发布元数据：
+
+```bash
+curl -H "Authorization: Bearer DEVICE_TOKEN" \
+  https://studyshot.example.com/api/v1/updates/android
+```
+
+如果 APK 文件不存在，或以上三个发布字段任一为空，接口会返回 `available: false`，不会向客户端推送更新。不要复用或更换签名证书，否则 Android 会拒绝覆盖安装。
 
 ## 8. 停止与重启
 

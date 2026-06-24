@@ -475,6 +475,30 @@ class StudyShotApiClient(
         executeJson(httpRequest)
     }
 
+    suspend fun getAndroidUpdate(
+        serverBaseUrl: String,
+        deviceToken: String,
+    ): AndroidUpdateInfo? {
+        val httpRequest = Request.Builder()
+            .url(apiUrl(serverBaseUrl, "/api/v1/updates/android"))
+            .header("Authorization", "Bearer $deviceToken")
+            .get()
+            .build()
+        val data = executeJson(httpRequest)
+        if (!data.optBoolean("available", false) || data.isNull("release")) return null
+        return parseAndroidUpdate(data.getJSONObject("release"))
+    }
+
+    fun parseAndroidUpdate(json: JSONObject): AndroidUpdateInfo = AndroidUpdateInfo(
+        versionCode = json.getInt("versionCode"),
+        versionName = json.getString("versionName"),
+        releaseNotes = json.optString("releaseNotes"),
+        fileName = json.getString("fileName"),
+        fileSize = json.getLong("fileSize"),
+        sha256 = json.getString("sha256"),
+        downloadPath = json.getString("downloadPath"),
+    )
+
     private suspend fun executeJson(request: Request): JSONObject = withContext(Dispatchers.IO) {
         client.newCall(request).execute().use { response ->
             val bodyText = response.body?.string().orEmpty()
@@ -569,6 +593,13 @@ class StudyShotApiClient(
 
         fun apiUrl(serverBaseUrl: String, path: String): String {
             return serverBaseUrl.trimEnd('/') + path
+        }
+
+        fun resolveUrl(serverBaseUrl: String, pathOrUrl: String): String {
+            if (pathOrUrl.startsWith("https://") || pathOrUrl.startsWith("http://")) {
+                return pathOrUrl
+            }
+            return apiUrl(serverBaseUrl, if (pathOrUrl.startsWith('/')) pathOrUrl else "/$pathOrUrl")
         }
 
         fun wsUrl(serverBaseUrl: String): String {

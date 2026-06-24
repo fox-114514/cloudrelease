@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Android
 import androidx.compose.material.icons.outlined.Fingerprint
 import androidx.compose.material.icons.outlined.Storage
+import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -58,7 +59,33 @@ fun HelpAboutScreen(
             SettingsRow(
                 icon = Icons.Outlined.Fingerprint,
                 title = "App 版本",
-                value = BuildConfig.VERSION_NAME,
+                value = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                isLast = false,
+            )
+            SettingsRow(
+                icon = Icons.Outlined.SystemUpdate,
+                title = "检查 Android 更新",
+                subtitle = "从当前服务器读取版本；新版下载到 Downloads",
+                value = "立即检查",
+                onClick = { state.checkForAndroidUpdate() },
+                isLast = true,
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        SettingsGroup(
+            title = "数据与安全",
+            footer = "本项目不依赖第三方云服务，但服务器管理员能够访问服务器保存的图片与审计日志。公网部署必须使用 HTTPS，并及时撤销丢失设备。",
+        ) {
+            SettingsRow(
+                title = "接收图片位置",
+                value = "App 私有目录；可选另存到系统相册",
+                isLast = false,
+            )
+            SettingsRow(
+                title = "更新包位置",
+                value = "Downloads/StudyShot Relay",
                 isLast = true,
             )
         }
@@ -88,7 +115,7 @@ fun HelpAboutScreen(
 
         SettingsGroup(
             title = "致谢",
-            footer = "StudyShot Relay 是私有部署项目，无云端、无遥测、无广告。",
+            footer = "StudyShot Relay 是自托管项目；当前客户端未集成第三方遥测或广告 SDK。",
         ) {
             SettingsRow(
                 title = "后端 / 桌面 / 网页",

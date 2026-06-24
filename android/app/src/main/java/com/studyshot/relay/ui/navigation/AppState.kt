@@ -68,6 +68,25 @@ class AppState internal constructor(
         _transient.value = null
     }
 
+    fun clearTransient(id: Long) {
+        if (_transient.value?.id == id) _transient.value = null
+    }
+
+    fun checkForAndroidUpdate(showLatestMessage: Boolean = true) {
+        scope.launch {
+            try {
+                val release = app.updateManager.checkNow(includeDismissed = showLatestMessage)
+                if (release == null && showLatestMessage) {
+                    emit(TransientMessage("当前已是最新版本", StatusTone.Positive))
+                }
+            } catch (err: Exception) {
+                if (showLatestMessage) {
+                    emit(TransientMessage("检查更新失败：${err.message ?: err.javaClass.simpleName}", StatusTone.Critical))
+                }
+            }
+        }
+    }
+
     private fun validateServer(server: String, allowInsecureHttp: Boolean): String? {
         return try {
             SecureSettings.requireAllowedServer(server, allowInsecureHttp)

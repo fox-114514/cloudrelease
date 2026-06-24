@@ -43,7 +43,7 @@ fun HelpPermissionsScreen() {
 
         SettingsGroup(
             title = "图片访问",
-            footer = "READ_MEDIA_IMAGES 是 Android 13 之后的标准权限。Android 12 及以下用 READ_EXTERNAL_STORAGE。",
+            footer = "READ_MEDIA_IMAGES 是 Android 13 之后的标准权限。Android 12 及以下用 READ_EXTERNAL_STORAGE；Android 8/9 写入公共 Downloads 还需要 WRITE_EXTERNAL_STORAGE。",
         ) {
             SettingsRow(
                 icon = Icons.Outlined.Photo,
@@ -92,6 +92,20 @@ fun HelpPermissionsScreen() {
                 icon = Icons.Outlined.Notifications,
                 title = "POST_NOTIFICATIONS",
                 subtitle = "Android 13+ 需要。下载完成通知、前台 Service 通知都用它。",
+                isLast = true,
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        SettingsGroup(
+            title = "应用更新",
+            footer = "只用于安装当前 StudyShot 服务器提供、且 SHA-256 校验通过的 APK；最终安装仍由 Android 系统确认。",
+        ) {
+            SettingsRow(
+                icon = Icons.Outlined.Storage,
+                title = "REQUEST_INSTALL_PACKAGES",
+                subtitle = "允许从本 App 打开系统 APK 安装器",
                 isLast = true,
             )
         }

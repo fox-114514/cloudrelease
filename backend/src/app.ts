@@ -16,6 +16,7 @@ import { deviceRoutes } from "./routes/devices.js";
 import { healthRoutes } from "./routes/health.js";
 import { webAdminRoutes } from "./routes/web-admin.js";
 import { imageRoutes } from "./routes/images.js";
+import { updateRoutes } from "./routes/updates.js";
 
 
 export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
@@ -55,6 +56,7 @@ export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
   await app.register(deviceRoutes, { prefix: "/api/v1" });
   await app.register(imageRoutes, { prefix: "/api/v1" });
   await app.register(deliveryRoutes, { prefix: "/api/v1" });
+  await app.register(updateRoutes, { prefix: "/api/v1" });
   await app.register(wsPlugin, { prefix: "/api/v1" });
 
   return app;

@@ -38,7 +38,6 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -55,6 +54,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -107,6 +107,7 @@ fun AppRoot(
 
     val settings by state.app.secureSettings.settings.collectAsState()
     val transient by state.transient.collectAsState()
+    val availableUpdate by state.app.updateManager.availableUpdate.collectAsState()
     val storageUnavailable = remember(settings.storageStatus) {
         (settings.storageStatus as? StorageStatus.Unavailable)
     }
@@ -142,10 +143,52 @@ fun AppRoot(
 
     LaunchedEffect(transient?.id) {
         val msg = transient ?: return@LaunchedEffect
-        val result = snackbarHostState.showSnackbar(msg.text)
-        if (result == SnackbarResult.Dismissed) {
-            state.clearTransient()
+        snackbarHostState.currentSnackbarData?.dismiss()
+        snackbarHostState.showSnackbar(msg.text)
+        state.clearTransient(msg.id)
+    }
+
+    var installAfterPermission by remember { mutableStateOf<com.studyshot.relay.network.AndroidUpdateInfo?>(null) }
+    val installPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) {
+        val release = installAfterPermission
+        installAfterPermission = null
+        if (release != null && state.app.updateManager.canInstallPackages()) {
+            runCatching { state.app.updateManager.enqueueDownload(release) }
+                .onSuccess { state.emit(TransientMessage("更新正在下载到 Downloads", StatusTone.Positive)) }
+                .onFailure { state.emit(TransientMessage("更新下载失败：${it.message}", StatusTone.Critical)) }
         }
+    }
+
+    if (availableUpdate != null) {
+        val release = availableUpdate!!
+        AlertDialog(
+            onDismissRequest = { state.app.updateManager.dismissCurrent() },
+            title = { Text("发现新版本 ${release.versionName}") },
+            text = {
+                Text(
+                    release.releaseNotes.ifBlank {
+                        "安装包将由当前服务器提供，下载到系统 Downloads 目录，完成后打开安装程序。"
+                    },
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (state.app.updateManager.canInstallPackages()) {
+                        runCatching { state.app.updateManager.enqueueDownload(release) }
+                            .onSuccess { state.emit(TransientMessage("更新正在下载到 Downloads", StatusTone.Positive)) }
+                            .onFailure { state.emit(TransientMessage("更新下载失败：${it.message}", StatusTone.Critical)) }
+                    } else {
+                        installAfterPermission = release
+                        installPermissionLauncher.launch(state.app.updateManager.installPermissionIntent())
+                    }
+                }) { Text(if (state.app.updateManager.canInstallPackages()) "下载并安装" else "允许安装更新") }
+            },
+            dismissButton = {
+                TextButton(onClick = { state.app.updateManager.dismissCurrent() }) { Text("稍后") }
+            },
+        )
     }
 
     val permissionRefreshTick = rememberSaveable { mutableIntStateOf(0) }
@@ -154,6 +197,13 @@ fun AppRoot(
         while (settings.deviceTokenAvailable) {
             state.refreshSelfIdentity()
             delay(5 * 60 * 1000L)
+        }
+    }
+
+    LaunchedEffect(settings.deviceTokenAvailable, settings.serverBaseUrl) {
+        while (settings.deviceTokenAvailable) {
+            state.checkForAndroidUpdate(showLatestMessage = false)
+            delay(6 * 60 * 60 * 1000L)
         }
     }
 
@@ -199,13 +249,11 @@ fun AppRoot(
     }
 
     LaunchedEffect(
-        settings.autoReceiveEnabled,
         settings.deviceTokenAvailable,
-        settings.lastKnownPermissionsJson,
         storageReady,
         transportReady,
     ) {
-        if (storageReady && transportReady && settings.autoReceiveEnabled && settings.serverAllowsAutoReceive() && settings.deviceTokenAvailable) {
+        if (storageReady && transportReady && settings.deviceTokenAvailable) {
             startReceiveService()
         } else {
             stopReceiveService()
@@ -269,10 +317,15 @@ fun AppRoot(
         snackbarHost = {
             SnackbarHost(snackbarHostState) { data ->
                 Snackbar(
-                    snackbarData = data,
                     containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                     contentColor = MaterialTheme.colorScheme.onSurface,
-                )
+                ) {
+                    Text(
+                        text = data.visuals.message,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         },
         containerColor = MaterialTheme.colorScheme.background,
@@ -530,6 +583,9 @@ private fun requiredPermissions(): Array<String> {
         )
         if (Build.VERSION.SDK_INT >= 33) {
             add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        if (Build.VERSION.SDK_INT <= 28) {
+            add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
         }
     }.toTypedArray()
 }

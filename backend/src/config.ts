@@ -3,6 +3,16 @@ import { z } from "zod";
 
 dotenv.config();
 
+const optionalNonEmptyString = z.preprocess(
+  (value) => typeof value === "string" && value.trim() === "" ? undefined : value,
+  z.string().min(1).optional(),
+);
+
+const optionalPositiveInt = z.preprocess(
+  (value) => typeof value === "string" && value.trim() === "" ? undefined : value,
+  z.coerce.number().int().positive().optional(),
+);
+
 const configSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -16,6 +26,10 @@ const configSchema = z.object({
   MAX_IMAGE_SIZE_MB: z.coerce.number().int().positive().default(30),
   DEFAULT_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
   CORS_ALLOWED_ORIGINS: z.string().optional(),
+  ANDROID_UPDATE_APK_PATH: optionalNonEmptyString,
+  ANDROID_UPDATE_VERSION_CODE: optionalPositiveInt,
+  ANDROID_UPDATE_VERSION_NAME: optionalNonEmptyString,
+  ANDROID_UPDATE_RELEASE_NOTES: z.string().default(""),
 });
 
 const parsed = configSchema.safeParse(process.env);

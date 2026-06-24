@@ -36,7 +36,7 @@ fun HelpFaqScreen() {
             icon = Icons.Outlined.Photo,
             title = "截图没自动传上来？",
             body = "检查 3 件事：\n" +
-                "1) 设置 → 上传：自动上传与实时学习模式都已打开。\n" +
+                "1) 设置 → 上传：自动上传已打开，并确认选择的是实时模式还是约 15 分钟一次的省电模式。\n" +
                 "2) 设置里能看到当前设备名与「已绑定」。\n" +
                 "3) 图片权限是「完整授权」而不是「部分照片」。",
         ),
@@ -44,6 +44,16 @@ fun HelpFaqScreen() {
             icon = Icons.Outlined.Wifi,
             title = "Wi-Fi 下传了，蜂窝数据下不传？",
             body = "这是「仅 Wi-Fi 上传」开关的作用。关掉它就能在蜂窝数据下也上传。",
+        ),
+        FaqEntry(
+            icon = Icons.Outlined.Storage,
+            title = "更新包下载到哪里？",
+            body = "更新包由你绑定的 StudyShot 服务器分发，保存到公共 Downloads/StudyShot Relay 目录。下载完成后 App 会校验 SHA-256 并打开系统安装器；首次使用需要允许“安装未知应用”。",
+        ),
+        FaqEntry(
+            icon = Icons.Outlined.HelpOutline,
+            title = "卸载或清除数据后会怎样？",
+            body = "设备 token 和设置会被删除，需要重新绑定。服务器上的图片和设备记录不会随手机卸载自动删除；管理员可在 /admin 中撤销或删除旧设备。",
         ),
         FaqEntry(
             icon = Icons.Outlined.Notifications,

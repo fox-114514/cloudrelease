@@ -787,6 +787,28 @@ a:hover {
   border-color: var(--ok-border);
 }
 
+.http-confirmation-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 14px 0;
+}
+
+.http-confirmation-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 320px;
+}
+
+.http-confirmation-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 /* ---------- Watch status block ---------- */
 
 .watch-status {

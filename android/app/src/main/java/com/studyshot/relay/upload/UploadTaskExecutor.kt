@@ -57,6 +57,10 @@ internal class UploadTaskExecutor(context: Context) {
             markFailed(taskId, task.sha256, task.fileSize, "Device is not bound")
             return UploadExecutionResult.Failure
         }
+        if (!secureSettings.isEncryptionAvailable || !settings.isServerTransportAllowed()) {
+            markFailed(taskId, task.sha256, task.fileSize, "Upload blocked by credential storage or HTTP safety policy")
+            return UploadExecutionResult.Failure
+        }
         try {
             val info = apiClient.getDeviceMe(settings.serverBaseUrl, token)
             val permissionsJson = JSONObject()

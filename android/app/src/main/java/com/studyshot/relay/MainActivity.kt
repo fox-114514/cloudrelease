@@ -65,11 +65,16 @@ class MainActivity : ComponentActivity() {
             @Suppress("DEPRECATION")
             intent.getParcelableExtra(Intent.EXTRA_STREAM)
         } ?: return
-        if (!app.secureSettings.settings.value.serverAllowsManualUpload()) return
+        val settings = app.secureSettings.settings.value
+        if (!app.secureSettings.isEncryptionAvailable ||
+            !settings.deviceTokenAvailable ||
+            !settings.isServerTransportAllowed() ||
+            !settings.serverAllowsManualUpload()
+        ) return
         lifecycleScope.launch(Dispatchers.IO) {
             app.uploadRepository.enqueueManualUpload(
                 uri,
-                app.secureSettings.settings.value.wifiOnly,
+                settings.wifiOnly,
             )
         }
     }

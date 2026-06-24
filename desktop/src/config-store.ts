@@ -9,6 +9,11 @@ import type {
   RendererSettings,
   SaveSettingsInput,
 } from "./shared";
+import {
+  assertExplicitInsecureHttp,
+  isInsecureHttpUrl,
+  normalizeBaseUrl,
+} from "./url-safety";
 
 interface StoredConfig {
   serverBaseUrl: string;
@@ -47,66 +52,9 @@ function defaultDeviceName(): string {
   return `${os.hostname()} ${process.platform === "win32" ? "Windows" : "Linux"}`;
 }
 
-function normalizeBaseUrl(raw: string): string {
-  const trimmed = raw.trim().replace(/\/+$/, "");
-  if (!trimmed) return "";
-  // 0.5.1: default to https:// when no scheme is given. A missing scheme no
-  // longer silently downgrades to plaintext; callers must opt in via the
-  // allowInsecureHttp flag for non-loopback http:// URLs.
-  if (!/^https?:\/\//i.test(trimmed)) {
-    return `https://${trimmed}`;
-  }
-  return trimmed;
-}
-
-/** True when host is loopback — http:// is safe because traffic never leaves the machine. */
-function isLoopbackHost(baseUrl: string): boolean {
-  try {
-    const u = new URL(normalizeBaseUrl(baseUrl));
-    const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
-    if (host === "localhost" || host === "127.0.0.1" || host === "::1") return true;
-    if (/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)) return true;
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Throws when the URL is a non-loopback http:// address and the caller has not
- * opted in. Loopback is always allowed. Use at every bind/login path so an
- * accidental `http://` typo never leaks the device token or member password.
- */
-function assertExplicitInsecureHttp(
-  baseUrl: string,
-  opts: { allowInsecureHttp: boolean },
-): void {
-  let u: URL;
-  try {
-    u = new URL(normalizeBaseUrl(baseUrl));
-  } catch {
-    throw new Error("服务器地址无效");
-  }
-  if (u.protocol !== "http:") return;
-  if (isLoopbackHost(baseUrl)) return;
-  if (!opts.allowInsecureHttp) {
-    throw new Error(
-      "服务器地址使用了明文 http://，但未启用“允许不安全 HTTP”。" +
-        "明文连接下 token、密码和图片均可能被窃听。" +
-        "请改用 https://，或在受信 VPN/局域网场景下显式启用“允许不安全 HTTP”。",
-    );
-  }
-}
-
-/** True when the URL is http:// AND not loopback — UI shows persistent banner. */
-function isInsecureHttpUrl(baseUrl: string): boolean {
-  try {
-    const u = new URL(normalizeBaseUrl(baseUrl));
-    return u.protocol === "http:" && !isLoopbackHost(baseUrl);
-  } catch {
-    return false;
-  }
-}
+// Pure URL-safety helpers (normalizeBaseUrl, isLoopbackHost,
+// assertExplicitInsecureHttp, isInsecureHttpUrl) are imported from
+// ./url-safety so the Node test runner can exercise them without electron.
 
 export class ConfigStore {
   private readonly configPath: string;
@@ -153,6 +101,7 @@ export class ConfigStore {
   get settings(): RendererSettings {
     const insecureHttp = isInsecureHttpUrl(this.config.serverBaseUrl);
     const allowInsecureHttp = this.config.allowInsecureHttp === true;
+    const isBound = Boolean(this.config.deviceId && this.hasStoredToken());
     return {
       serverBaseUrl: this.config.serverBaseUrl,
       deviceId: this.config.deviceId,
@@ -165,7 +114,7 @@ export class ConfigStore {
       copyToClipboard: this.config.copyToClipboard,
       showNotification: this.config.showNotification,
       startAtLogin: this.config.startAtLogin,
-      isBound: Boolean(this.config.deviceId && this.hasStoredToken()),
+      isBound,
       tokenStorage: this.config.tokenStorage,
       tokenStorageWarning:
         this.config.tokenStorage === "plainFile"
@@ -179,6 +128,11 @@ export class ConfigStore {
       insecureHttpWarning: insecureHttp
         ? "⚠ 当前使用明文 HTTP。token、密码与图片可被同网段窃听，请尽快切换到 HTTPS 或仅在受信 VPN/局域网内继续使用。"
         : undefined,
+      // R0-2: a leftover 0.5.0 config with a non-loopback http:// URL and no
+      // explicit authorization must gate all token-bearing requests until the
+      // user confirms. New binds set allowInsecureHttp at bind time so this
+      // is only true for configs migrated from 0.5.0.
+      httpConfirmationPending: isBound && insecureHttp && !allowInsecureHttp,
     };
   }
 
@@ -380,7 +334,9 @@ export class ConfigStore {
   }
 }
 
-export { normalizeBaseUrl, isLoopbackHost, assertExplicitInsecureHttp, isInsecureHttpUrl };
+// Re-export the pure URL-safety helpers for backwards compatibility with
+// existing import sites (relay-client.ts).
+export { assertExplicitInsecureHttp, isInsecureHttpUrl, normalizeBaseUrl };
 
 function normalizeExcludedDirs(watchDir: string, candidates: string[]): string[] {
   const root = path.resolve(watchDir);

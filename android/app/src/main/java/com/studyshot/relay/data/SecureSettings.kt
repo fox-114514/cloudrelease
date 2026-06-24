@@ -7,6 +7,7 @@ import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import org.json.JSONObject
+import java.net.URI
 
 /**
  * Status of the credential store. Surfaced through [AppSettings] so the UI can
@@ -48,6 +49,7 @@ data class AppSettings(
     val lastKnownPermissionsJson: String = "",
     val permissionsFetchedAt: Long = 0,
     val storageStatus: StorageStatus = StorageStatus.Ok,
+    val allowInsecureHttp: Boolean = false,
     /**
      * True once during the launch that copied a legacy plaintext fallback file
      * into the encrypted store. Used by UI to surface a one-time "credentials
@@ -65,16 +67,29 @@ data class AppSettings(
     fun serverAllowsManualUpload(): Boolean = serverPermission("canManualUpload")
     fun serverAllowsAutoReceive(): Boolean = serverPermission("canAutoReceive")
     fun serverAllowsManualDownload(): Boolean = serverPermission("canManualDownload")
+
+    val httpConfirmationPending: Boolean
+        get() = deviceTokenAvailable &&
+            SecureSettings.isInsecureHttpUrl(serverBaseUrl) &&
+            !allowInsecureHttp
+
+    fun isServerTransportAllowed(): Boolean =
+        !SecureSettings.isInsecureHttpUrl(serverBaseUrl) || allowInsecureHttp
 }
 
-class SecureSettings(context: Context) {
+class SecureSettings internal constructor(
+    context: Context,
+    encryptedPreferencesFactory: (Context) -> android.content.SharedPreferences?,
+) {
+    constructor(context: Context) : this(context, { createEncryptedPreferences(it) })
+
     private val appContext = context.applicationContext
 
     // Encrypted store. Null when EncryptedSharedPreferences failed to initialise.
     // When null, [prefs] falls back to a plain SharedPreferences for NON-SENSITIVE
     // UI prefs (wifiOnly, album selection...) so the user's settings survive, but
     // [saveBinding] / [getDeviceToken] refuse to touch the token.
-    private val encrypted: android.content.SharedPreferences? = createEncryptedPreferences(appContext)
+    private val encrypted: android.content.SharedPreferences? = encryptedPreferencesFactory(appContext)
     private val prefs: android.content.SharedPreferences = encrypted
         ?: appContext.getSharedPreferences(PREFS_FALLBACK_NAME, Context.MODE_PRIVATE)
 
@@ -93,43 +108,61 @@ class SecureSettings(context: Context) {
     private var migratedThisLaunch: Boolean = false
 
     init {
-        // Migration: pre-0.5.1 versions silently fell back to a plain
-        // SharedPreferences when EncryptedSharedPreferences failed. Upgrade
-        // those users either to the encrypted store (preferred path) or, when
-        // encryption is still broken today, force a rebind by clearing the
-        // plaintext token.
+        // R0-4: full-fidelity migration from a 0.5.0 plaintext fallback.
+        //
+        // Old 0.5.0 code only copied the credential fields (token / device
+        // id / bound user) and then deleted the fallback, silently dropping
+        // every UI setting the user had configured. We now iterate every
+        // known key with its declared type, write the destination with
+        // commit() so we can verify the target accepted the write, and only
+        // then delete the plaintext file. If commit() reports failure we
+        // leave the fallback intact so the user doesn't end up with a
+        // half-migrated state.
         val legacy = appContext.getSharedPreferences(PREFS_FALLBACK_NAME, Context.MODE_PRIVATE)
-        val legacyToken = legacy.getString(KEY_DEVICE_TOKEN, null)
-        val hadLegacy = !legacyToken.isNullOrBlank()
+        val hasLegacyData = legacy.all.isNotEmpty()
+        val hadLegacyCredentials =
+            !legacy.getString(KEY_DEVICE_TOKEN, null).isNullOrBlank() ||
+                !legacy.getString(KEY_DEVICE_ID, null).isNullOrBlank()
         when {
-            encrypted != null && hadLegacy -> {
-                // Move the token + binding fields from the plaintext fallback
-                // into the encrypted store, then delete the fallback file.
-                encrypted.edit {
-                    putString(KEY_SERVER_BASE_URL, legacy.getString(KEY_SERVER_BASE_URL, null))
-                    putString(KEY_DEVICE_ID, legacy.getString(KEY_DEVICE_ID, null))
-                    putString(KEY_DEVICE_TOKEN, legacyToken)
-                    putString(KEY_DEVICE_NAME, legacy.getString(KEY_DEVICE_NAME, null))
-                    copyIfPresent(legacy, KEY_BOUND_USER_ID)
-                    copyIfPresent(legacy, KEY_BOUND_OWNER_USER_ID)
-                    copyIfPresent(legacy, KEY_BOUND_USER_DISPLAY_NAME)
-                    copyIfPresent(legacy, KEY_BOUND_USER_ROLE)
-                    copyIfPresent(legacy, KEY_LAST_KNOWN_PROFILE)
-                    copyIfPresent(legacy, KEY_LAST_KNOWN_PERMISSIONS)
-                    val fetchedAt = legacy.getLong(KEY_PERMISSIONS_FETCHED_AT, 0L)
-                    if (fetchedAt != 0L) putLong(KEY_PERMISSIONS_FETCHED_AT, fetchedAt)
+            encrypted != null && hasLegacyData -> {
+                val ok = migrateAllSettings(legacy, encrypted)
+                if (ok) {
+                    legacy.edit().clear().commit()
+                    appContext.deleteSharedPreferences(PREFS_FALLBACK_NAME)
+                    android.util.Log.i(
+                        "SecureSettings",
+                        "migrated plaintext credentials + all settings to encrypted store",
+                    )
+                    migratedThisLaunch = true
+                } else {
+                    android.util.Log.e(
+                        "SecureSettings",
+                        "encrypted store commit() failed; leaving plaintext fallback in place",
+                    )
                 }
-                appContext.deleteSharedPreferences(PREFS_FALLBACK_NAME)
-                android.util.Log.i("SecureSettings", "migrated plaintext credentials to encrypted store")
-                migratedThisLaunch = true
             }
-            // If the user was bound in the unsafe fallback AND encryption is
-            // still broken today, we cannot safely migrate; clear the token so
-            // the user is forced to rebind once encryption recovers. Keep the
-            // device name / settings so they don't have to re-type the rest.
-            encrypted == null && hadLegacy -> {
-                legacy.edit { remove(KEY_DEVICE_TOKEN).remove(KEY_DEVICE_ID) }
-                android.util.Log.w("SecureSettings", "cleared plaintext token because encryption still unavailable; rebind required")
+            // R0-4 §3: encryption is still broken. We must NOT keep a
+            // plaintext token on disk, but every UI setting the user chose
+            // (auto-upload, Wi-Fi, album selection, etc.) is non-sensitive
+            // and should survive. Strip just the token and binding id; the
+            // rest of the fallback file is preserved for next launch.
+            encrypted == null && hadLegacyCredentials -> {
+                legacy.edit()
+                    .remove(KEY_DEVICE_TOKEN)
+                    .remove(KEY_DEVICE_ID)
+                    .remove(KEY_BOUND_USER_ID)
+                    .remove(KEY_BOUND_OWNER_USER_ID)
+                    .remove(KEY_BOUND_USER_DISPLAY_NAME)
+                    .remove(KEY_BOUND_USER_ROLE)
+                    .remove(KEY_LAST_KNOWN_PROFILE)
+                    .remove(KEY_LAST_KNOWN_PERMISSIONS)
+                    .remove(KEY_PERMISSIONS_FETCHED_AT)
+                    .commit()
+                android.util.Log.w(
+                    "SecureSettings",
+                    "cleared plaintext token because encryption still unavailable; " +
+                        "rebinding required, non-sensitive settings preserved",
+                )
             }
             // No legacy: keep going. Also proactively delete a leftover empty
             // fallback file so we don't keep touching plain storage.
@@ -139,13 +172,65 @@ class SecureSettings(context: Context) {
         }
     }
 
-    private fun android.content.SharedPreferences.Editor.copyIfPresent(
+    /**
+     * Copies every known setting from [from] into [to] using the
+     * destination's declared type. Returns true only when commit() reports
+     * that the destination accepted the write. A false return means the
+     * caller must NOT delete [from] — the migration is incomplete.
+     */
+    internal fun migrateAllSettings(
         from: android.content.SharedPreferences,
-        key: String,
-    ): android.content.SharedPreferences.Editor {
-        val v = from.getString(key, null)
-        if (!v.isNullOrBlank()) putString(key, v)
-        return this
+        to: android.content.SharedPreferences,
+    ): Boolean {
+        val editor = to.edit()
+        // ---- String fields (server, device identity, bound user, profile) ----
+        listOf(
+            KEY_SERVER_BASE_URL,
+            KEY_DEVICE_ID,
+            KEY_DEVICE_TOKEN,
+            KEY_DEVICE_NAME,
+            KEY_AUTO_UPLOAD_SCOPE,
+            KEY_BOUND_USER_ID,
+            KEY_BOUND_OWNER_USER_ID,
+            KEY_BOUND_USER_DISPLAY_NAME,
+            KEY_BOUND_USER_ROLE,
+            KEY_LAST_KNOWN_PROFILE,
+            KEY_LAST_KNOWN_PERMISSIONS,
+        ).forEach { key ->
+            val v = from.getString(key, null)
+            if (!v.isNullOrBlank()) editor.putString(key, v)
+        }
+        // ---- Boolean fields (toggles) ----
+        listOf(
+            KEY_AUTO_UPLOAD_ENABLED,
+            KEY_REALTIME_MODE_ENABLED,
+            KEY_WIFI_ONLY,
+            KEY_AUTO_RECEIVE_ENABLED,
+            KEY_DOWNLOAD_NOTIFICATION_ENABLED,
+            KEY_SAVE_DOWNLOADS_TO_GALLERY,
+            KEY_ALLOW_INSECURE_HTTP,
+        ).forEach { key ->
+            // getBoolean returns the supplied default when the key is missing
+            // in [from]; we only copy when [from] actually holds the key.
+            if (from.contains(key)) editor.putBoolean(key, from.getBoolean(key, false))
+        }
+        // ---- Int fields ----
+        listOf(KEY_PENDING_OFFLINE_COUNT).forEach { key ->
+            if (from.contains(key)) editor.putInt(key, from.getInt(key, 0))
+        }
+        // ---- Long fields ----
+        listOf(KEY_PERMISSIONS_FETCHED_AT).forEach { key ->
+            if (from.contains(key)) editor.putLong(key, from.getLong(key, 0L))
+        }
+        // ---- StringSet fields (album selections) ----
+        listOf(KEY_SELECTED_ALBUM_PATHS, KEY_EXCLUDED_ALBUM_PATHS).forEach { key ->
+            val v = from.getStringSet(key, null)
+            if (v != null) editor.putStringSet(key, HashSet(v))
+        }
+        // commit() returns false if the write failed (e.g. disk full, KeyStore
+        // corruption). The caller uses that signal to decide whether it is
+        // safe to delete the plaintext fallback.
+        return editor.commit()
     }
 
     private val settingsFlow = MutableStateFlow(readSettings())
@@ -179,6 +264,7 @@ class SecureSettings(context: Context) {
         boundUserRole: String? = null,
         lastKnownDeviceProfile: String? = null,
         lastKnownPermissionsJson: String? = null,
+        allowInsecureHttp: Boolean? = null,
     ) {
         if (encrypted == null) {
             android.util.Log.e(
@@ -188,8 +274,10 @@ class SecureSettings(context: Context) {
             settingsFlow.value = readSettings() // refresh storageStatus on UI
             return
         }
+        val nextAllowInsecureHttp = allowInsecureHttp ?: settingsFlow.value.allowInsecureHttp
+        val normalizedServer = requireAllowedServer(serverBaseUrl, nextAllowInsecureHttp)
         encrypted.edit {
-            putString(KEY_SERVER_BASE_URL, normalizeBaseUrl(serverBaseUrl))
+            putString(KEY_SERVER_BASE_URL, normalizedServer)
             putString(KEY_DEVICE_ID, deviceId)
             putString(KEY_DEVICE_TOKEN, deviceToken)
             putString(KEY_DEVICE_NAME, deviceName)
@@ -202,6 +290,7 @@ class SecureSettings(context: Context) {
             if (lastKnownPermissionsJson != null) {
                 putLong(KEY_PERMISSIONS_FETCHED_AT, System.currentTimeMillis())
             }
+            putBoolean(KEY_ALLOW_INSECURE_HTTP, nextAllowInsecureHttp)
         }
         settingsFlow.value = readSettings()
     }
@@ -232,11 +321,23 @@ class SecureSettings(context: Context) {
         settingsFlow.value = readSettings()
     }
 
-    fun saveServerAndDeviceName(serverBaseUrl: String, deviceName: String) {
+    fun saveServerAndDeviceName(
+        serverBaseUrl: String,
+        deviceName: String,
+        allowInsecureHttp: Boolean? = null,
+    ) {
+        val nextAllowInsecureHttp = allowInsecureHttp ?: settingsFlow.value.allowInsecureHttp
+        val normalizedServer = requireAllowedServer(serverBaseUrl, nextAllowInsecureHttp)
         prefs.edit {
-            putString(KEY_SERVER_BASE_URL, normalizeBaseUrl(serverBaseUrl))
+            putString(KEY_SERVER_BASE_URL, normalizedServer)
             putString(KEY_DEVICE_NAME, deviceName)
+            putBoolean(KEY_ALLOW_INSECURE_HTTP, nextAllowInsecureHttp)
         }
+        settingsFlow.value = readSettings()
+    }
+
+    fun setAllowInsecureHttp(enabled: Boolean) {
+        prefs.edit(commit = true) { putBoolean(KEY_ALLOW_INSECURE_HTTP, enabled) }
         settingsFlow.value = readSettings()
     }
 
@@ -338,6 +439,7 @@ class SecureSettings(context: Context) {
             lastKnownPermissionsJson = prefs.getString(KEY_LAST_KNOWN_PERMISSIONS, "") ?: "",
             permissionsFetchedAt = prefs.getLong(KEY_PERMISSIONS_FETCHED_AT, 0L),
             storageStatus = storageStatus,
+            allowInsecureHttp = prefs.getBoolean(KEY_ALLOW_INSECURE_HTTP, false),
             migratedFromPlaintext = migratedThisLaunch,
         )
     }
@@ -366,6 +468,7 @@ class SecureSettings(context: Context) {
         private const val KEY_LAST_KNOWN_PROFILE = "last_known_device_profile"
         private const val KEY_LAST_KNOWN_PERMISSIONS = "last_known_permissions_json"
         private const val KEY_PERMISSIONS_FETCHED_AT = "permissions_fetched_at"
+        private const val KEY_ALLOW_INSECURE_HTTP = "allow_insecure_http"
 
         private fun createEncryptedPreferences(context: Context): android.content.SharedPreferences? {
             return try {
@@ -393,11 +496,44 @@ class SecureSettings(context: Context) {
         fun normalizeBaseUrl(raw: String): String {
             val trimmed = raw.trim().trimEnd('/')
             if (trimmed.isBlank()) return ""
-            return if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+            return if (Regex("^[A-Za-z][A-Za-z0-9+.-]*://").containsMatchIn(trimmed)) {
                 trimmed
             } else {
                 "https://$trimmed"
             }
+        }
+
+        fun isInsecureHttpUrl(raw: String): Boolean {
+            val normalized = normalizeBaseUrl(raw)
+            if (normalized.isBlank()) return false
+            val uri = runCatching { URI(normalized) }.getOrNull() ?: return false
+            return uri.scheme.equals("http", ignoreCase = true) && !isLoopbackHost(uri.host)
+        }
+
+        fun requireAllowedServer(raw: String, allowInsecureHttp: Boolean): String {
+            val normalized = normalizeBaseUrl(raw)
+            require(normalized.isNotBlank()) { "请填写服务器地址" }
+            val uri = runCatching { URI(normalized) }.getOrNull()
+                ?: throw IllegalArgumentException("服务器地址格式无效")
+            require(uri.scheme.equals("http", true) || uri.scheme.equals("https", true)) {
+                "服务器地址只支持 HTTP 或 HTTPS"
+            }
+            require(!uri.host.isNullOrBlank()) { "服务器地址格式无效" }
+            if (isInsecureHttpUrl(normalized) && !allowInsecureHttp) {
+                throw IllegalArgumentException(
+                    "非本机 HTTP 会明文传输密码、令牌和图片，请启用 HTTPS 或明确允许不安全 HTTP",
+                )
+            }
+            return normalized
+        }
+
+        private fun isLoopbackHost(host: String?): Boolean {
+            val normalized = host?.lowercase()?.trim('[', ']') ?: return false
+            if (normalized == "localhost" || normalized == "::1") return true
+            val octets = normalized.split('.')
+            return octets.size == 4 &&
+                octets.all { part -> part.toIntOrNull()?.let { it in 0..255 } == true } &&
+                octets.first() == "127"
         }
     }
 }

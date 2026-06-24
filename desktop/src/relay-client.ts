@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import WebSocket from "ws";
 import type { ConfigStore } from "./config-store";
-import { normalizeBaseUrl, assertExplicitInsecureHttp } from "./config-store";
+import { assertExplicitInsecureHttp, normalizeBaseUrl } from "./url-safety";
 import type { HistoryStore } from "./history-store";
 import { logError, logInfo, logWarn } from "./logger";
 import type {
@@ -352,6 +352,20 @@ export class RelayClient {
     };
   }
 
+  /**
+   * R0-2: gate any token-bearing request against the stored authorization.
+   * A 0.5.0 config migrated to 0.5.1 may have a non-loopback http:// URL with
+   * allowInsecureHttp still false; until the user confirms in the UI we must
+   * not send the device token over plaintext. Bind/login paths use their own
+   * assertExplicitInsecureHttp call because they carry fresh input.
+   */
+  private assertHttpAuthorized(): void {
+    const s = this.config.settings;
+    assertExplicitInsecureHttp(s.serverBaseUrl, {
+      allowInsecureHttp: s.allowInsecureHttp,
+    });
+  }
+
   async registerDevice(input: RegisterDeviceInput): Promise<DeviceSelfInfo> {
     const serverBaseUrl = normalizeBaseUrl(input.serverBaseUrl);
     if (!serverBaseUrl) {
@@ -389,6 +403,9 @@ export class RelayClient {
       boundUser: data.user,
       lastKnownProfile: data.profile ?? "custom",
       lastKnownPermissions: data.permissions,
+      // R0-1: propagate the same authorization that gated the request, so the
+      // local persist step doesn't reject a URL the server already acted on.
+      allowInsecureHttp: input.allowInsecureHttp === true || this.config.settings.allowInsecureHttp,
     });
     logInfo("Device registered", { serverBaseUrl, deviceId: data.deviceId });
     this.emitState();
@@ -437,6 +454,7 @@ export class RelayClient {
   }
 
   async getDeviceMe(): Promise<DeviceSelfInfo> {
+    this.assertHttpAuthorized();
     const token = this.config.getDeviceToken();
     const serverBaseUrl = this.config.serverBaseUrl;
     if (!token || !serverBaseUrl) {
@@ -572,6 +590,7 @@ export class RelayClient {
     await this.config.saveSettings({
       serverBaseUrl,
       deviceName: input.deviceNameHint,
+      allowInsecureHttp: input.allowInsecureHttp === true || this.config.settings.allowInsecureHttp,
     });
     this.emitState();
     logInfo("Bind code created with owner login", { serverBaseUrl });
@@ -662,7 +681,10 @@ export class RelayClient {
     });
     const data = await parseEnvelope<LoginResponse>(response);
     this.adminToken = data.accessToken;
-    await this.config.saveSettings({ serverBaseUrl });
+    await this.config.saveSettings({
+      serverBaseUrl,
+      allowInsecureHttp: input.allowInsecureHttp === true || this.config.settings.allowInsecureHttp,
+    });
     this.admin = {
       isLoggedIn: true,
       login: data.user.emailOrLogin ?? input.login.trim(),
@@ -750,6 +772,16 @@ export class RelayClient {
       this.setConnection({ status: "stopped", lastError: "设备未绑定" });
       return;
     }
+    // R0-2: don't open a WebSocket (and ship the token) against a pending
+    // plaintext-HTTP config. Surface a stopped state with an actionable
+    // message; the renderer's confirmation banner lets the user resolve it.
+    if (this.config.settings.httpConfirmationPending) {
+      this.setConnection({
+        status: "stopped",
+        lastError: "明文 HTTP 尚未授权，请在设置中确认或切换 HTTPS。",
+      });
+      return;
+    }
     if (!this.config.autoReceive) {
       this.setConnection({ status: "stopped" });
       return;
@@ -827,6 +859,7 @@ export class RelayClient {
   }
 
   async fetchPending(): Promise<void> {
+    this.assertHttpAuthorized();
     const seen = new Set<string>();
     while (true) {
       const data = await this.getPendingBatch();
@@ -878,6 +911,7 @@ export class RelayClient {
   }
 
   async listLibraryImages(): Promise<ImageLibraryPage> {
+    this.assertHttpAuthorized();
     const token = this.adminToken ?? this.requireManualDownloadToken();
     const response = await fetch(
       apiUrl(this.config.serverBaseUrl, "/api/v1/images?filter=active&limit=100"),
@@ -887,6 +921,7 @@ export class RelayClient {
   }
 
   async downloadLibraryImage(image: LibraryImage): Promise<ManualLibraryDownloadResult> {
+    this.assertHttpAuthorized();
     if (image.isExpired) throw new Error("图片已过期，无法下载");
     const token = this.adminToken ?? this.requireManualDownloadToken();
     const response = await fetch(
@@ -923,6 +958,7 @@ export class RelayClient {
     filePath: string,
     sourceKind: "screenshot" | "manual_share" | "selected_album" | "unknown"
   ): Promise<ManualUploadResult> {
+    this.assertHttpAuthorized();
     const token = this.requireDeviceToken();
     if (!this.config.serverBaseUrl) {
       throw new Error("服务器地址不能为空");
@@ -1203,6 +1239,7 @@ export class RelayClient {
   }
 
   private requireDeviceToken(): string {
+    this.assertHttpAuthorized();
     const token = this.config.getDeviceToken();
     if (!token) {
       throw new Error("设备未绑定或 token 无法解密");
@@ -1211,6 +1248,7 @@ export class RelayClient {
   }
 
   private requireAdminToken(): string {
+    this.assertHttpAuthorized();
     if (!this.adminToken) {
       throw new Error("请先登录管理会话");
     }

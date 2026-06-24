@@ -172,4 +172,13 @@ dependencies {
     kapt("androidx.room:room-compiler:2.6.1")
 
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
+    // §8.8 §3: Android unit-test coverage for SecureSettings (R0-3 storage-
+    // status gating, R0-4 full-fidelity fallback migration). Robolectric
+    // supplies a real SharedPreferences implementation on the JVM so we
+    // don't need an emulator for these tests.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.11.1")
+    testImplementation("androidx.test:core:1.5.0")
+    testImplementation("androidx.test.ext:junit:1.1.5")
 }

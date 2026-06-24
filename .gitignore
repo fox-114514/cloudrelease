@@ -52,6 +52,10 @@ android/app/keystore/
 data/
 !android/app/src/main/java/**/data/
 !android/app/src/main/java/**/data/**
+!android/app/src/test/java/**/data/
+!android/app/src/test/java/**/data/**
+!android/app/src/androidTest/java/**/data/
+!android/app/src/androidTest/java/**/data/**
 *.db
 *.sqlite
 *.sqlite3
@@ -95,6 +99,3 @@ temp/
 # Android
 android/local.properties
 
-# Internal docs (AI agent handoff, bug reports, audit reports, local dev notes).
-# Not for the public remote — keep them in this working copy only.
-docs-internal/

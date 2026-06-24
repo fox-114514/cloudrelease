@@ -70,6 +70,14 @@ class RelayReceiveService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val settings = app.secureSettings.settings.value
+        if (!app.secureSettings.isEncryptionAvailable ||
+            !settings.deviceTokenAvailable ||
+            !settings.isServerTransportAllowed()
+        ) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
             ACTION_ACCEPT_PENDING -> scope.launch { acceptPending() }
             ACTION_SKIP_PENDING -> scope.launch { skipPending() }
@@ -93,7 +101,13 @@ class RelayReceiveService : Service() {
         if (destroyed) return@withLock
         val settings = app.secureSettings.settings.value
         val token = app.secureSettings.getDeviceToken()
-        if (!settings.autoReceiveEnabled || !settings.serverAllowsAutoReceive() || settings.serverBaseUrl.isBlank() || token.isNullOrBlank()) {
+        if (!app.secureSettings.isEncryptionAvailable ||
+            !settings.isServerTransportAllowed() ||
+            !settings.autoReceiveEnabled ||
+            !settings.serverAllowsAutoReceive() ||
+            settings.serverBaseUrl.isBlank() ||
+            token.isNullOrBlank()
+        ) {
             stopSelf()
             return@withLock
         }
@@ -168,7 +182,11 @@ class RelayReceiveService : Service() {
     private suspend fun checkPending() {
         val settings = app.secureSettings.settings.value
         val token = app.secureSettings.getDeviceToken() ?: return
-        if (!settings.autoReceiveEnabled || !settings.serverAllowsAutoReceive() || settings.serverBaseUrl.isBlank()) return
+        if (!settings.isServerTransportAllowed() ||
+            !settings.autoReceiveEnabled ||
+            !settings.serverAllowsAutoReceive() ||
+            settings.serverBaseUrl.isBlank()
+        ) return
 
         runCatching {
             val pending = app.apiClient.getPendingDeliveries(settings.serverBaseUrl, token)
@@ -185,6 +203,7 @@ class RelayReceiveService : Service() {
         val seen = mutableSetOf<String>()
         while (!destroyed) {
             val settings = app.secureSettings.settings.value
+            if (!settings.isServerTransportAllowed()) break
             val token = app.secureSettings.getDeviceToken() ?: break
             val response = try {
                 app.apiClient.getPendingDeliveries(settings.serverBaseUrl, token)
@@ -250,6 +269,9 @@ class RelayReceiveService : Service() {
 
     private suspend fun downloadOnce(delivery: DeliveryPayload) {
         val settings = app.secureSettings.settings.value
+        if (!settings.isServerTransportAllowed()) {
+            throw IllegalStateException("Download blocked by HTTP safety policy")
+        }
         val token = app.secureSettings.getDeviceToken() ?: throw IllegalStateException("Device is not bound")
         val downloaded = app.apiClient.downloadImage(settings.serverBaseUrl, token, delivery.image.id)
         val sha256 = downloaded.bytes.sha256()
@@ -356,6 +378,7 @@ class RelayReceiveService : Service() {
         localPathHint: String?,
     ) {
         val settings = app.secureSettings.settings.value
+        if (!settings.isServerTransportAllowed()) return
         val token = app.secureSettings.getDeviceToken() ?: return
         runCatching {
             app.apiClient.ackDelivery(
@@ -394,6 +417,7 @@ class RelayReceiveService : Service() {
 
     private suspend fun refreshEffectivePermissions(): Boolean {
         val settings = app.secureSettings.settings.value
+        if (!settings.isServerTransportAllowed()) return false
         val token = app.secureSettings.getDeviceToken() ?: return false
         return try {
             val info = app.apiClient.getDeviceMe(settings.serverBaseUrl, token)
@@ -434,7 +458,11 @@ class RelayReceiveService : Service() {
 
     private fun scheduleReconnect() {
         val settings = app.secureSettings.settings.value
-        if (!settings.autoReceiveEnabled || !settings.serverAllowsAutoReceive() || destroyed) return
+        if (!settings.isServerTransportAllowed() ||
+            !settings.autoReceiveEnabled ||
+            !settings.serverAllowsAutoReceive() ||
+            destroyed
+        ) return
         reconnectJob.getAndSet(null)?.cancel()
         reconnectJob.set(scope.launch {
             val delayMs = reconnectDelayMs.get().coerceAtMost(60_000L)

@@ -23,6 +23,7 @@ let configStore: ConfigStore;
 let historyStore: HistoryStore;
 let relayClient: RelayClient;
 let directoryWatcher: DirectoryWatcher | null = null;
+let directoryWatcherTeardown: Promise<void> = Promise.resolve();
 let permissionRefreshTimer: NodeJS.Timeout | undefined;
 let isQuitting = false;
 
@@ -121,7 +122,8 @@ function effectiveWatchExcludedDirs(dir: string): string[] {
 
 function buildWatcher(dir: string): DirectoryWatcher {
   const excludedDirs = effectiveWatchExcludedDirs(dir);
-  return new DirectoryWatcher({
+  let instance: DirectoryWatcher;
+  instance = new DirectoryWatcher({
     watchDir: dir,
     excludedDirs,
     onLog: (message) => logInfo(`[watch] ${message}`),
@@ -137,8 +139,10 @@ function buildWatcher(dir: string): DirectoryWatcher {
     // handle and update UI state so the user can click "start" again.
     onFatal: (message) => {
       logError(`[watch] ${message}`);
-      directoryWatcher = null;
-      relayClient?.updateWatchState({ active: false, lastError: message });
+      if (directoryWatcher === instance) {
+        directoryWatcher = null;
+        relayClient?.updateWatchState({ active: false, lastError: message });
+      }
     },
     onFile: async (filePath) => {
       if (!relayClient) return;
@@ -162,13 +166,25 @@ function buildWatcher(dir: string): DirectoryWatcher {
       }
     },
   });
+  return instance;
 }
 
 async function startDirectoryWatcher(): Promise<void> {
+  await directoryWatcherTeardown.catch(() => undefined);
   if (directoryWatcher) {
     return;
   }
   if (!relayClient) return;
+  // R0-2: don't start the file watcher while HTTP authorization is pending —
+  // the onFile handler would try to upload and ship the device token over
+  // plaintext. The renderer's confirmation banner lets the user resolve it.
+  if (configStore.settings.httpConfirmationPending) {
+    relayClient.updateWatchState({
+      active: false,
+      lastError: "明文 HTTP 尚未授权，请在设置中确认或切换 HTTPS 后再启动监听。",
+    });
+    return;
+  }
   if (configStore.settings.lastKnownPermissions?.canAutoUpload === false) {
     relayClient.updateWatchState({ active: false, lastError: "服务端未允许本设备自动上传" });
     return;
@@ -197,18 +213,31 @@ async function stopDirectoryWatcher(): Promise<void> {
   if (!directoryWatcher) return;
   const w = directoryWatcher;
   directoryWatcher = null;
-  await w.stop();
+  const teardown = w.stop();
+  directoryWatcherTeardown = teardown;
+  try {
+    await teardown;
+  } finally {
+    if (directoryWatcherTeardown === teardown) {
+      directoryWatcherTeardown = Promise.resolve();
+    }
+  }
   relayClient?.updateWatchState({ active: false });
 }
 
 async function applyWatcherConfig(): Promise<void> {
+  const httpPending = configStore.settings.httpConfirmationPending;
   const enabled =
     configStore.autoUpload &&
     configStore.settings.isBound &&
+    !httpPending &&
     configStore.settings.lastKnownPermissions?.canAutoUpload !== false;
   relayClient?.updateWatchState({
     enabled,
     dir: configStore.watchDir,
+    lastError: httpPending && configStore.autoUpload && configStore.settings.isBound
+      ? "明文 HTTP 尚未授权，监听已暂停。"
+      : undefined,
   });
   if (enabled) {
     if (!directoryWatcher || !directoryWatcher.matches(
@@ -590,7 +619,16 @@ async function start(): Promise<void> {
   createWindow();
   createTray();
 
-  if (configStore.settings.isBound) {
+  // R0-2: an already-bound config with a non-loopback http:// URL that was
+  // never explicitly authorized (typical 0.5.0 → 0.5.1 upgrade) must NOT
+  // issue any token-bearing request at startup. We surface a confirmation
+  // banner in the renderer; only after the user confirms do we connect and
+  // refresh. The watcher is also gated because auto-upload would send the
+  // token. The permission refresh timer keeps running but
+  // refreshEffectivePermissions → getDeviceMe re-checks the gate.
+  const httpConfirmationPending = configStore.settings.httpConfirmationPending;
+
+  if (configStore.settings.isBound && !httpConfirmationPending) {
     try {
       await relayClient.refreshEffectivePermissions();
     } catch (err) {
@@ -601,6 +639,7 @@ async function start(): Promise<void> {
   }
 
   if (
+    !httpConfirmationPending &&
     configStore.autoReceive &&
     configStore.settings.isBound &&
     configStore.settings.lastKnownPermissions?.canAutoReceive !== false

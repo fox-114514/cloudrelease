@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { bindDevice, bindWithLogin, loadConfig, previewBindCode, refreshDeviceIdentity, saveConfig, serverAllows, unbind, } from "../config.js";
 import { startWatcher } from "../watcher.js";
 import { WsReceiveClient } from "../ws-client.js";
-import { defaultDownloadDir, ensureAllowedDir, isAllowedDir, normalizeBaseUrl } from "../utils.js";
+import { assertExplicitInsecureHttp, defaultDownloadDir, ensureAllowedDir, isAllowedDir, normalizeBaseUrl } from "../utils.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ---- Local Web UI session auth ----
 // The Web UI listens on 127.0.0.1 but the same machine can host other users
@@ -26,7 +26,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // requests additionally require Origin == http://127.0.0.1:<port> to block
 // CSRF via cross-origin form submissions.
 const SESSION_COOKIE_NAME = "ssr_session";
-const SESSION_MAX_AGE_SECONDS = 60 * 60 * 12; // 12h
+// R0-5 §4: the session is bound to the Web server process — when the
+// process restarts the sessionToken changes and any pre-existing cookie
+// stops being accepted. We therefore do NOT advertise an artificial Max-Age
+// in the Set-Cookie header; an absent Max-Age makes the browser treat this
+// as a session cookie that is dropped on browser exit, matching the
+// process-lifetime semantics of the token.
 function randomToken(bytes) {
     return crypto.randomBytes(bytes).toString("base64url");
 }
@@ -90,7 +95,9 @@ async function startReceive() {
     const config = await loadConfig();
     if (!config.device)
         throw new Error("Not bound");
-    config.device = await refreshDeviceIdentity(config.device);
+    config.device = await refreshDeviceIdentity(config.device, {
+        allowInsecureHttp: config.allowInsecureHttp,
+    });
     await saveConfig(config);
     if (!serverAllows(config.device, "canAutoReceive")) {
         throw new Error("服务端未允许本设备自动接收");
@@ -139,7 +146,9 @@ async function startWatch() {
     const config = await loadConfig();
     if (!config.device)
         throw new Error("Not bound");
-    config.device = await refreshDeviceIdentity(config.device);
+    config.device = await refreshDeviceIdentity(config.device, {
+        allowInsecureHttp: config.allowInsecureHttp,
+    });
     await saveConfig(config);
     if (!config.watchDir)
         throw new Error("Watch directory not configured");
@@ -169,7 +178,14 @@ export function recordRecentDelivery(entry) {
     }
 }
 export async function startWebServer(port = 0) {
-    const app = fastify({ logger: false });
+    const app = fastify({
+        logger: false,
+        // R0-5 §1: when the web server is shutting down, fastify must not block
+        // on idle keep-alive sockets left open by browsers (e.g. EventSource,
+        // long-poll fallbacks). "idle" closes only the sockets that are
+        // currently between requests, so any in-flight request still finishes.
+        forceCloseConnections: "idle",
+    });
     // Per-startup session state. Closed over by the onRequest hook so each
     // invocation (including tests) gets fresh credentials and the boot token
     // can never leak to another instance.
@@ -178,12 +194,18 @@ export async function startWebServer(port = 0) {
         bootToken: randomToken(32),
         expectedOrigin: "",
     };
+    const activeLogStreams = new Set();
+    // R0-5 §2: unref() the timer so it never blocks process exit. Tests and
+    // a clean SIGTERM shutdown of the Web server should not have to wait for
+    // the next 5-minute tick to release the event loop.
     const permissionTimer = setInterval(() => {
         void (async () => {
             const config = await loadConfig();
             if (!config.device)
                 return;
-            config.device = await refreshDeviceIdentity(config.device);
+            config.device = await refreshDeviceIdentity(config.device, {
+                allowInsecureHttp: config.allowInsecureHttp,
+            });
             await saveConfig(config);
             if (!serverAllows(config.device, "canAutoUpload"))
                 await stopWatch();
@@ -191,6 +213,7 @@ export async function startWebServer(port = 0) {
                 await stopReceive();
         })().catch((err) => broadcastLog(`定时刷新服务端权限失败：${err.message}`, "warn"));
     }, 5 * 60 * 1000);
+    permissionTimer.unref();
     // Authentication gate. Every /api/* request must carry a valid session
     // cookie. State-changing requests additionally require Origin ==
     // http://127.0.0.1:<port> to block CSRF via cross-origin form posts.
@@ -240,14 +263,16 @@ export async function startWebServer(port = 0) {
         // One-time use: invalidate the boot token before minting the cookie so a
         // replay (e.g. via browser history) cannot mint a second session.
         sessionState.bootToken = null;
-        reply.header("Set-Cookie", `${SESSION_COOKIE_NAME}=${encodeURIComponent(sessionState.sessionToken)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MAX_AGE_SECONDS}`);
+        reply.header("Set-Cookie", `${SESSION_COOKIE_NAME}=${encodeURIComponent(sessionState.sessionToken)}; Path=/; HttpOnly; SameSite=Strict`);
         return reply.redirect("/", 303);
     });
     app.get("/api/config", async (_req, reply) => {
         const config = await loadConfig();
         if (config.device) {
             try {
-                config.device = await refreshDeviceIdentity(config.device);
+                config.device = await refreshDeviceIdentity(config.device, {
+                    allowInsecureHttp: config.allowInsecureHttp,
+                });
                 await saveConfig(config);
             }
             catch (err) {
@@ -407,7 +432,9 @@ export async function startWebServer(port = 0) {
         const config = await loadConfig();
         if (!config.device)
             return reply.status(400).send({ success: false, error: { message: "Not bound" } });
-        config.device = await refreshDeviceIdentity(config.device);
+        config.device = await refreshDeviceIdentity(config.device, {
+            allowInsecureHttp: config.allowInsecureHttp,
+        });
         await saveConfig(config);
         if (!serverAllows(config.device, "canAutoUpload"))
             await stopWatch();
@@ -483,10 +510,41 @@ export async function startWebServer(port = 0) {
         }
         return auth.slice(7);
     }
+    async function requireSafeConfiguredDevice(reply) {
+        const config = await loadConfig();
+        if (!config.device) {
+            reply.status(400).send({ success: false, error: { message: "Not bound" } });
+            return null;
+        }
+        try {
+            assertExplicitInsecureHttp(config.device.serverBaseUrl, {
+                allowInsecureHttp: config.allowInsecureHttp,
+            });
+            return config.device;
+        }
+        catch (err) {
+            reply.status(403).send({ success: false, error: { message: err.message } });
+            return null;
+        }
+    }
     async function resolveImageLibraryToken(req, reply) {
         const config = await loadConfig();
         if (!config.device) {
             reply.status(400).send({ success: false, error: { message: "Not bound" } });
+            return null;
+        }
+        // R0-2: don't ship the device token (or relay an admin JWT) over a
+        // non-loopback http:// URL that was never explicitly authorized.
+        try {
+            assertExplicitInsecureHttp(config.device.serverBaseUrl, {
+                allowInsecureHttp: config.allowInsecureHttp,
+            });
+        }
+        catch (err) {
+            reply.status(403).send({
+                success: false,
+                error: { message: err.message },
+            });
             return null;
         }
         const auth = req.headers.authorization;
@@ -523,10 +581,10 @@ export async function startWebServer(port = 0) {
         if (!jwt)
             return;
         const { imageId } = req.params;
-        const config = await loadConfig();
-        if (!config.device)
-            return reply.status(400).send({ success: false, error: { message: "Not bound" } });
-        const response = await fetch(`${normalizeBaseUrl(config.device.serverBaseUrl)}/api/v1/images/${encodeURIComponent(imageId)}`, { method: "DELETE", headers: { Authorization: `Bearer ${jwt}` } });
+        const device = await requireSafeConfiguredDevice(reply);
+        if (!device)
+            return;
+        const response = await fetch(`${normalizeBaseUrl(device.serverBaseUrl)}/api/v1/images/${encodeURIComponent(imageId)}`, { method: "DELETE", headers: { Authorization: `Bearer ${jwt}` } });
         const body = await response.text();
         return reply.status(response.status).type("application/json").send(body);
     });
@@ -547,10 +605,10 @@ export async function startWebServer(port = 0) {
         return reply.send(buffer);
     });
     app.post("/api/proxy/auth/login", async (req, reply) => {
-        const config = await loadConfig();
-        if (!config.device)
-            return reply.status(400).send({ error: { message: "Not bound" } });
-        const url = `${normalizeBaseUrl(config.device.serverBaseUrl)}/api/v1/auth/login`;
+        const device = await requireSafeConfiguredDevice(reply);
+        if (!device)
+            return;
+        const url = `${normalizeBaseUrl(device.serverBaseUrl)}/api/v1/auth/login`;
         const response = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -560,22 +618,30 @@ export async function startWebServer(port = 0) {
         return reply.status(response.status).send(data);
     });
     app.get("/api/logs", async (req, reply) => {
-        reply.raw.writeHead(200, {
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-cache",
-            Connection: "keep-alive",
-        });
         const handler = (data) => {
             reply.raw.write(`data: ${data}\n\n`);
         };
         logEmitter.on("log", handler);
         const heartbeat = setInterval(() => {
-            reply.raw.write(":heartbeat\n\n");
+            if (!reply.raw.writableEnded)
+                reply.raw.write(":heartbeat\n\n");
         }, 15000);
-        req.socket.on("close", () => {
+        heartbeat.unref();
+        let stream;
+        const cleanup = () => {
             clearInterval(heartbeat);
             logEmitter.off("log", handler);
+            activeLogStreams.delete(stream);
+        };
+        stream = { reply, heartbeat, handler, cleanup };
+        activeLogStreams.add(stream);
+        req.socket.once("close", cleanup);
+        reply.raw.writeHead(200, {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
         });
+        reply.raw.write(":connected\n\n");
     });
     app.setNotFoundHandler(async (req, reply) => {
         if (req.method === "GET" && !req.url.startsWith("/api/")) {
@@ -609,9 +675,17 @@ export async function startWebServer(port = 0) {
         url,
         bootUrl,
         close: async () => {
+            // R0-5 §2: the close path must always run every teardown step even if
+            // an earlier one throws. Otherwise a failed stopReceive() would leave
+            // the WebSocket receiver running and the process unable to exit.
             clearInterval(permissionTimer);
-            await stopReceive();
-            await stopWatch();
+            await stopReceive().catch((err) => broadcastLog(`关闭接收客户端失败：${err.message}`, "warn"));
+            await stopWatch().catch((err) => broadcastLog(`关闭目录监听失败：${err.message}`, "warn"));
+            for (const stream of [...activeLogStreams]) {
+                stream.cleanup();
+                if (!stream.reply.raw.writableEnded)
+                    stream.reply.raw.end();
+            }
             await app.close();
         },
     };

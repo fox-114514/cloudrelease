@@ -28,6 +28,11 @@ export class DirectoryWatcher {
   private queue: Promise<void> = Promise.resolve();
   private currentDir: string | null = null;
   private readonly onFatal?: (message: string) => void;
+  /**
+   * Shared teardown promise. It deduplicates repeated fatal events and lets
+   * start()/stop() wait until the old filesystem handle has actually closed.
+   */
+  private fatalTeardown: Promise<void> | null = null;
 
   constructor(private readonly options: WatcherOptions) {
     this.onFatal = options.onFatal;
@@ -49,12 +54,15 @@ export class DirectoryWatcher {
   }
 
   async start(): Promise<void> {
+    await this.fatalTeardown?.catch(() => undefined);
     if (this.watcher) {
       await this.stop();
     }
     const log = (msg: string) => this.options.onLog?.(msg);
     log(`开始监听 ${this.options.watchDir}`);
     this.currentDir = this.options.watchDir;
+    // Re-arm for a fresh watcher instance. A previous fatal error on an
+    // older watcher must not disable this new one.
 
     this.watcher = chokidar.watch(this.options.watchDir, {
       ignored: (candidate) => this.shouldIgnore(candidate),
@@ -89,12 +97,45 @@ export class DirectoryWatcher {
     this.watcher.on("error", (err) => {
       const message = `监听器致命错误: ${err.message}`;
       log(message);
-      // Tear down our handle immediately so callers see isWatching=false and
-      // can re-create the watcher when the user clicks start again.
-      this.watcher = null;
-      this.currentDir = null;
-      this.onFatal?.(message);
+      void this.handleFatal(message).catch((closeErr) => {
+        log(`关闭致命监听器时出错: ${(closeErr as Error).message}`);
+      });
     });
+  }
+
+  /**
+   * R0-6 §1-2: fatal teardown keeps the FSWatcher reference, clears public
+   * state first so isWatching flips to false, then closes the underlying
+   * watcher, and only after close() resolves notifies onFatal. §3: the
+   * fatalTeardown promise makes this idempotent across repeated error events
+   * and concurrent start()/stop() calls.
+   */
+  private async handleFatal(message: string): Promise<void> {
+    if (this.fatalTeardown) {
+      await this.fatalTeardown;
+      return;
+    }
+    // §1: keep the reference so we can close() it.
+    const w = this.watcher;
+    // §1: flip public state to stopped BEFORE close() so callers see
+    // isWatching=false immediately and can prepare to re-create.
+    this.watcher = null;
+    this.currentDir = null;
+    const teardown = (async () => {
+      if (w) {
+        await this.queue.catch(() => undefined);
+        await w.close().catch(() => undefined);
+      }
+      // Notify only after the original watcher is closed. A caller that
+      // starts again while close() is pending waits on [fatalTeardown].
+      this.onFatal?.(message);
+    })();
+    this.fatalTeardown = teardown;
+    try {
+      await teardown;
+    } finally {
+      if (this.fatalTeardown === teardown) this.fatalTeardown = null;
+    }
   }
 
   private shouldIgnore(candidate: string): boolean {
@@ -111,6 +152,12 @@ export class DirectoryWatcher {
   }
 
   async stop(): Promise<void> {
+    // If fatal teardown already owns the handle, wait for it instead of
+    // double-closing or returning while the filesystem handle is still live.
+    if (this.fatalTeardown) {
+      await this.fatalTeardown.catch(() => undefined);
+      return;
+    }
     if (!this.watcher) {
       return;
     }

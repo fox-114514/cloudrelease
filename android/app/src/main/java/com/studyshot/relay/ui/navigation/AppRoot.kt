@@ -2,6 +2,7 @@ package com.studyshot.relay.ui.navigation
 
 import android.Manifest
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -11,13 +12,22 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Forum
 import androidx.compose.material.icons.outlined.HelpOutline
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
@@ -29,18 +39,22 @@ import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
@@ -97,27 +111,15 @@ fun AppRoot(
         (settings.storageStatus as? StorageStatus.Unavailable)
     }
 
-    if (storageUnavailable != null) {
-        // Persistent error: a transient Snackbar would disappear in seconds
-        // and leave the user clicking bind/upload in the dark. An AlertDialog
-        // stays open until dismissed and makes the blocked state explicit.
-        AlertDialog(
-            onDismissRequest = {},
-            title = { Text("加密存储不可用") },
-            text = {
-                Text(
-                    storageUnavailable.message +
-                        "\n\n在此问题解决前，绑定、上传、接收功能均被禁用。" +
-                        "已尝试过的迁移会保留非敏感设置；恢复 KeyStore 后请重新绑定设备。",
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = { /* acknowledged — dialog is informational */ }) {
-                    Text("我知道了")
-                }
-            },
-        )
+    // R0-3: persistent top-of-screen error banner instead of a modal that
+    // traps the user. The user can dismiss it with "我知道了" and it stays
+    // dismissed for the rest of the launch. The Settings / Help destinations
+    // remain reachable from the bottom nav, so the user can still diagnose
+    // the issue or clear data to recover.
+    var storageErrorDismissed by rememberSaveable {
+        mutableStateOf(false)
     }
+    val showStorageError = storageUnavailable != null && !storageErrorDismissed
 
     if (settings.pendingOfflineCount > 0) {
         AlertDialog(
@@ -155,13 +157,22 @@ fun AppRoot(
         }
     }
 
+    // R0-3 §3: every service that ships a device token over the network
+    // must also gate on storageStatus being Ok. Without encrypted storage
+    // we cannot persist or present a token safely, so the foreground
+    // services must not start (and must not retry on the next tick).
+    val storageReady = settings.storageStatus is StorageStatus.Ok
+    val transportReady = settings.isServerTransportAllowed()
+
     LaunchedEffect(
         settings.autoUploadEnabled,
         settings.realtimeModeEnabled,
         settings.lastKnownPermissionsJson,
         permissionRefreshTick.intValue,
+        storageReady,
+        transportReady,
     ) {
-        if (settings.autoUploadEnabled && settings.serverAllowsAutoUpload() && settings.realtimeModeEnabled && hasImagePermission()) {
+        if (storageReady && transportReady && settings.autoUploadEnabled && settings.serverAllowsAutoUpload() && settings.realtimeModeEnabled && hasImagePermission()) {
             startRealtimeService()
         } else {
             stopRealtimeService()
@@ -177,16 +188,24 @@ fun AppRoot(
         settings.excludedAlbumPaths,
         settings.lastKnownPermissionsJson,
         permissionRefreshTick.intValue,
+        storageReady,
+        transportReady,
     ) {
-        if (settings.autoUploadEnabled && settings.serverAllowsAutoUpload() && !settings.realtimeModeEnabled && hasImagePermission()) {
+        if (storageReady && transportReady && settings.autoUploadEnabled && settings.serverAllowsAutoUpload() && !settings.realtimeModeEnabled && hasImagePermission()) {
             state.app.uploadRepository.schedulePowerSaveScan(settings.wifiOnly)
         } else {
             state.app.uploadRepository.cancelPowerSaveScan()
         }
     }
 
-    LaunchedEffect(settings.autoReceiveEnabled, settings.deviceTokenAvailable, settings.lastKnownPermissionsJson) {
-        if (settings.autoReceiveEnabled && settings.serverAllowsAutoReceive() && settings.deviceTokenAvailable) {
+    LaunchedEffect(
+        settings.autoReceiveEnabled,
+        settings.deviceTokenAvailable,
+        settings.lastKnownPermissionsJson,
+        storageReady,
+        transportReady,
+    ) {
+        if (storageReady && transportReady && settings.autoReceiveEnabled && settings.serverAllowsAutoReceive() && settings.deviceTokenAvailable) {
             startReceiveService()
         } else {
             stopReceiveService()
@@ -241,6 +260,7 @@ fun AppRoot(
     }
 
     val onPickImage: () -> Unit = { pickImage.launch("image/*") }
+    // `onPickImage` is forwarded into AppNavHost below.
 
     Scaffold(
         bottomBar = {
@@ -257,116 +277,192 @@ fun AppRoot(
         },
         containerColor = MaterialTheme.colorScheme.background,
     ) { padding ->
-        NavHost(
-            navController = navController,
-            startDestination = Destination.Home.route,
-            modifier = Modifier.padding(padding),
-            enterTransition = {
-                slideInHorizontally(
-                    initialOffsetX = { it / 6 },
-                    animationSpec = tween(220),
-                ) + fadeIn(tween(220))
-            },
-            exitTransition = {
-                slideOutHorizontally(
-                    targetOffsetX = { -it / 8 },
-                    animationSpec = tween(180),
-                ) + fadeOut(tween(180))
-            },
-            popEnterTransition = {
-                slideInHorizontally(
-                    initialOffsetX = { -it / 8 },
-                    animationSpec = tween(220),
-                ) + fadeIn(tween(220))
-            },
-            popExitTransition = {
-                slideOutHorizontally(
-                    targetOffsetX = { it / 6 },
-                    animationSpec = tween(180),
-                ) + fadeOut(tween(180))
-            },
-        ) {
-            composable(Destination.Home.route) {
-                HomeScreen(
-                    state = state,
-                    onNavigate = { navController.navigate(it) },
-                    onPickImage = onPickImage,
-                    hasImagePermission = hasImagePermission(),
-                    hasPartialImagePermission = hasPartialImagePermission(),
-                    hasDeviceToken = settings.deviceTokenAvailable,
+        Column(modifier = Modifier.padding(padding)) {
+            if (showStorageError) {
+                StorageErrorBanner(
+                    message = storageUnavailable?.message ?: "",
+                    onDismiss = { storageErrorDismissed = true },
                 )
             }
-            composable(Destination.Activity.route) {
-                ActivityScreen(state = state, onPickImage = onPickImage)
-            }
-            composable(Destination.Settings.route) {
-                SettingsScreen(
-                    state = state,
-                    onNavigate = { navController.navigate(it) },
-                )
-            }
-            composable(Destination.Help.route) {
-                HelpScreen(
-                    state = state,
-                    onNavigate = { navController.navigate(it) },
-                )
-            }
-            composable(Destination.Bind.route) {
-                BindScreen(state = state)
-            }
-            composable(Destination.UploadSettings.route) {
-                UploadSettingsScreen(
-                    state = state,
-                    onNavigate = { navController.navigate(it) },
-                    onRequestPermission = { permissionLauncher.launch(requiredPermissions()) },
-                    hasImagePermission = hasImagePermission(),
-                    hasPartialImagePermission = hasPartialImagePermission(),
-                )
-            }
-            composable(Destination.WatchAlbums.route) {
-                WatchAlbumsScreen(
-                    state = state,
-                    onAddAlbum = { pickAlbumDirectory.launch(null) },
-                    onAddExcludedAlbum = { pickExcludedAlbumDirectory.launch(null) },
-                    hasImagePermission = hasImagePermission(),
-                )
-            }
-            composable(Destination.ReceiveSettings.route) {
-                ReceiveSettingsScreen(state = state)
-            }
-            composable(Destination.ManagementLogin.route) {
-                ManagementLoginScreen(state = state)
-            }
-            composable(Destination.ManagementDevices.route) {
-                ManagementDevicesScreen(
-                    state = state,
-                    onNavigate = { navController.navigate(it) },
-                )
-            }
-            composable(
-                Destination.ManagementDeviceDetail.route,
-                arguments = listOf(navArgument("deviceId") { type = NavType.StringType }),
-            ) { backStackEntry ->
-                val deviceId = backStackEntry.arguments?.getString("deviceId") ?: ""
-                ManagementDeviceDetailScreen(
-                    state = state,
-                    deviceId = deviceId,
-                    onBack = { navController.popBackStack() },
-                )
-            }
-            composable(Destination.ManagementCreateCode.route) {
-                ManagementCreateCodeScreen(state = state)
-            }
-            composable(Destination.HelpFaq.route) { HelpFaqScreen() }
-            composable(Destination.HelpAbout.route) { HelpAboutScreen(state = state) }
-            composable(Destination.HelpFirstRun.route) {
-                HelpFirstRunScreen(
-                    onNavigate = { navController.navigate(it) },
-                )
-            }
-            composable(Destination.HelpBackground.route) { HelpBackgroundScreen() }
-            composable(Destination.HelpPermissions.route) { HelpPermissionsScreen() }
+            AppNavHost(
+                navController = navController,
+                state = state,
+                hasImagePermission = hasImagePermission,
+                hasPartialImagePermission = hasPartialImagePermission,
+                onPickImage = onPickImage,
+                permissionLauncher = permissionLauncher,
+                pickAlbumDirectory = pickAlbumDirectory,
+                pickExcludedAlbumDirectory = pickExcludedAlbumDirectory,
+                hasDeviceToken = settings.deviceTokenAvailable,
+            )
         }
+    }
+}
+
+@Composable
+private fun StorageErrorBanner(
+    message: String,
+    onDismiss: () -> Unit,
+) {
+    // Persistent banner that lives at the top of the screen. R0-3 §1
+    // rejected a modal because it traps the user and blocks access to
+    // Settings / Help; an "我知道了" button is wired to a real dismiss
+    // (rememberSaveable state) so the user can hide it for the rest of
+    // the launch without losing the underlying data.
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        tonalElevation = 0.dp,
+    ) {
+        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.Top) {
+                Text(
+                    text = "加密存储不可用",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Outlined.Close, contentDescription = "我知道了")
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "建议：进入 设置 → 应用 → StudyShot Relay → 存储 → 清除数据 并重启；" +
+                    "或重启设备后重试。设置/帮助仍可访问以查看诊断信息。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+}
+
+@Composable
+private fun AppNavHost(
+    navController: NavHostController,
+    state: AppState,
+    hasImagePermission: () -> Boolean,
+    hasPartialImagePermission: () -> Boolean,
+    onPickImage: () -> Unit,
+    permissionLauncher: androidx.activity.result.ActivityResultLauncher<Array<String>>,
+    pickAlbumDirectory: androidx.activity.result.ActivityResultLauncher<Uri?>,
+    pickExcludedAlbumDirectory: androidx.activity.result.ActivityResultLauncher<Uri?>,
+    hasDeviceToken: Boolean,
+) {
+    NavHost(
+        navController = navController,
+        startDestination = Destination.Home.route,
+        modifier = Modifier,
+        enterTransition = {
+            slideInHorizontally(
+                initialOffsetX = { it / 6 },
+                animationSpec = tween(220),
+            ) + fadeIn(tween(220))
+        },
+        exitTransition = {
+            slideOutHorizontally(
+                targetOffsetX = { -it / 8 },
+                animationSpec = tween(180),
+            ) + fadeOut(tween(180))
+        },
+        popEnterTransition = {
+            slideInHorizontally(
+                initialOffsetX = { -it / 8 },
+                animationSpec = tween(220),
+            ) + fadeIn(tween(220))
+        },
+        popExitTransition = {
+            slideOutHorizontally(
+                targetOffsetX = { it / 6 },
+                animationSpec = tween(180),
+            ) + fadeOut(tween(180))
+        },
+    ) {
+        composable(Destination.Home.route) {
+            HomeScreen(
+                state = state,
+                onNavigate = { navController.navigate(it) },
+                onPickImage = onPickImage,
+                hasImagePermission = hasImagePermission(),
+                hasPartialImagePermission = hasPartialImagePermission(),
+                hasDeviceToken = hasDeviceToken,
+            )
+        }
+        composable(Destination.Activity.route) {
+            ActivityScreen(state = state, onPickImage = onPickImage)
+        }
+        composable(Destination.Settings.route) {
+            SettingsScreen(
+                state = state,
+                onNavigate = { navController.navigate(it) },
+            )
+        }
+        composable(Destination.Help.route) {
+            HelpScreen(
+                state = state,
+                onNavigate = { navController.navigate(it) },
+            )
+        }
+        composable(Destination.Bind.route) {
+            BindScreen(state = state)
+        }
+        composable(Destination.UploadSettings.route) {
+            UploadSettingsScreen(
+                state = state,
+                onNavigate = { navController.navigate(it) },
+                onRequestPermission = { permissionLauncher.launch(requiredPermissions()) },
+                hasImagePermission = hasImagePermission(),
+                hasPartialImagePermission = hasPartialImagePermission(),
+            )
+        }
+        composable(Destination.WatchAlbums.route) {
+            WatchAlbumsScreen(
+                state = state,
+                onAddAlbum = { pickAlbumDirectory.launch(null) },
+                onAddExcludedAlbum = { pickExcludedAlbumDirectory.launch(null) },
+                hasImagePermission = hasImagePermission(),
+            )
+        }
+        composable(Destination.ReceiveSettings.route) {
+            ReceiveSettingsScreen(state = state)
+        }
+        composable(Destination.ManagementLogin.route) {
+            ManagementLoginScreen(state = state)
+        }
+        composable(Destination.ManagementDevices.route) {
+            ManagementDevicesScreen(
+                state = state,
+                onNavigate = { navController.navigate(it) },
+            )
+        }
+        composable(
+            Destination.ManagementDeviceDetail.route,
+            arguments = listOf(navArgument("deviceId") { type = NavType.StringType }),
+        ) { backStackEntry ->
+            val deviceId = backStackEntry.arguments?.getString("deviceId") ?: ""
+            ManagementDeviceDetailScreen(
+                state = state,
+                deviceId = deviceId,
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(Destination.ManagementCreateCode.route) {
+            ManagementCreateCodeScreen(state = state)
+        }
+        composable(Destination.HelpFaq.route) { HelpFaqScreen() }
+        composable(Destination.HelpAbout.route) { HelpAboutScreen(state = state) }
+        composable(Destination.HelpFirstRun.route) {
+            HelpFirstRunScreen(
+                onNavigate = { navController.navigate(it) },
+            )
+        }
+        composable(Destination.HelpBackground.route) { HelpBackgroundScreen() }
+        composable(Destination.HelpPermissions.route) { HelpPermissionsScreen() }
     }
 }
 

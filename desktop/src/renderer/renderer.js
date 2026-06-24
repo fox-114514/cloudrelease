@@ -32,6 +32,9 @@ const els = {
   tokenWarning: document.getElementById("tokenWarning"),
   allowInsecureHttpInput: document.getElementById("allowInsecureHttpInput"),
   insecureHttpBanner: document.getElementById("insecureHttpBanner"),
+  httpConfirmationBanner: document.getElementById("httpConfirmationBanner"),
+  httpConfirmContinueBtn: document.getElementById("httpConfirmContinueBtn"),
+  httpConfirmDismissBtn: document.getElementById("httpConfirmDismissBtn"),
   bindAllowInsecureHttpInput: document.getElementById("bindAllowInsecureHttpInput"),
   ownerAllowInsecureHttpInput: document.getElementById("ownerAllowInsecureHttpInput"),
   adminAllowInsecureHttpInput: document.getElementById("adminAllowInsecureHttpInput"),
@@ -774,6 +777,14 @@ function renderState(state) {
     els.insecureHttpBanner.hidden = !settings.insecureHttpWarning;
   }
 
+  // R0-2: gate all token-bearing activity until the user explicitly
+  // confirms plaintext HTTP for a migrated 0.5.0 config. The banner is
+  // only shown while httpConfirmationPending is true; confirming flips
+  // allowInsecureHttp which clears the pending flag.
+  if (els.httpConfirmationBanner) {
+    els.httpConfirmationBanner.hidden = !settings.httpConfirmationPending;
+  }
+
   els.watchDirInput.value = settings.watchDir || "";
   renderWatchExcludedDirs(settings.watchExcludedDirs || []);
   els.autoUploadInput.checked = Boolean(settings.autoUpload);
@@ -1120,6 +1131,27 @@ els.adminLogoutButton.addEventListener("click", async () => {
     showAdminError(err.message || String(err));
   }
 });
+
+// R0-2: confirm/dimiss the migrated plaintext-HTTP config. Confirming
+// persists allowInsecureHttp=true which clears httpConfirmationPending and
+// lets the main process connect + start the watcher. Dismissing keeps the
+// config bound but blocks token-bearing requests until the user changes
+// the URL to https:// or comes back to confirm.
+if (els.httpConfirmContinueBtn) {
+  els.httpConfirmContinueBtn.addEventListener("click", async () => {
+    try {
+      const state = await window.studyshot.saveSettings({ allowInsecureHttp: true });
+      renderState(state);
+    } catch (err) {
+      showError(err.message || String(err));
+    }
+  });
+}
+if (els.httpConfirmDismissBtn) {
+  els.httpConfirmDismissBtn.addEventListener("click", () => {
+    if (els.httpConfirmationBanner) els.httpConfirmationBanner.hidden = true;
+  });
+}
 
 initTheme();
 window.studyshot.onStateChanged(renderState);

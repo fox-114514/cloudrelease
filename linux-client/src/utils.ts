@@ -9,7 +9,7 @@ export function normalizeBaseUrl(raw: string): string {
   // 0.5.1: default to https:// when no scheme is given. Spelling-only
   // mistakes no longer silently downgrade to plaintext; explicit consent via
   // the allowInsecureHttp flag is required for non-loopback http:// URLs.
-  if (!/^https?:\/\//i.test(url)) {
+  if (!/^[a-z][a-z\d+.-]*:\/\//i.test(url)) {
     url = `https://${url}`;
   }
   return url.replace(/\/$/, "");
@@ -43,6 +43,9 @@ export function assertExplicitInsecureHttp(baseUrl: string, opts: { allowInsecur
     u = new URL(normalizeBaseUrl(baseUrl));
   } catch {
     throw new Error("服务器地址无效");
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") {
+    throw new Error("服务器地址只支持 HTTP 或 HTTPS");
   }
   if (u.protocol !== "http:") return;
   if (isLoopbackHost(baseUrl)) return;

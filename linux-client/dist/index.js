@@ -80,7 +80,9 @@ async function refreshAndSaveDevice() {
     const config = await loadConfig();
     if (!config.device)
         throw new Error("Not bound. Run bind first.");
-    config.device = await refreshDeviceIdentity(config.device);
+    config.device = await refreshDeviceIdentity(config.device, {
+        allowInsecureHttp: config.allowInsecureHttp,
+    });
     await saveConfig(config);
     return config.device;
 }
@@ -191,7 +193,9 @@ program
         return;
     }
     try {
-        config.device = await refreshDeviceIdentity(config.device);
+        config.device = await refreshDeviceIdentity(config.device, {
+            allowInsecureHttp: config.allowInsecureHttp,
+        });
         await saveConfig(config);
     }
     catch (err) {
@@ -234,7 +238,9 @@ program
         console.error("Not bound. Run bind first.");
         process.exit(1);
     }
-    config.device = await refreshDeviceIdentity(config.device);
+    config.device = await refreshDeviceIdentity(config.device, {
+        allowInsecureHttp: config.allowInsecureHttp,
+    });
     await saveConfig(config);
     const requiredPermission = options.kind === "manual_share" ? "canManualUpload" : "canAutoUpload";
     if (!serverAllows(config.device, requiredPermission)) {
@@ -265,7 +271,9 @@ program
         console.error("Not bound. Run bind first.");
         process.exit(1);
     }
-    config.device = await refreshDeviceIdentity(config.device);
+    config.device = await refreshDeviceIdentity(config.device, {
+        allowInsecureHttp: config.allowInsecureHttp,
+    });
     await saveConfig(config);
     if (!serverAllows(config.device, "canAutoReceive")) {
         console.error("Server does not allow automatic receive for this device.");
@@ -331,7 +339,9 @@ program
         console.error("Not bound. Run bind first.");
         process.exit(1);
     }
-    config.device = await refreshDeviceIdentity(config.device);
+    config.device = await refreshDeviceIdentity(config.device, {
+        allowInsecureHttp: config.allowInsecureHttp,
+    });
     await saveConfig(config);
     if (!serverAllows(config.device, "canAutoUpload")) {
         console.error("Server does not allow automatic upload for this device.");
@@ -418,7 +428,9 @@ program
         console.error("Not bound. Run bind first.");
         process.exit(1);
     }
-    config.device = await refreshDeviceIdentity(config.device);
+    config.device = await refreshDeviceIdentity(config.device, {
+        allowInsecureHttp: config.allowInsecureHttp,
+    });
     await saveConfig(config);
     if (options.downloadDir) {
         config.downloadDir = path.resolve(options.downloadDir);

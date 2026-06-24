@@ -17,6 +17,7 @@ test("isLoopbackHost recognizes loopback addresses", () => {
   assert.equal(isLoopbackHost("http://127.99.99.99:3000"), true);
   assert.equal(isLoopbackHost("http://192.168.1.5:3000"), false);
   assert.equal(isLoopbackHost("https://relay.example.com"), false);
+  assert.equal(isLoopbackHost("http://127.evil"), false);
 });
 
 test("assertExplicitInsecureHttp rejects non-loopback http without opt-in", () => {
@@ -49,4 +50,5 @@ test("assertExplicitInsecureHttp accepts non-loopback http with explicit opt-in"
 
 test("assertExplicitInsecureHttp rejects malformed URLs", () => {
   assert.throws(() => assertExplicitInsecureHttp("not a url", { allowInsecureHttp: false }));
+  assert.throws(() => assertExplicitInsecureHttp("ftp://relay.example.com", { allowInsecureHttp: true }));
 });

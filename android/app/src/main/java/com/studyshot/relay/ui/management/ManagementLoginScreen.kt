@@ -51,6 +51,9 @@ fun ManagementLoginScreen(
     var password by rememberSaveable { mutableStateOf("") }
     var showPassword by rememberSaveable { mutableStateOf(false) }
     var logging by remember { mutableStateOf(false) }
+    var allowInsecureHttp by rememberSaveable(settings.allowInsecureHttp) {
+        mutableStateOf(settings.allowInsecureHttp)
+    }
 
     Column(
         modifier = Modifier
@@ -85,6 +88,13 @@ fun ManagementLoginScreen(
                     .fillMaxSize()
                     .padding(horizontal = 14.dp, vertical = 4.dp),
                 placeholder = { Text("https://studyshot.example.com") },
+            )
+            SettingsRow(
+                icon = Icons.Outlined.Storage,
+                title = "允许不安全 HTTP",
+                value = if (allowInsecureHttp) "密码和令牌将明文传输" else "已阻止",
+                trailing = RowTrailing.SwitchControl(allowInsecureHttp) { allowInsecureHttp = it },
+                isLast = false,
             )
             SettingsRow(
                 icon = Icons.Outlined.Person,
@@ -143,6 +153,7 @@ fun ManagementLoginScreen(
                     server = server,
                     login = login,
                     password = password,
+                    allowInsecureHttp = allowInsecureHttp,
                     onComplete = { logging = false },
                 )
             },

@@ -43,6 +43,16 @@
         </nav>
 
         <section class="content">
+          <div class="banner banner-warn http-confirmation-banner" id="httpConfirmationBanner" hidden>
+            <div class="http-confirmation-body">
+              <strong>⚠ 检测到旧配置使用明文 HTTP</strong>
+              <span>在确认前不会发送任何携带 token 的请求。请切换到 HTTPS 地址，或确认仅在受信 VPN/局域网内继续使用明文 HTTP。</span>
+            </div>
+            <div class="http-confirmation-actions">
+              <button type="button" class="btn primary" id="httpConfirmContinueBtn">继续使用明文 HTTP</button>
+              <button type="button" class="btn" id="httpConfirmDismissBtn">暂不连接</button>
+            </div>
+          </div>
           <section class="view active" id="view-status">
             <div class="view-head">
               <div>

@@ -66,7 +66,7 @@ export declare function saveConfig(config: AppConfig): Promise<void>;
 export declare function bindDevice(serverBaseUrl: string, bindCode: string, deviceName: string, profile?: string, opts?: HttpSafetyOpts): Promise<DeviceConfig>;
 export declare function previewBindCode(serverBaseUrl: string, bindCode: string, opts?: HttpSafetyOpts): Promise<BindCodePreview>;
 export declare function bindWithLogin(serverBaseUrl: string, login: string, password: string, deviceName: string, profile?: string, opts?: HttpSafetyOpts): Promise<DeviceConfig>;
-export declare function refreshDeviceIdentity(device: DeviceConfig): Promise<DeviceConfig>;
+export declare function refreshDeviceIdentity(device: DeviceConfig, opts?: HttpSafetyOpts): Promise<DeviceConfig>;
 export declare function serverAllows(device: DeviceConfig, permission: "canAutoUpload" | "canManualUpload" | "canAutoReceive"): boolean;
 export declare function unbind(): Promise<void>;
 //# sourceMappingURL=config.d.ts.map

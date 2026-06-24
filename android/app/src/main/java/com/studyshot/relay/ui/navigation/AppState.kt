@@ -68,6 +68,20 @@ class AppState internal constructor(
         _transient.value = null
     }
 
+    private fun validateServer(server: String, allowInsecureHttp: Boolean): String? {
+        return try {
+            SecureSettings.requireAllowedServer(server, allowInsecureHttp)
+        } catch (err: IllegalArgumentException) {
+            emit(TransientMessage(err.message ?: "服务器地址无效", StatusTone.Critical))
+            null
+        }
+    }
+
+    fun confirmInsecureHttp() {
+        app.secureSettings.setAllowInsecureHttp(true)
+        emit(TransientMessage("已允许明文 HTTP，密码、令牌和图片可能被窃取", StatusTone.Critical))
+    }
+
     fun saveUploadSettings(
         autoUploadEnabled: Boolean? = null,
         realtimeModeEnabled: Boolean? = null,
@@ -116,12 +130,13 @@ class AppState internal constructor(
         }
     }
 
-    fun saveServerAndDeviceName(server: String, deviceName: String) {
+    fun saveServerAndDeviceName(server: String, deviceName: String, allowInsecureHttp: Boolean? = null) {
         scope.launch(Dispatchers.IO) {
             settingsWriteMutex.withLock {
                 app.secureSettings.saveServerAndDeviceName(
-                    SecureSettings.normalizeBaseUrl(server),
+                    server,
                     deviceName,
+                    allowInsecureHttp,
                 )
             }
         }
@@ -173,20 +188,14 @@ class AppState internal constructor(
         code: String,
         name: String,
         profile: String? = null,
+        allowInsecureHttp: Boolean = false,
         onComplete: () -> Unit = {},
     ) {
-        val normalized = SecureSettings.normalizeBaseUrl(server)
+        val normalized = validateServer(server, allowInsecureHttp) ?: run {
+            onComplete()
+            return
+        }
         val normalizedCode = code.trim()
-        if (normalized.isBlank()) {
-            emit(TransientMessage("服务器地址不能为空", StatusTone.Critical))
-            onComplete()
-            return
-        }
-        if (!normalized.startsWith("http://") && !normalized.startsWith("https://")) {
-            emit(TransientMessage("服务器地址必须以 http:// 或 https:// 开头", StatusTone.Critical))
-            onComplete()
-            return
-        }
         if (normalizedCode.isBlank()) {
             emit(TransientMessage("绑定码不能为空", StatusTone.Critical))
             onComplete()
@@ -226,6 +235,7 @@ class AppState internal constructor(
                             boundUserRole = response.user.role,
                             lastKnownDeviceProfile = response.profile ?: "custom",
                             lastKnownPermissionsJson = serializePermissions(response.permissions),
+                            allowInsecureHttp = allowInsecureHttp,
                         )
                     }
                 }
@@ -249,11 +259,10 @@ class AppState internal constructor(
         password: String,
         deviceName: String,
         profile: String,
+        allowInsecureHttp: Boolean = false,
         onComplete: () -> Unit = {},
     ) {
-        val normalized = SecureSettings.normalizeBaseUrl(server)
-        if (normalized.isBlank()) {
-            emit(TransientMessage("服务器地址不能为空", StatusTone.Critical))
+        val normalized = validateServer(server, allowInsecureHttp) ?: run {
             onComplete()
             return
         }
@@ -321,6 +330,7 @@ class AppState internal constructor(
                             boundUserRole = registerResp.user.role,
                             lastKnownDeviceProfile = registerResp.profile ?: "custom",
                             lastKnownPermissionsJson = serializePermissions(registerResp.permissions),
+                            allowInsecureHttp = allowInsecureHttp,
                         )
                     }
                 }
@@ -340,6 +350,7 @@ class AppState internal constructor(
      */
     fun refreshSelfIdentity() {
         val settings = app.secureSettings.settings.value
+        if (!settings.isServerTransportAllowed()) return
         val token = app.secureSettings.getDeviceToken() ?: return
         val server = settings.serverBaseUrl
         if (server.isBlank()) return
@@ -395,6 +406,20 @@ class AppState internal constructor(
     }
 
     fun pickManualUpload(uri: Uri) {
+        // R0-3 §4: refuse to enqueue when encrypted storage is unavailable.
+        // The token cannot be read and we MUST NOT queue work that would
+        // immediately fail or, worse, somehow proceed without a token.
+        if (!app.secureSettings.isEncryptionAvailable) {
+            emit(TransientMessage(
+                "加密存储当前不可用，手动上传已禁用。请恢复 KeyStore 后重试。",
+                StatusTone.Critical,
+            ))
+            return
+        }
+        if (!app.secureSettings.settings.value.isServerTransportAllowed()) {
+            emit(TransientMessage("已阻止明文 HTTP 上传，请改用 HTTPS 或先确认风险", StatusTone.Critical))
+            return
+        }
         if (!app.secureSettings.settings.value.serverAllowsManualUpload()) {
             emit(TransientMessage("服务端未允许本设备手动上传", StatusTone.Critical))
             return
@@ -416,9 +441,16 @@ class AppState internal constructor(
         server: String,
         login: String,
         password: String,
+        allowInsecureHttp: Boolean = false,
         onComplete: () -> Unit = {},
     ) {
-        val normalized = SecureSettings.normalizeBaseUrl(server.ifBlank { app.secureSettings.settings.value.serverBaseUrl })
+        val normalized = validateServer(
+            server.ifBlank { app.secureSettings.settings.value.serverBaseUrl },
+            allowInsecureHttp,
+        ) ?: run {
+            onComplete()
+            return
+        }
         scope.launch {
             try {
                 val response = withContext(Dispatchers.IO) {
@@ -431,6 +463,7 @@ class AppState internal constructor(
                         app.secureSettings.saveServerAndDeviceName(
                             normalized,
                             app.secureSettings.settings.value.deviceName,
+                            allowInsecureHttp,
                         )
                     }
                 }
@@ -481,6 +514,7 @@ class AppState internal constructor(
     }
 
     fun libraryAccessToken(): String? {
+        if (!app.secureSettings.settings.value.isServerTransportAllowed()) return null
         _adminSession.value?.accessToken?.let { return it }
         val settings = app.secureSettings.settings.value
         if (!settings.deviceTokenAvailable || !settings.serverAllowsManualDownload()) return null
@@ -643,10 +677,16 @@ class AppState internal constructor(
     fun previewBindCode(
         server: String,
         bindCode: String,
+        allowInsecureHttp: Boolean = false,
         onResult: (Result<com.studyshot.relay.network.BindCodePreview>) -> Unit,
     ) {
-        val normalized = SecureSettings.normalizeBaseUrl(server)
-        if (normalized.isBlank() || bindCode.isBlank()) {
+        val normalized = runCatching {
+            SecureSettings.requireAllowedServer(server, allowInsecureHttp)
+        }.getOrElse {
+            onResult(Result.failure(it))
+            return
+        }
+        if (bindCode.isBlank()) {
             onResult(Result.failure(IllegalArgumentException("服务器地址或绑定码为空")))
             return
         }

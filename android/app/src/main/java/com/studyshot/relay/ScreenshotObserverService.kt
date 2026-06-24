@@ -63,6 +63,15 @@ class ScreenshotObserverService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val app = application as StudyShotApp
+        val settings = app.secureSettings.settings.value
+        if (!app.secureSettings.isEncryptionAvailable ||
+            !settings.deviceTokenAvailable ||
+            !settings.isServerTransportAllowed()
+        ) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         scanRecent()
         return START_STICKY
     }
@@ -103,7 +112,13 @@ class ScreenshotObserverService : Service() {
     private suspend fun scanRecentBatch() {
         val app = application as StudyShotApp
         val settings = app.secureSettings.settings.value
-        if (!settings.autoUploadEnabled || !settings.serverAllowsAutoUpload() || !settings.realtimeModeEnabled) return
+        if (!app.secureSettings.isEncryptionAvailable ||
+            !settings.deviceTokenAvailable ||
+            !settings.isServerTransportAllowed() ||
+            !settings.autoUploadEnabled ||
+            !settings.serverAllowsAutoUpload() ||
+            !settings.realtimeModeEnabled
+        ) return
         if (settings.autoUploadScope !in setOf("screenshot_only", "selected_album")) return
 
         val batchStartAt = System.currentTimeMillis()

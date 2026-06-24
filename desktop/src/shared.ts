@@ -49,6 +49,14 @@ export interface RendererSettings {
    * http:// URL. The renderer surfaces a persistent banner while this is true.
    */
   insecureHttpWarning?: string;
+  /**
+   * R0-2: True when an already-bound config uses a non-loopback http:// URL
+   * but allowInsecureHttp has not been set. Until the user explicitly
+   * confirms (or switches to https://), the client MUST NOT issue any
+   * network request that carries the device token. Surfaces a confirmation
+   * banner in the renderer.
+   */
+  httpConfirmationPending: boolean;
 }
 
 export interface BoundUserInfo {

@@ -89,6 +89,9 @@ fun BindScreen(
     var preview by remember { mutableStateOf<com.studyshot.relay.network.BindCodePreview?>(null) }
     var previewLoading by remember { mutableStateOf(false) }
     var previewError by remember { mutableStateOf<String?>(null) }
+    var allowInsecureHttp by rememberSaveable(settings.allowInsecureHttp) {
+        mutableStateOf(settings.allowInsecureHttp)
+    }
 
     LaunchedEffect(Unit) {
         // Always refresh self identity on first render so that home screen and
@@ -117,6 +120,35 @@ fun BindScreen(
             text = "未绑定时,本应用不会上传任何图片,也不会接收任何图片。",
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
         )
+
+        if (settings.httpConfirmationPending) {
+            HelpCallout(
+                text = "旧配置使用非本机 HTTP，密码、令牌和图片会明文传输。确认前已停止所有联网操作。",
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+            Button(
+                onClick = {
+                    allowInsecureHttp = true
+                    state.confirmInsecureHttp()
+                },
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+            ) {
+                Text("确认继续使用明文 HTTP")
+            }
+        }
+
+        SettingsGroup(
+            footer = "仅用于受信任的局域网。公网服务器应使用 HTTPS。",
+        ) {
+            SettingsRow(
+                icon = Icons.Outlined.Storage,
+                title = "允许不安全 HTTP",
+                value = if (allowInsecureHttp) "已允许" else "已阻止",
+                trailing = RowTrailing.SwitchControl(allowInsecureHttp) { allowInsecureHttp = it },
+                isLast = true,
+            )
+        }
 
         Spacer(Modifier.height(12.dp))
 
@@ -162,6 +194,7 @@ fun BindScreen(
                         password = loginPassword,
                         deviceName = name,
                         profile = profile,
+                        allowInsecureHttp = allowInsecureHttp,
                         onComplete = { binding = false },
                     )
                 },
@@ -189,6 +222,7 @@ fun BindScreen(
                     state.previewBindCode(
                         server = server,
                         bindCode = code,
+                        allowInsecureHttp = allowInsecureHttp,
                         onResult = { result ->
                             previewLoading = false
                             result.onSuccess { preview = it }
@@ -203,6 +237,7 @@ fun BindScreen(
                         code = code,
                         name = name,
                         profile = profile,
+                        allowInsecureHttp = allowInsecureHttp,
                         onComplete = { binding = false },
                     )
                 },

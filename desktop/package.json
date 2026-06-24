@@ -10,6 +10,7 @@
     "verify:render": "node scripts/check-els-ids.mjs",
     "build": "npm run verify:render && tsc && node scripts/copy-renderer.mjs",
     "build:icons": "node scripts/build-icons.mjs",
+    "test": "npm run build && node --test test/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "start": "npm run build && electron .",
     "dev": "npm run build && electron .",

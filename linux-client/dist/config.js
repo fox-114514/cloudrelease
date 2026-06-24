@@ -125,8 +125,13 @@ export async function bindWithLogin(serverBaseUrl, login, password, deviceName, 
     }
     return bindDevice(url, code.bindCode, deviceName, profile, opts);
 }
-export async function refreshDeviceIdentity(device) {
-    const response = await fetch(`${normalizeBaseUrl(device.serverBaseUrl)}/api/v1/devices/me`, {
+export async function refreshDeviceIdentity(device, opts = {}) {
+    const url = normalizeBaseUrl(device.serverBaseUrl);
+    // R0-2: a 0.5.0 config migrated to 0.5.1 may have a non-loopback http://
+    // URL with allowInsecureHttp still false. Refuse to ship the device token
+    // until the user re-binds with --allow-insecure-http or switches to https.
+    assertExplicitInsecureHttp(url, { allowInsecureHttp: opts.allowInsecureHttp === true });
+    const response = await fetch(`${url}/api/v1/devices/me`, {
         headers: { Authorization: `Bearer ${device.deviceToken}` },
     });
     const data = await parseData(response);

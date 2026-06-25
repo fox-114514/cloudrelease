@@ -222,20 +222,20 @@ backend/releases/ -> /var/lib/studyshot/releases/
 ```text
 backend/releases/
   0.5.1/
-    StudyShot-Relay-Android-0.5.1.apk
     StudyShot-Relay-Windows-0.5.1-portable.exe
     StudyShot-Relay-Linux-Client-0.5.1_amd64.deb
   0.5.2/
+    StudyShot-Relay-Android-0.5.2.apk
     StudyShot-Relay-Desktop-Linux-0.5.2_amd64.deb
 ```
 
 配置示例：
 
 ```dotenv
-ANDROID_UPDATE_APK_PATH=/var/lib/studyshot/releases/0.5.1/StudyShot-Relay-Android-0.5.1.apk
-ANDROID_UPDATE_VERSION_CODE=9
-ANDROID_UPDATE_VERSION_NAME=0.5.1
-ANDROID_UPDATE_RELEASE_NOTES=Android 0.5.1：修复登录提示、补充帮助页并加入自托管更新
+ANDROID_UPDATE_APK_PATH=/var/lib/studyshot/releases/0.5.2/StudyShot-Relay-Android-0.5.2.apk
+ANDROID_UPDATE_VERSION_CODE=10
+ANDROID_UPDATE_VERSION_NAME=0.5.2
+ANDROID_UPDATE_RELEASE_NOTES=Android 0.5.2：修复创建绑定码页面结果卡片错位
 
 WINDOWS_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/0.5.1/StudyShot-Relay-Windows-0.5.1-portable.exe
 WINDOWS_UPDATE_VERSION_NAME=0.5.1

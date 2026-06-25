@@ -3,6 +3,7 @@ package com.studyshot.relay.ui.management
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -51,6 +52,7 @@ fun ManagementCreateCodeScreen(
     val clipboard = LocalClipboardManager.current
     var hint by rememberSaveable(settings.deviceName) { mutableStateOf(settings.deviceName) }
     var creating by remember { mutableStateOf(false) }
+    val bindCode = generated?.bindCode.orEmpty()
 
     LaunchedEffect(generated?.bindCode) {
         val code = generated?.bindCode ?: return@LaunchedEffect
@@ -88,7 +90,7 @@ fun ManagementCreateCodeScreen(
                 onValueChange = { hint = it },
                 singleLine = true,
                 modifier = Modifier
-                    .fillMaxSize()
+                    .fillMaxWidth()
                     .padding(horizontal = 14.dp, vertical = 4.dp),
                 placeholder = { Text("如：客厅 iPad") },
             )
@@ -100,52 +102,54 @@ fun ManagementCreateCodeScreen(
                 modifier = Modifier.padding(horizontal = 16.dp),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
             ) {
-                Text(
-                    text = "当前绑定码",
-                    style = MaterialTheme.typography.labelLarge,
-                )
-                generated?.targetUser?.let { target ->
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "当前绑定码",
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                    generated?.targetUser?.let { target ->
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = "将绑定到：${target.displayName ?: target.id} (${
+                                when (target.role) {
+                                    "owner" -> "空间管理员"
+                                    "child" -> "成员"
+                                    else -> target.role
+                                }
+                            })",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Teal600,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    SelectionContainer {
+                        Text(
+                            text = formatBindCode(bindCode),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = Teal600,
+                        )
+                    }
                     Spacer(Modifier.height(4.dp))
                     Text(
-                        text = "将绑定到:${target.displayName ?: target.id} (${
-                            when (target.role) {
-                                "owner" -> "空间管理员"
-                                "child" -> "成员"
-                                else -> target.role
-                            }
-                        })",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Teal600,
-                        fontWeight = FontWeight.SemiBold,
+                        text = "有效期至 ${generated?.expiresAt.orEmpty()}。离开页面后仍会保留到退出管理。",
+                        style = MaterialTheme.typography.bodySmall,
                     )
-                }
-                Spacer(Modifier.height(8.dp))
-                SelectionContainer {
-                    Text(
-                        text = generated?.bindCode.orEmpty(),
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = Teal600,
-                    )
-                }
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    text = "有效期至 ${generated?.expiresAt.orEmpty()}。离开页面后仍会保留到退出管理。",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Spacer(Modifier.height(10.dp))
-                OutlinedButton(
-                    onClick = {
-                        clipboard.setText(AnnotatedString(generated?.bindCode.orEmpty()))
-                        state.emit(TransientMessage("绑定码已复制", StatusTone.Positive))
-                    },
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.ContentCopy,
-                        contentDescription = null,
-                    )
-                    Spacer(Modifier.size(6.dp))
-                    Text("复制绑定码")
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = {
+                            clipboard.setText(AnnotatedString(bindCode))
+                            state.emit(TransientMessage("绑定码已复制", StatusTone.Positive))
+                        },
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.ContentCopy,
+                            contentDescription = null,
+                        )
+                        Spacer(Modifier.size(6.dp))
+                        Text("复制绑定码")
+                    }
                 }
             }
             Spacer(Modifier.height(16.dp))
@@ -158,7 +162,7 @@ fun ManagementCreateCodeScreen(
             },
             enabled = !creating,
             modifier = Modifier
-                .fillMaxSize()
+                .fillMaxWidth()
                 .padding(horizontal = 16.dp),
             colors = ButtonDefaults.buttonColors(
                 containerColor = Teal600,
@@ -173,3 +177,6 @@ fun ManagementCreateCodeScreen(
         }
     }
 }
+
+private fun formatBindCode(code: String): String =
+    code.chunked(4).joinToString(" ")

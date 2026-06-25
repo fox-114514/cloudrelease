@@ -35,6 +35,8 @@ Electron + TypeScript desktop receiver for Windows and Linux.
 - Rename devices.
 - Update device permissions.
 - Revoke devices.
+- Receive authenticated update notifications for the Windows or Linux desktop channel.
+- Download updates to the system Downloads directory, verify SHA-256, and open the installer/package.
 
 ## Commands
 
@@ -49,6 +51,7 @@ Packaging commands:
 ```bash
 npm run package:linux
 npm run package:win
+npm run package:win:installer # requires Wine when cross-building on Linux
 ```
 
 ## Local Data
@@ -91,3 +94,4 @@ The renderer process never receives the device token.
 - Delivery retry from the history page is not implemented yet. The current backend excludes `failed` deliveries from automatic download authorization, so retry needs a backend rule change first.
 - Linux clipboard behavior still needs verification on the target desktop session, especially Wayland.
 - Login startup needs verification on the target Windows and Linux desktop sessions.
+- Electron provides Chromium and Node runtimes, so even the reduced-language Windows portable remains much larger than a native/Tauri client.

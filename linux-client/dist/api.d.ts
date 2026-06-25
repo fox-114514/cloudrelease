@@ -26,6 +26,15 @@ export interface PendingDeliveriesResult {
     totalPending?: number;
     hasMore?: boolean;
 }
+export interface ClientRelease {
+    channel: "linux-cli";
+    versionName: string;
+    releaseNotes: string;
+    fileName: string;
+    fileSize: number;
+    sha256: string;
+    downloadPath: string;
+}
 export declare function createImageUploadForm(filePath: string, sourceKind: string): Promise<FormData>;
 export declare class ApiClient {
     private readonly device;
@@ -35,6 +44,8 @@ export declare class ApiClient {
         status: string;
     }>;
     getPendingDeliveries(): Promise<PendingDeliveriesResult>;
+    getUpdate(): Promise<ClientRelease | undefined>;
+    downloadUpdatePackage(downloadPath: string): Promise<ReadableStream<Uint8Array>>;
     ackDelivery(deliveryId: string, status: "downloaded" | "failed" | "skipped"): Promise<void>;
     downloadImage(imageId: string): Promise<ReadableStream<Uint8Array>>;
     uploadImage(filePath: string, sourceKind?: string): Promise<UploadResult>;

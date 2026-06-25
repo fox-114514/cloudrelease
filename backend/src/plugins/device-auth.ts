@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma.js";
 
 export interface DeviceAuth {
   deviceId: string;
+  platform: string;
   userId: string;
   ownerUserId: string;
   role: string;
@@ -80,6 +81,7 @@ export const optionalDeviceAuth = fp(async (app: FastifyInstance) => {
 
     request.device = {
       deviceId: device.id,
+      platform: device.platform,
       userId: device.userId,
       ownerUserId: device.ownerUserId,
       role: device.user.role,

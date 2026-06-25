@@ -6,9 +6,9 @@
 
 V2 的范围是「家庭/团队共享空间」模型：owner 是空间管理员，child 是成员。详细动机、需求拆解和取舍见：
 
-- [多用户管理调查报告](./multi-user-investigation-2026-06-21.md)
-- [多用户体验优化方案](./multi-user-optimization-plan.md)
-- [多用户 V2 详细开发规格](./multi-user-v2-development-spec.md)
+- [多用户管理调查报告](../archive/2026-06/multi-user-investigation-2026-06-21.md)
+- [多用户体验优化方案](../archive/2026-06/multi-user-optimization-plan.md)
+- [多用户 V2 设计](../design/multi-user-v2.md)
 
 ## 1. 核心原则
 
@@ -399,7 +399,7 @@ V2 起图片列表、下载、删除权限在 owner / canManageSpace / child / d
 - `profile` 或接收 `mode`
 - 跨成员配置时的 `sourceDeviceIds`
 
-审计 action 列表见 `docs/protocol.md`。
+审计 action 列表见 `docs/spec/protocol.md`。
 
 ## 15. 上线前的多用户配置审计
 

@@ -83,6 +83,12 @@ postgresql-*.deb
 *.sln
 *.csproj
 
+# Local agent/tool state
+AGENTS.md
+docs-internal/
+.omo/
+.codegraph
+
 # OS
 .DS_Store
 Thumbs.db
@@ -98,4 +104,3 @@ temp/
 
 # Android
 android/local.properties
-

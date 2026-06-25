@@ -1,17 +1,17 @@
 # StudyShot Relay 安装包
 
-版本：Android / 后端 0.5.1；桌面端 / Linux 客户端 0.5.0
-生成时间：2026-06-24
+版本：Android / 后端 / 桌面端 / Linux 客户端 0.5.1
+生成时间：2026-06-25
 
 ## 可用安装包
 
 | 平台 | 文件名 | 大小 | 说明 |
 |---|---|---|---|
-| Windows | `StudyShot-Relay-Windows-0.5.0-portable.exe` | ~90 MB | 单文件便携版，多用户 V2 |
-| Android | `StudyShot-Relay-Android-0.5.0.apk` | ~13 MB | Release 签名版，身份显示 + 自助绑定 + 用途预设 |
-| Linux (桌面) | `StudyShot-Relay-Desktop-Linux-0.5.0_amd64.deb` | ~95 MB | Electron 桌面端，带 GUI |
-| Linux (AppImage) | `StudyShot-Relay-Desktop-Linux-0.5.0.AppImage` | ~121 MB | 免安装桌面端 |
-| Linux (CLI/Web) | `StudyShot-Relay-Linux-Client-0.5.0_amd64.deb` | 待打包 | 命令行 + Web 管理界面，源码已完成多用户 V2 接入 |
+| Windows | `releases/0.5.1/StudyShot-Relay-Windows-0.5.1-portable.exe` | ~83 MB | 精简语言资源的单文件便携版，支持服务器更新 |
+| Android | `releases/0.5.1/StudyShot-Relay-Android-0.5.1.apk` | ~12 MB | Release 签名版，身份显示 + 自助绑定 + 用途预设 |
+| Linux (桌面) | `releases/0.5.1/StudyShot-Relay-Desktop-Linux-0.5.1_amd64.deb` | ~89 MB | Electron 桌面端，支持服务器更新 |
+| Linux (AppImage) | `releases/0.5.1/StudyShot-Relay-Desktop-Linux-0.5.1.AppImage` | ~89 MB | 精简语言资源的免安装桌面端 |
+| Linux (CLI/Web) | `releases/0.5.1/StudyShot-Relay-Linux-Client-0.5.1_amd64.deb` | ~1.5 MB | 命令行 + Web 管理界面，支持服务器更新 |
 
 ## 0.5.1 变更
 
@@ -19,29 +19,37 @@
 - Android 帮助页补充可执行的配置、排错、数据位置、权限和更新说明，并修正自动上传与后台连接描述。
 - 新增自托管 Android 更新：设备 token 保护的版本/API 下载接口、WebSocket 更新事件、启动定时检查、用户确认下载、公共 Downloads 保存、SHA-256 校验和系统安装器拉起。
 - Android `versionCode` 更新为 9；以后发布 APK 必须继续递增并使用同一签名证书。
+- Windows、Linux 桌面端和 Linux CLI/Web 新增独立更新通道、版本检查、WebSocket 通知、用户确认下载、SHA-256 校验和安装包拉起。
+- Windows portable 从约 90.7 MB 降至约 83.1 MB；Electron Linux AppImage 从约 126.1 MB 降至约 88.9 MB；独立 Linux `.deb` 从约 4.8 MB 降至约 1.5 MB。
 
-所有文件位于项目根目录 `releases/`（旧 0.4.x 安装包继续保留供回退）。
+所有文件按版本号位于项目根目录 `releases/<version>/`。当前版本位于 `releases/0.5.1/`，旧 `0.4.x` 安装包继续保留供回退，`0.4.0` 以下安装包已清理。
 
 ## SHA-256
 
-> 占位:0.5.0 正式发布前由 `scripts/create-github-release.sh` 生成。
+```text
+3211cdd7fa6b217324762b03017abb273b500b0d38d9e05babbfa0ddd86beac1  releases/0.5.1/StudyShot-Relay-Android-0.5.1.apk
+8946a9396d0cd17c061240da93551b5761ff40174492a55ffece99f8751c6cd1  releases/0.5.1/StudyShot-Relay-Windows-0.5.1-portable.exe
+0274ddf321e2214634909b2ab9874879da851a3c17596453b090246da36a533d  releases/0.5.1/StudyShot-Relay-Desktop-Linux-0.5.1.AppImage
+ae3e6521e330d44a28acbfe5920e7c037e92537812009fbe8e2e6472777a53c6  releases/0.5.1/StudyShot-Relay-Desktop-Linux-0.5.1_amd64.deb
+8cacd0b23ff0c10cd095f2288aaf6bd35d8592a11e7e5c32dd23d352e0510b52  releases/0.5.1/StudyShot-Relay-Linux-Client-0.5.1_amd64.deb
+```
 
 ## 使用方式
 
 ### Windows
 
-双击 `StudyShot-Relay-Windows-0.5.0-portable.exe` 直接运行。
+双击 `releases/0.5.1/StudyShot-Relay-Windows-0.5.1-portable.exe` 直接运行。
 
 ### Android
 
 ```bash
-adb install -r StudyShot-Relay-Android-0.5.0.apk
+adb install -r releases/0.5.1/StudyShot-Relay-Android-0.5.1.apk
 ```
 
 ### Linux 桌面端 (.deb)
 
 ```bash
-sudo dpkg -i StudyShot-Relay-Desktop-Linux-0.5.0_amd64.deb
+sudo dpkg -i releases/0.5.1/StudyShot-Relay-Desktop-Linux-0.5.1_amd64.deb
 # 如果依赖缺失
 sudo apt-get install -f
 ```
@@ -50,11 +58,11 @@ sudo apt-get install -f
 
 ### Linux 客户端 (.deb)
 
-源码已完成多用户 V2 接入，正式发布前仍需生成并校验 `.deb` 安装包。
+安装 `releases/0.5.1/StudyShot-Relay-Linux-Client-0.5.1_amd64.deb` 后可运行 `studyshot-relay update` 手动检查更新。
 
 ## 0.5.0 变更（多用户 V2）
 
-按 [多用户 V2 详细开发规格](docs/multi-user-v2-development-spec.md) 实施，主要范围：
+按 [多用户 V2 设计](docs/design/multi-user-v2.md) 实施，主要范围：
 
 ### 后端
 
@@ -121,7 +129,7 @@ sudo apt-get install -f
 2. 在新版本上执行 `npm run audit:multi-user` 做一次只读扫描；可选 `--apply-safe-fixes` 收紧无来源 `selected_devices` 与禁用成员的过期绑定码。
 3. 发布 Android / Electron 新版本。
 4. 监控一段时间后，服务端收紧 `canManualDownload` 跨成员语义（已在 0.5.0 中默认收紧）。
-5. 同步更新 `docs/permissions.md`、`docs/protocol.md`、RELEASES.md（如本文件）。
+5. 同步更新 `docs/spec/permissions.md`、`docs/spec/protocol.md`、RELEASES.md（如本文件）。
 
 ## Android 0.4.3 变更
 

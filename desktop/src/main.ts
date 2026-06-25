@@ -1,4 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } from "electron";
+import { chmod } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { ConfigStore } from "./config-store";
@@ -7,6 +9,7 @@ import { logError, logInfo, logWarn } from "./logger";
 import { RelayClient } from "./relay-client";
 import type {
   AdminLoginInput,
+  AppUpdateInfo,
   CreateBindCodeInput,
   DevicePermissions,
   DeviceProfile,
@@ -26,6 +29,8 @@ let directoryWatcher: DirectoryWatcher | null = null;
 let directoryWatcherTeardown: Promise<void> = Promise.resolve();
 let permissionRefreshTimer: NodeJS.Timeout | undefined;
 let isQuitting = false;
+let updatePromptVersion: string | undefined;
+let updateDownloadInProgress = false;
 
 function rendererPath(file: string): string {
   return path.join(__dirname, "renderer", file);
@@ -83,6 +88,125 @@ function showMainWindow(): void {
   }
   mainWindow.show();
   mainWindow.focus();
+}
+
+function isNewerVersion(candidate: string, current: string): boolean {
+  const parse = (value: string) => value.split("-")[0].split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const next = parse(candidate);
+  const installed = parse(current);
+  for (let index = 0; index < Math.max(next.length, installed.length); index += 1) {
+    const difference = (next[index] ?? 0) - (installed[index] ?? 0);
+    if (difference !== 0) return difference > 0;
+  }
+  return false;
+}
+
+function showDialog(options: Electron.MessageBoxOptions): Promise<Electron.MessageBoxReturnValue> {
+  return mainWindow ? dialog.showMessageBox(mainWindow, options) : dialog.showMessageBox(options);
+}
+
+async function promptForUpdate(release: AppUpdateInfo, manual = false): Promise<void> {
+  if (!isNewerVersion(release.versionName, app.getVersion())) {
+    if (manual) {
+      await showDialog({
+        type: "info",
+        title: "检查更新",
+        message: `当前已是最新版本 ${app.getVersion()}`,
+      });
+    }
+    return;
+  }
+  if (!manual && updatePromptVersion === release.versionName) return;
+  updatePromptVersion = release.versionName;
+  const result = await showDialog({
+    type: "info",
+    title: "StudyShot Relay 更新",
+    message: `发现新版本 ${release.versionName}`,
+    detail: release.releaseNotes || "安装包由当前 StudyShot 服务器提供。下载完成并校验后将打开安装程序。",
+    buttons: ["下载并安装", "稍后"],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  });
+  if (result.response !== 0 || updateDownloadInProgress) return;
+
+  updateDownloadInProgress = true;
+  try {
+    const updateDir = path.join(app.getPath("downloads"), "StudyShot Relay");
+    const packagePath = await relayClient.downloadUpdate(release, updateDir);
+    const ready = await showDialog({
+      type: "info",
+      title: "更新已下载",
+      message: `已保存并校验 ${path.basename(packagePath)}`,
+      detail: `位置：${packagePath}`,
+      buttons: ["打开安装程序", "稍后"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+    if (ready.response === 0) await launchUpdatePackage(packagePath);
+  } catch (err) {
+    await showDialog({
+      type: "error",
+      title: "更新失败",
+      message: (err as Error).message || String(err),
+    });
+  } finally {
+    updateDownloadInProgress = false;
+  }
+}
+
+async function launchUpdatePackage(packagePath: string): Promise<void> {
+  if (process.platform === "win32") {
+    await spawnDetached(packagePath, []);
+    isQuitting = true;
+    app.quit();
+    return;
+  }
+  if (packagePath.toLowerCase().endsWith(".appimage")) {
+    await chmod(packagePath, 0o755);
+    await spawnDetached(packagePath, []);
+    isQuitting = true;
+    app.quit();
+    return;
+  }
+  const error = await shell.openPath(packagePath);
+  if (error) throw new Error(error);
+}
+
+function spawnDetached(command: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { detached: true, stdio: "ignore" });
+    child.once("error", reject);
+    child.once("spawn", () => {
+      child.unref();
+      resolve();
+    });
+  });
+}
+
+async function checkForUpdates(manual = false): Promise<void> {
+  try {
+    const release = await relayClient.checkForUpdate();
+    if (release) await promptForUpdate(release, manual);
+    else if (manual) {
+      await showDialog({
+        type: "info",
+        title: "检查更新",
+        message: "服务器当前没有发布此平台的更新包。",
+      });
+    }
+  } catch (err) {
+    if (manual) {
+      await showDialog({
+        type: "error",
+        title: "检查更新失败",
+        message: (err as Error).message || String(err),
+      });
+    } else {
+      logWarn("Automatic update check failed", { error: String(err) });
+    }
+  }
 }
 
 function createTrayIcon(): Electron.NativeImage {
@@ -317,6 +441,11 @@ function updateTrayMenu(): void {
         },
       },
       { label: "打开下载目录", click: () => shell.openPath(configStore.downloadDir || os.homedir()) },
+      {
+        label: "检查更新",
+        enabled: state.settings.isBound,
+        click: () => { void checkForUpdates(true); },
+      },
       { type: "separator" },
       {
         label: "退出",
@@ -614,6 +743,7 @@ async function start(): Promise<void> {
   await historyStore.load();
   relayClient = new RelayClient(configStore, historyStore);
   relayClient.onState(() => broadcastState());
+  relayClient.onUpdate((release) => { void promptForUpdate(release); });
 
   registerIpcHandlers();
   createWindow();
@@ -638,13 +768,9 @@ async function start(): Promise<void> {
     }
   }
 
-  if (
-    !httpConfirmationPending &&
-    configStore.autoReceive &&
-    configStore.settings.isBound &&
-    configStore.settings.lastKnownPermissions?.canAutoReceive !== false
-  ) {
+  if (!httpConfirmationPending && configStore.settings.isBound) {
     relayClient.connect();
+    void checkForUpdates(false);
   }
 
   await applyWatcherConfig();

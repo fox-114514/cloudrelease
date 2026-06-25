@@ -33,6 +33,16 @@ export interface PendingDeliveriesResult {
   hasMore?: boolean;
 }
 
+export interface ClientRelease {
+  channel: "linux-cli";
+  versionName: string;
+  releaseNotes: string;
+  fileName: string;
+  fileSize: number;
+  sha256: string;
+  downloadPath: string;
+}
+
 export async function createImageUploadForm(
   filePath: string,
   sourceKind: string,
@@ -108,6 +118,25 @@ export class ApiClient {
       { headers: this.authHeaders() }
     );
     return parseEnvelope(response);
+  }
+
+  async getUpdate(): Promise<ClientRelease | undefined> {
+    const response = await fetch(
+      apiUrl(this.device.serverBaseUrl, "/api/v1/updates/linux-cli"),
+      { headers: this.authHeaders() },
+    );
+    const data = await parseEnvelope<{ available: boolean; release?: ClientRelease }>(response);
+    return data.available ? data.release : undefined;
+  }
+
+  async downloadUpdatePackage(downloadPath: string): Promise<ReadableStream<Uint8Array>> {
+    const response = await fetch(apiUrl(this.device.serverBaseUrl, downloadPath), {
+      headers: this.authHeaders(),
+    });
+    if (!response.ok || !response.body) {
+      throw new ApiError(response.status, `HTTP_${response.status}`, "Update package download failed");
+    }
+    return response.body;
   }
 
   async ackDelivery(deliveryId: string, status: "downloaded" | "failed" | "skipped"): Promise<void> {

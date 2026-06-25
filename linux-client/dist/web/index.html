@@ -271,14 +271,22 @@
           <div class="card">
             <h2>服务状态</h2>
             <div style="display:flex; gap:12px; margin-bottom:12px;">
-              <span>接收：<span id="svcReceive" class="status-pill disconnected">未启动</span></span>
+              <span>连接/更新：<span id="svcReceive" class="status-pill disconnected">未启动</span></span>
               <span>监听：<span id="svcWatch" class="status-pill disconnected">未启动</span></span>
             </div>
             <div class="actions">
-              <button id="btnStartReceive">启动接收</button>
-              <button id="btnStopReceive" class="danger">停止接收</button>
+              <button id="btnStartReceive">启动连接</button>
+              <button id="btnStopReceive" class="danger">停止连接</button>
               <button id="btnStartWatch">启动监听</button>
               <button id="btnStopWatch" class="danger">停止监听</button>
+            </div>
+          </div>
+          <div class="card">
+            <h2>客户端更新</h2>
+            <p id="updateStatus" class="empty">尚未检查</p>
+            <div class="actions">
+              <button id="btnCheckUpdate" class="secondary">检查更新</button>
+              <button id="btnInstallUpdate" style="display:none">下载并打开安装包</button>
             </div>
           </div>
         </div>
@@ -478,6 +486,7 @@
     let adminJwt = localStorage.getItem('ssr_admin_jwt') || '';
     let eventSource;
     let currentConfig;
+    let latestUpdate;
 
     function showMessage(text, type) {
       const el = $('message');
@@ -597,8 +606,45 @@
         const pendingCount = Number(data.pendingDeliveryCount || 0);
         $('pendingModalText').textContent = `设备离线期间收到 ${pendingCount} 张图片，是否现在接收？`;
         $('pendingModal').classList.toggle('hidden', pendingCount === 0);
+        renderUpdate(data.clientVersion, data.update);
       } catch {
         // ignore
+      }
+    }
+
+    function renderUpdate(clientVersion, release) {
+      if (release) latestUpdate = release;
+      const status = $('updateStatus');
+      if (latestUpdate) {
+        status.className = '';
+        status.textContent = `发现 ${latestUpdate.versionName}：${latestUpdate.releaseNotes || '服务器已发布新版本'}`;
+        $('btnInstallUpdate').style.display = '';
+      } else {
+        status.className = 'empty';
+        status.textContent = clientVersion ? `当前版本 ${clientVersion}` : '尚未检查';
+        $('btnInstallUpdate').style.display = 'none';
+      }
+    }
+
+    async function checkUpdate() {
+      try {
+        const data = await api('GET', '/api/update');
+        latestUpdate = data.release;
+        renderUpdate(data.clientVersion, data.release);
+        showMessage(data.release ? `发现新版本 ${data.release.versionName}` : '当前已是最新版本', 'success');
+      } catch (err) {
+        showMessage(err.message, 'error');
+      }
+    }
+
+    async function installUpdate() {
+      if (!latestUpdate || !confirm(`下载 ${latestUpdate.versionName} 并打开系统安装程序？`)) return;
+      try {
+        showMessage('正在下载并校验更新包…', 'success');
+        const data = await api('POST', '/api/update/download');
+        showMessage(`安装包已打开：${data.packagePath}`, 'success');
+      } catch (err) {
+        showMessage(err.message, 'error');
       }
     }
 
@@ -747,6 +793,7 @@
         try {
           const { text, type } = JSON.parse(e.data);
           logLine(text, type);
+          if (type === 'update') checkUpdate();
         } catch {
           logLine(e.data);
         }
@@ -1211,9 +1258,11 @@
     });
     $('btnOpenAdmin').addEventListener('click', openAdmin);
     $('btnClearLog').addEventListener('click', () => $('logPanel').innerHTML = '');
+    $('btnCheckUpdate').addEventListener('click', checkUpdate);
+    $('btnInstallUpdate').addEventListener('click', installUpdate);
 
-    $('btnStartReceive').addEventListener('click', () => api('POST', '/api/service/receive/start').then(() => { showMessage('接收服务已启动', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
-    $('btnStopReceive').addEventListener('click', () => api('POST', '/api/service/receive/stop').then(() => { showMessage('接收服务已停止', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
+    $('btnStartReceive').addEventListener('click', () => api('POST', '/api/service/receive/start').then(() => { showMessage('连接与更新通道已启动', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
+    $('btnStopReceive').addEventListener('click', () => api('POST', '/api/service/receive/stop').then(() => { showMessage('连接与更新通道已停止', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
     $('btnStartWatch').addEventListener('click', () => api('POST', '/api/service/watch/start').then(() => { showMessage('监听服务已启动', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
     $('btnStopWatch').addEventListener('click', () => api('POST', '/api/service/watch/stop').then(() => { showMessage('监听服务已停止', 'success'); loadServiceStatus(); }).catch(e => showMessage(e.message, 'error')));
     $('btnAcceptPending').addEventListener('click', () => api('POST', '/api/service/receive/pending/accept').then(() => { showMessage('离线图片已接收', 'success'); loadServiceStatus(); loadRecentDeliveries(); }).catch(e => showMessage(e.message, 'error')));

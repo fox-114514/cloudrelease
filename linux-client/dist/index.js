@@ -11,6 +11,7 @@ import { uploadSingle } from "./uploader.js";
 import { WsReceiveClient } from "./ws-client.js";
 import { defaultDownloadDir, ensureAllowedDir, ensureDir, isAllowedDir } from "./utils.js";
 import { assertExplicitInsecureHttp } from "./utils.js";
+import { CLIENT_VERSION, downloadUpdate, isNewerVersion, openUpdatePackage, } from "./update.js";
 /** Run `cleanup` on SIGINT/SIGTERM and exit with code 0. */
 function installShutdown(cleanup) {
     let triggered = false;
@@ -35,6 +36,22 @@ async function confirmAction(prompt) {
     finally {
         rl.close();
     }
+}
+const offeredUpdateVersions = new Set();
+async function offerUpdate(device, release, assumeYes = false) {
+    if (!isNewerVersion(release.versionName))
+        return;
+    if (!assumeYes && offeredUpdateVersions.has(release.versionName))
+        return;
+    offeredUpdateVersions.add(release.versionName);
+    console.log(`New version available: ${release.versionName}`);
+    if (release.releaseNotes)
+        console.log(release.releaseNotes);
+    if (!assumeYes && !(await confirmAction("Download and open the update package?")))
+        return;
+    const packagePath = await downloadUpdate(new ApiClient(device), release);
+    console.log(`Update downloaded and verified: ${packagePath}`);
+    await openUpdatePackage(packagePath);
 }
 async function readHiddenPassword(prompt = "Password: ") {
     if (!process.stdin.isTTY || !process.stdout.isTTY || !process.stdin.setRawMode) {
@@ -93,7 +110,7 @@ function printIdentity(device) {
     console.log("Permissions:", JSON.stringify(device.permissions ?? {}, null, 2));
 }
 const program = new Command();
-program.name("studyshot-relay").description("StudyShot Relay Linux CLI").version("0.5.0");
+program.name("studyshot-relay").description("StudyShot Relay Linux CLI").version(CLIENT_VERSION);
 program
     .command("bind")
     .description("Bind this Linux client to a StudyShot Relay server")
@@ -221,6 +238,27 @@ program
     }
 });
 program
+    .command("update")
+    .description("Check, download and open the latest Linux package")
+    .option("--yes", "Download without prompting", false)
+    .action(async (options) => {
+    try {
+        const config = await loadConfig();
+        if (!config.device)
+            throw new Error("Not bound. Run bind first.");
+        const release = await new ApiClient(config.device).getUpdate();
+        if (!release || !isNewerVersion(release.versionName)) {
+            console.log(`Already up to date (${CLIENT_VERSION}).`);
+            return;
+        }
+        await offerUpdate(config.device, release, options.yes === true);
+    }
+    catch (err) {
+        console.error(`Update failed: ${err.message}`);
+        process.exitCode = 1;
+    }
+});
+program
     .command("unbind")
     .description("Remove local binding")
     .action(async () => {
@@ -298,6 +336,7 @@ program
     const client = new WsReceiveClient({
         device: config.device,
         config,
+        receiveImages: true,
         onStatus: console.log,
         onDownload: (filePath) => console.log(`[cli] Received ${filePath}`),
         onPending: (count) => {
@@ -310,6 +349,9 @@ program
             });
         },
         onError: (message) => console.error(`[cli] ${message}`),
+        onUpdate: (release) => {
+            void offerUpdate(config.device, release).catch((err) => console.error(`[update] ${err.message}`));
+        },
     });
     client.start();
     const permissionTimer = setInterval(() => {
@@ -448,26 +490,28 @@ program
             onError: console.error,
         });
     }
-    const client = config.autoReceive && serverAllows(config.device, "canAutoReceive")
-        ? new WsReceiveClient({
-            device: config.device,
-            config,
-            onStatus: console.log,
-            onDownload: (filePath) => console.log(`[cli] Received ${filePath}`),
-            onPending: (count) => {
-                if (count > 0) {
-                    console.log(`[cli] ${count} offline image(s) are waiting; run interactively to accept them.`);
-                }
-            },
-            onError: (message) => console.error(`[cli] ${message}`),
-        })
-        : undefined;
-    client?.start();
+    const client = new WsReceiveClient({
+        device: config.device,
+        config,
+        onStatus: console.log,
+        onDownload: (filePath) => console.log(`[cli] Received ${filePath}`),
+        onPending: (count) => {
+            if (count > 0) {
+                console.log(`[cli] ${count} offline image(s) are waiting; run interactively to accept them.`);
+            }
+        },
+        onError: (message) => console.error(`[cli] ${message}`),
+        onUpdate: (release) => {
+            void offerUpdate(config.device, release).catch((err) => console.error(`[update] ${err.message}`));
+        },
+    });
+    client.start();
     const permissionTimer = setInterval(() => {
         void refreshAndSaveDevice()
             .then(async (device) => {
-            if (!serverAllows(device, "canAutoReceive"))
-                client?.stop();
+            if (config.autoReceive && !serverAllows(device, "canAutoReceive")) {
+                console.error("Server disabled automatic receive; image receiving is paused; update channel remains connected.");
+            }
             if (!serverAllows(device, "canAutoUpload"))
                 await watcher?.close();
             if (!serverAllows(device, "canAutoReceive") && !serverAllows(device, "canAutoUpload")) {
@@ -478,7 +522,7 @@ program
     }, 5 * 60 * 1000);
     installShutdown(async () => {
         clearInterval(permissionTimer);
-        client?.stop();
+        client.stop();
         await watcher?.close();
     });
 });

@@ -120,17 +120,16 @@ cd cloudrelease
 
 客户端服务器地址填 `http://1.2.3.4:3000`。
 
-数据库备份、迁移、升级等运维细节见 [docs/backend-deployment.md](docs/backend-deployment.md)。
+数据库备份、迁移、升级等运维细节见 [docs/ops/backend-deployment.md](docs/ops/backend-deployment.md)。
 
 ## 文档
 
-- [项目完整规格](docs/study-shot-relay-spec.md) — 目标、场景、约束、详细设计
-- [客户端 / 后端协议](docs/protocol.md) — HTTP API、WebSocket 消息、错误码
-- [权限模型](docs/permissions.md) — 用户 / 设备 / 能力项的边界
-- [多用户管理调查报告](docs/multi-user-investigation-2026-06-21.md)
-- [多用户体验优化方案](docs/multi-user-optimization-plan.md)
-- [多用户 V2 详细开发规格](docs/multi-user-v2-development-spec.md)
-- [Android 后台上传设计](docs/android-background.md)
-- [后端部署](docs/backend-deployment.md)
+- [文档索引](docs/index.md) — 当前文档结构和维护规则
+- [项目完整规格](docs/spec/product-spec.md) — 目标、场景、约束、详细设计
+- [客户端 / 后端协议](docs/spec/protocol.md) — HTTP API、WebSocket 消息、错误码
+- [权限模型](docs/spec/permissions.md) — 用户 / 设备 / 能力项的边界
+- [多用户 V2 设计](docs/design/multi-user-v2.md)
+- [Android 后台上传设计](docs/design/android-background.md)
+- [后端部署](docs/ops/backend-deployment.md)
 - [桌面客户端](desktop/README.md)
 - [Linux 客户端](linux-client/README.md)

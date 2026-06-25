@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
-import { ApiClient } from "./api.js";
+import { ApiClient, type ClientRelease } from "./api.js";
 import {
   bindDevice,
   bindWithLogin,
@@ -15,12 +15,19 @@ import {
   saveConfig,
   serverAllows,
   unbind,
+  type DeviceConfig,
 } from "./config.js";
 import { startWatcher } from "./watcher.js";
 import { uploadSingle } from "./uploader.js";
 import { WsReceiveClient } from "./ws-client.js";
 import { defaultDownloadDir, ensureAllowedDir, ensureDir, isAllowedDir, normalizeBaseUrl } from "./utils.js";
 import { assertExplicitInsecureHttp } from "./utils.js";
+import {
+  CLIENT_VERSION,
+  downloadUpdate,
+  isNewerVersion,
+  openUpdatePackage,
+} from "./update.js";
 
 /** Run `cleanup` on SIGINT/SIGTERM and exit with code 0. */
 function installShutdown(cleanup: () => Promise<void> | void): void {
@@ -44,6 +51,24 @@ async function confirmAction(prompt: string): Promise<boolean> {
   } finally {
     rl.close();
   }
+}
+
+const offeredUpdateVersions = new Set<string>();
+
+async function offerUpdate(
+  device: DeviceConfig,
+  release: ClientRelease,
+  assumeYes = false,
+): Promise<void> {
+  if (!isNewerVersion(release.versionName)) return;
+  if (!assumeYes && offeredUpdateVersions.has(release.versionName)) return;
+  offeredUpdateVersions.add(release.versionName);
+  console.log(`New version available: ${release.versionName}`);
+  if (release.releaseNotes) console.log(release.releaseNotes);
+  if (!assumeYes && !(await confirmAction("Download and open the update package?"))) return;
+  const packagePath = await downloadUpdate(new ApiClient(device), release);
+  console.log(`Update downloaded and verified: ${packagePath}`);
+  await openUpdatePackage(packagePath);
 }
 
 async function readHiddenPassword(prompt = "Password: "): Promise<string> {
@@ -105,7 +130,7 @@ function printIdentity(device: NonNullable<Awaited<ReturnType<typeof loadConfig>
 
 const program = new Command();
 
-program.name("studyshot-relay").description("StudyShot Relay Linux CLI").version("0.5.0");
+program.name("studyshot-relay").description("StudyShot Relay Linux CLI").version(CLIENT_VERSION);
 
 program
   .command("bind")
@@ -240,6 +265,26 @@ program
   });
 
 program
+  .command("update")
+  .description("Check, download and open the latest Linux package")
+  .option("--yes", "Download without prompting", false)
+  .action(async (options) => {
+    try {
+      const config = await loadConfig();
+      if (!config.device) throw new Error("Not bound. Run bind first.");
+      const release = await new ApiClient(config.device).getUpdate();
+      if (!release || !isNewerVersion(release.versionName)) {
+        console.log(`Already up to date (${CLIENT_VERSION}).`);
+        return;
+      }
+      await offerUpdate(config.device, release, options.yes === true);
+    } catch (err) {
+      console.error(`Update failed: ${(err as Error).message}`);
+      process.exitCode = 1;
+    }
+  });
+
+program
   .command("unbind")
   .description("Remove local binding")
   .action(async () => {
@@ -318,6 +363,7 @@ program
     const client = new WsReceiveClient({
       device: config.device,
       config,
+      receiveImages: true,
       onStatus: console.log,
       onDownload: (filePath) => console.log(`[cli] Received ${filePath}`),
       onPending: (count) => {
@@ -328,6 +374,11 @@ program
         });
       },
       onError: (message) => console.error(`[cli] ${message}`),
+      onUpdate: (release) => {
+        void offerUpdate(config.device!, release).catch((err) =>
+          console.error(`[update] ${(err as Error).message}`)
+        );
+      },
     });
 
     client.start();
@@ -476,8 +527,7 @@ program
       });
     }
 
-    const client = config.autoReceive && serverAllows(config.device, "canAutoReceive")
-      ? new WsReceiveClient({
+    const client = new WsReceiveClient({
           device: config.device,
           config,
           onStatus: console.log,
@@ -488,14 +538,20 @@ program
             }
           },
           onError: (message) => console.error(`[cli] ${message}`),
-        })
-      : undefined;
-    client?.start();
+          onUpdate: (release) => {
+            void offerUpdate(config.device!, release).catch((err) =>
+              console.error(`[update] ${(err as Error).message}`)
+            );
+          },
+        });
+    client.start();
 
     const permissionTimer = setInterval(() => {
       void refreshAndSaveDevice()
         .then(async (device) => {
-          if (!serverAllows(device, "canAutoReceive")) client?.stop();
+          if (config.autoReceive && !serverAllows(device, "canAutoReceive")) {
+            console.error("Server disabled automatic receive; image receiving is paused; update channel remains connected.");
+          }
           if (!serverAllows(device, "canAutoUpload")) await watcher?.close();
           if (!serverAllows(device, "canAutoReceive") && !serverAllows(device, "canAutoUpload")) {
             clearInterval(permissionTimer);
@@ -506,7 +562,7 @@ program
 
     installShutdown(async () => {
       clearInterval(permissionTimer);
-      client?.stop();
+      client.stop();
       await watcher?.close();
     });
   });

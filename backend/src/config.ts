@@ -30,6 +30,15 @@ const configSchema = z.object({
   ANDROID_UPDATE_VERSION_CODE: optionalPositiveInt,
   ANDROID_UPDATE_VERSION_NAME: optionalNonEmptyString,
   ANDROID_UPDATE_RELEASE_NOTES: z.string().default(""),
+  WINDOWS_UPDATE_PACKAGE_PATH: optionalNonEmptyString,
+  WINDOWS_UPDATE_VERSION_NAME: optionalNonEmptyString,
+  WINDOWS_UPDATE_RELEASE_NOTES: z.string().default(""),
+  LINUX_DESKTOP_UPDATE_PACKAGE_PATH: optionalNonEmptyString,
+  LINUX_DESKTOP_UPDATE_VERSION_NAME: optionalNonEmptyString,
+  LINUX_DESKTOP_UPDATE_RELEASE_NOTES: z.string().default(""),
+  LINUX_CLI_UPDATE_PACKAGE_PATH: optionalNonEmptyString,
+  LINUX_CLI_UPDATE_VERSION_NAME: optionalNonEmptyString,
+  LINUX_CLI_UPDATE_RELEASE_NOTES: z.string().default(""),
 });
 
 const parsed = configSchema.safeParse(process.env);

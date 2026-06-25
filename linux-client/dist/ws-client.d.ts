@@ -1,3 +1,4 @@
+import type { ClientRelease } from "./api.js";
 import type { AppConfig, DeviceConfig } from "./config.js";
 export interface WsClientOptions {
     device: DeviceConfig;
@@ -6,6 +7,9 @@ export interface WsClientOptions {
     onDownload?: (filePath: string, imageId: string, deliveryId: string, sourceDeviceName: string) => void;
     onPending?: (count: number) => void;
     onError?: (message: string) => void;
+    onUpdate?: (release: ClientRelease) => void;
+    /** Explicit receive command can opt in even when the saved autoReceive switch is off. */
+    receiveImages?: boolean;
 }
 export declare class WsReceiveClient {
     private readonly options;
@@ -25,6 +29,8 @@ export declare class WsReceiveClient {
     private startHeartbeat;
     private stopHeartbeat;
     private handleMessage;
+    private shouldReceiveImages;
+    private parseUpdate;
     private handleImageCreated;
     private parseDelivery;
     checkPending(): Promise<number>;

@@ -58,7 +58,7 @@ export async function bindDevice(serverBaseUrl, bindCode, deviceName, profile = 
             deviceName: deviceName.trim() || "Linux",
             platform: "linux",
             osVersion: `${process.platform} ${process.arch}`,
-            appVersion: "0.5.0",
+            appVersion: "0.5.1",
             profile,
         }),
     });

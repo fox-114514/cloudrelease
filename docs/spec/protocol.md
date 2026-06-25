@@ -1117,33 +1117,41 @@ Authorization: Bearer <device-token>
 - 下载成功后调用 ACK。
 - WebSocket 消息丢失不影响最终一致性，pending 接口负责补偿。
 
-### Android 版本更新事件
+### 客户端版本更新事件
 
-当 Android 设备发送 `hello` 且服务器已配置新版 APK 时，服务端在 `hello.ack` 后发送：
+客户端在 `hello` 中声明更新通道，服务端校验设备平台与通道匹配后，在 `hello.ack` 后发送发布信息：
+
+```json
+{ "type": "hello", "updateChannel": "windows" }
+```
+
+可用通道：`android`、`windows`、`linux-desktop`、`linux-cli`。Linux 的 Electron 桌面包与 CLI/Web `.deb` 不能混用，因此必须区分通道。
 
 ```json
 {
   "type": "app.update.available",
   "release": {
-    "versionCode": 9,
+    "channel": "windows",
     "versionName": "0.5.1",
     "releaseNotes": "修复问题并改善更新流程",
-    "fileName": "studyshot-relay.apk",
-    "fileSize": 13631488,
+    "fileName": "StudyShot-Relay-Windows-0.5.1-portable.exe",
+    "fileSize": 83067176,
     "sha256": "64-hex",
-    "downloadPath": "/api/v1/updates/android/apk"
+    "downloadPath": "/api/v1/updates/windows/package"
   }
 }
 ```
 
-客户端只在 `release.versionCode` 大于本机 `BuildConfig.VERSION_CODE` 时提示。版本名称只用于显示，不能用于比较。
+Android 以 `versionCode` 比较；Windows 与 Linux 使用语义化 `versionName` 比较。
 
-Android 更新接口均要求设备 token：
+更新接口均要求设备 token，且 token 所属设备平台必须与通道匹配：
 
 - `GET /api/v1/updates/android`：返回 `{ available, release }`，用于启动和定时检查。
 - `GET /api/v1/updates/android/apk`：返回 `application/vnd.android.package-archive`，用于 DownloadManager 下载。
+- `GET /api/v1/updates/{channel}`：返回桌面/CLI 通道发布信息。
+- `GET /api/v1/updates/{channel}/package`：下载对应 `.exe`、`.deb` 或 `.AppImage`。
 
-客户端必须校验下载文件 SHA-256；不一致时删除文件且不得打开安装器。APK 仍由 Android 系统安装器完成签名与用户确认。
+所有客户端必须校验下载文件 SHA-256；不一致时删除文件且不得打开。Windows 启动 `.exe`，Linux 使用桌面默认安装器打开 `.deb`，AppImage 则设置执行权限后启动。
 
 ## 15. 桌面客户端最小接收流程
 

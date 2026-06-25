@@ -46,6 +46,7 @@ studyshot-relay launch
 - 启动/停止接收和监听服务
 - 登录主账号并打开服务器原生 `/admin` 管理后台
 - 查看实时日志
+- 检查服务端发布的新版本，下载并校验后打开系统安装器
 
 指定端口：
 
@@ -97,6 +98,7 @@ studyshot-relay bind-login -s http://64.90.30.102:3000 -u <登录名> -n "MyLinu
 studyshot-relay whoami
 studyshot-relay permissions
 studyshot-relay refresh-permissions
+studyshot-relay update
 ```
 
 本地自动上传/接收开关只有在服务端有效权限允许时才会启动对应服务。

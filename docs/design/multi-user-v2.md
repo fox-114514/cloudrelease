@@ -8,10 +8,10 @@
 
 关联文档：
 
-- [现状调查报告](./multi-user-investigation-2026-06-21.md)
-- [产品优化方向](./multi-user-optimization-plan.md)
-- [现有权限说明](./permissions.md)
-- [现有协议文档](./protocol.md)
+- [现状调查报告](../archive/2026-06/multi-user-investigation-2026-06-21.md)
+- [产品优化方向](../archive/2026-06/multi-user-optimization-plan.md)
+- [现有权限说明](../spec/permissions.md)
+- [现有协议文档](../spec/protocol.md)
 
 ## 1. 文档用途和优先级
 
@@ -1127,9 +1127,9 @@ backend/scripts/audit-multi-user-config.ts
 
 实现完成后必须同步：
 
-- `docs/permissions.md`
-- `docs/protocol.md`
-- `docs/study-shot-relay-spec.md`
+- `docs/spec/permissions.md`
+- `docs/spec/protocol.md`
+- `docs/spec/product-spec.md`
 - `README.md`
 - `RELEASES.md`
 - Android 帮助页和字符串

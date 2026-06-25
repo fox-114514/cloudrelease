@@ -1,9 +1,12 @@
 import { clipboard, nativeImage, Notification } from "electron";
+import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import * as fs from "node:fs/promises";
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import WebSocket from "ws";
 import type { ConfigStore } from "./config-store";
 import { assertExplicitInsecureHttp, normalizeBaseUrl } from "./url-safety";
@@ -12,6 +15,7 @@ import { logError, logInfo, logWarn } from "./logger";
 import type {
   AdminLoginInput,
   AdminState,
+  AppUpdateInfo,
   BindCodePreview,
   BindCodeTargetUser,
   BoundUserInfo,
@@ -35,6 +39,7 @@ import type {
   WatchState,
   WatchUploadEvent,
 } from "./shared";
+import { CLIENT_VERSION } from "./shared";
 
 interface ApiEnvelope<T> {
   success: boolean;
@@ -90,6 +95,7 @@ interface UploadImageResponse {
 interface ImageLibraryResponse extends ImageLibraryPage {}
 
 type StateListener = (state: RendererState) => void;
+type UpdateListener = (release: AppUpdateInfo) => void;
 
 class ApiError extends Error {
   constructor(
@@ -116,6 +122,10 @@ function wsUrl(baseUrl: string): string {
 
 function currentPlatform(): Platform {
   return process.platform === "win32" ? "windows" : "linux";
+}
+
+function currentUpdateChannel(): "windows" | "linux-desktop" {
+  return process.platform === "win32" ? "windows" : "linux-desktop";
 }
 
 function sanitizeFilePart(value: string): string {
@@ -203,6 +213,12 @@ async function writeFileExclusive(target: string, data: Buffer): Promise<void> {
   await handle.close();
 }
 
+async function sha256File(filePath: string): Promise<string> {
+  const hash = crypto.createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  return hash.digest("hex");
+}
+
 async function writeFileWithUniqueSuffix(basePath: string, data: Buffer): Promise<string> {
   const parsed = path.parse(basePath);
   let lastError: unknown;
@@ -283,6 +299,7 @@ export class RelayClient {
   private pendingOfflineCount = 0;
   private deliveryChain: Promise<void> = Promise.resolve();
   private stateListener?: StateListener;
+  private updateListener?: UpdateListener;
   private connection: ConnectionState = { status: "idle" };
   private adminToken?: string;
   private admin: AdminState = {
@@ -341,6 +358,10 @@ export class RelayClient {
     this.emitState();
   }
 
+  onUpdate(listener: UpdateListener): void {
+    this.updateListener = listener;
+  }
+
   getState(): RendererState {
     return {
       settings: this.config.settings,
@@ -383,7 +404,7 @@ export class RelayClient {
       deviceName: input.deviceName.trim() || os.hostname(),
       platform: currentPlatform(),
       osVersion: `${os.type()} ${os.release()}`,
-      appVersion: "0.5.0",
+      appVersion: CLIENT_VERSION,
     };
     if (input.profile) {
       body.profile = input.profile;
@@ -410,16 +431,14 @@ export class RelayClient {
     logInfo("Device registered", { serverBaseUrl, deviceId: data.deviceId });
     this.emitState();
 
-    if (this.config.autoReceive) {
-      this.connect();
-    }
+    this.connect();
 
     return {
       device: {
         id: data.deviceId,
         name: input.deviceName.trim() || os.hostname(),
         platform: currentPlatform(),
-        appVersion: "0.5.0",
+        appVersion: CLIENT_VERSION,
         osVersion: `${os.type()} ${os.release()}`,
         createdAt: new Date().toISOString(),
         lastSeenAt: new Date().toISOString(),
@@ -782,15 +801,6 @@ export class RelayClient {
       });
       return;
     }
-    if (!this.config.autoReceive) {
-      this.setConnection({ status: "stopped" });
-      return;
-    }
-    if (this.config.settings.lastKnownPermissions?.canAutoReceive === false) {
-      this.setConnection({ status: "stopped", lastError: "服务端未允许本设备自动接收" });
-      return;
-    }
-
     this.closeSocket();
     this.setConnection({ status: "connecting" });
 
@@ -802,7 +812,7 @@ export class RelayClient {
 
     socket.on("open", () => {
       this.reconnectDelayMs = 1000;
-      socket.send(JSON.stringify({ type: "hello" }));
+      socket.send(JSON.stringify({ type: "hello", updateChannel: currentUpdateChannel() }));
       this.startHeartbeat();
       logInfo("WebSocket opened");
     });
@@ -838,7 +848,7 @@ export class RelayClient {
         return;
       }
 
-      if (this.config.autoReceive && this.config.settings.lastKnownPermissions?.canAutoReceive !== false) {
+      if (this.config.settings.isBound) {
         this.scheduleReconnect(reasonText);
       } else {
         this.setConnection({ status: "stopped" });
@@ -1017,11 +1027,7 @@ export class RelayClient {
 
   async handleSettingsChanged(): Promise<void> {
     this.emitState();
-    if (
-      this.config.autoReceive &&
-      this.config.settings.isBound &&
-      this.config.settings.lastKnownPermissions?.canAutoReceive !== false
-    ) {
+    if (this.config.settings.isBound) {
       this.connect();
       return;
     }
@@ -1035,15 +1041,72 @@ export class RelayClient {
         status: "connected",
         lastConnectedAt: new Date().toISOString(),
       });
-      await this.checkPending();
+      if (this.config.autoReceive && this.config.settings.lastKnownPermissions?.canAutoReceive !== false) {
+        await this.checkPending();
+      }
       return;
     }
     if (message.type === "pong") {
       return;
     }
     if (message.type === "image.created") {
-      await this.enqueueDelivery(message as ImageCreatedEvent);
+      if (this.config.autoReceive && this.config.settings.lastKnownPermissions?.canAutoReceive !== false) {
+        await this.enqueueDelivery(message as ImageCreatedEvent);
+      }
+      return;
     }
+    if (message.type === "app.update.available") {
+      const release = this.parseUpdateRelease((message as { release?: unknown }).release);
+      if (release) this.updateListener?.(release);
+    }
+  }
+
+  async checkForUpdate(): Promise<AppUpdateInfo | undefined> {
+    const token = this.requireDeviceToken();
+    const response = await fetch(
+      apiUrl(this.config.serverBaseUrl, `/api/v1/updates/${currentUpdateChannel()}`),
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    const data = await parseEnvelope<{ available: boolean; release?: AppUpdateInfo }>(response);
+    return data.available ? this.parseUpdateRelease(data.release) : undefined;
+  }
+
+  async downloadUpdate(release: AppUpdateInfo, targetDir: string): Promise<string> {
+    const token = this.requireDeviceToken();
+    await mkdir(targetDir, { recursive: true });
+    const fileName = path.basename(release.fileName);
+    const target = path.join(targetDir, fileName);
+    const partial = `${target}.part`;
+    await fs.rm(partial, { force: true });
+    const response = await fetch(apiUrl(this.config.serverBaseUrl, release.downloadPath), {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`更新包下载失败：HTTP ${response.status}`);
+    }
+    await pipeline(
+      Readable.fromWeb(response.body as import("node:stream/web").ReadableStream),
+      createWriteStream(partial, { flags: "wx" }),
+    );
+    const actual = await sha256File(partial);
+    if (actual.toLowerCase() !== release.sha256.toLowerCase()) {
+      await fs.rm(partial, { force: true });
+      throw new Error("更新包 SHA-256 校验失败");
+    }
+    await fs.rm(target, { force: true });
+    await fs.rename(partial, target);
+    return target;
+  }
+
+  private parseUpdateRelease(value: unknown): AppUpdateInfo | undefined {
+    if (!value || typeof value !== "object") return undefined;
+    const release = value as Partial<AppUpdateInfo>;
+    if (
+      release.channel !== currentUpdateChannel() ||
+      !release.versionName || !release.fileName || !release.sha256 || !release.downloadPath ||
+      typeof release.fileSize !== "number"
+    ) return undefined;
+    return release as AppUpdateInfo;
   }
 
   private enqueueDelivery(delivery: DeliveryPayload): Promise<void> {

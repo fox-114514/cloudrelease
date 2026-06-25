@@ -131,7 +131,7 @@ export async function bindDevice(
       deviceName: deviceName.trim() || "Linux",
       platform: "linux",
       osVersion: `${process.platform} ${process.arch}`,
-      appVersion: "0.5.0",
+      appVersion: "0.5.1",
       profile,
     }),
   });

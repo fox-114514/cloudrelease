@@ -20,6 +20,8 @@ import {
 import type { AppConfig, DeviceConfig } from "../config.js";
 import { startWatcher } from "../watcher.js";
 import { WsReceiveClient } from "../ws-client.js";
+import { ApiClient, type ClientRelease } from "../api.js";
+import { CLIENT_VERSION, downloadUpdate, isNewerVersion, openUpdatePackage } from "../update.js";
 import { assertExplicitInsecureHttp, defaultDownloadDir, ensureAllowedDir, isAllowedDir, normalizeBaseUrl } from "../utils.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -139,6 +141,7 @@ interface ServiceManager {
 
 const services: ServiceManager = {};
 let pendingDeliveryCount = 0;
+let availableUpdate: ClientRelease | undefined;
 
 async function startReceive(): Promise<void> {
   if (services.receiveClient) return;
@@ -148,7 +151,7 @@ async function startReceive(): Promise<void> {
     allowInsecureHttp: config.allowInsecureHttp,
   });
   await saveConfig(config);
-  if (!serverAllows(config.device, "canAutoReceive")) {
+  if (config.autoReceive && !serverAllows(config.device, "canAutoReceive")) {
     throw new Error("服务端未允许本设备自动接收");
   }
   const client = new WsReceiveClient({
@@ -176,6 +179,11 @@ async function startReceive(): Promise<void> {
       }
     },
     onError: (message) => broadcastLog(message, "error"),
+    onUpdate: (release) => {
+      if (!isNewerVersion(release.versionName)) return;
+      availableUpdate = release;
+      broadcastLog(`发现新版本 ${release.versionName}`, "update");
+    },
   });
   client.start();
   services.receiveClient = client;
@@ -276,7 +284,12 @@ export async function startWebServer(port = 0): Promise<{ url: string; bootUrl: 
       });
       await saveConfig(config);
       if (!serverAllows(config.device, "canAutoUpload")) await stopWatch();
-      if (!serverAllows(config.device, "canAutoReceive")) await stopReceive();
+      if (!serverAllows(config.device, "canAutoReceive") && config.autoReceive) {
+        config.autoReceive = false;
+        await saveConfig(config);
+        await stopReceive();
+        await startReceive();
+      }
     })().catch((err) => broadcastLog(`定时刷新服务端权限失败：${(err as Error).message}`, "warn"));
   }, 5 * 60 * 1000);
   permissionTimer.unref();
@@ -450,8 +463,9 @@ export async function startWebServer(port = 0): Promise<{ url: string; bootUrl: 
         await startReceive().catch((err) =>
           broadcastLog(`启动接收失败：${(err as Error).message}`, "error"),
         );
-      } else {
+      } else if (services.receiveClient) {
         await stopReceive();
+        await startReceive();
       }
     }
     return reply.send({ success: true });
@@ -579,7 +593,29 @@ export async function startWebServer(port = 0): Promise<{ url: string; bootUrl: 
       receive: Boolean(services.receiveClient),
       watch: Boolean(services.watcher),
       pendingDeliveryCount,
+      update: availableUpdate,
+      clientVersion: CLIENT_VERSION,
     });
+  });
+
+  app.get("/api/update", async (_req, reply) => {
+    const config = await loadConfig();
+    if (!config.device) return reply.status(400).send({ success: false, error: { message: "Not bound" } });
+    const release = await new ApiClient(config.device).getUpdate();
+    availableUpdate = release && isNewerVersion(release.versionName) ? release : undefined;
+    return reply.send({ clientVersion: CLIENT_VERSION, release: availableUpdate });
+  });
+
+  app.post("/api/update/download", async (_req, reply) => {
+    const config = await loadConfig();
+    if (!config.device) return reply.status(400).send({ success: false, error: { message: "Not bound" } });
+    const release = availableUpdate ?? await new ApiClient(config.device).getUpdate();
+    if (!release || !isNewerVersion(release.versionName)) {
+      return reply.status(404).send({ success: false, error: { message: "没有可用更新" } });
+    }
+    const packagePath = await downloadUpdate(new ApiClient(config.device), release);
+    await openUpdatePackage(packagePath);
+    return reply.send({ packagePath });
   });
 
   app.post("/api/service/receive/pending/accept", async (_req, reply) => {
@@ -788,7 +824,7 @@ export async function startWebServer(port = 0): Promise<{ url: string; bootUrl: 
   const bootUrl = `${url}/api/auth/boot?token=${encodeURIComponent(sessionState.bootToken ?? "")}`;
 
   const startupConfig = await loadConfig();
-  if (startupConfig.device && startupConfig.autoReceive) {
+  if (startupConfig.device) {
     await startReceive().catch((err) =>
       broadcastLog(`自动启动接收失败：${(err as Error).message}`, "error"),
     );

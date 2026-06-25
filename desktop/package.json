@@ -1,6 +1,6 @@
 {
   "name": "studyshot-relay-desktop",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "StudyShot Relay desktop receiver",
   "main": "dist/main.js",
   "author": "StudyShot <relay@studyshot.local>",
@@ -16,7 +16,8 @@
     "dev": "npm run build && electron .",
     "package:dir": "npm run build && electron-builder --dir",
     "package:linux": "npm run build:icons && npm run build && electron-builder --linux AppImage deb",
-    "package:win": "npm run build:icons && npm run build && electron-builder --win nsis portable"
+    "package:win": "npm run build:icons && npm run build && electron-builder --win portable",
+    "package:win:installer": "npm run build:icons && npm run build && electron-builder --win nsis"
   },
   "dependencies": {
     "chokidar": "^3.6.0",
@@ -37,8 +38,18 @@
     "directories": {
       "output": "release"
     },
+    "asar": true,
+    "compression": "maximum",
+    "electronLanguages": [
+      "zh-CN",
+      "en-US"
+    ],
+    "npmRebuild": false,
+    "removePackageScripts": true,
+    "removePackageKeywords": true,
     "files": [
       "dist/**/*",
+      "!dist/**/*.map",
       "build/icon.*",
       "package.json"
     ],
@@ -56,7 +67,17 @@
     "win": {
       "target": [
         "portable"
-      ]
+      ],
+      "artifactName": "StudyShot-Relay-Windows-${version}-${name}.${ext}"
+    },
+    "nsis": {
+      "artifactName": "StudyShot-Relay-Windows-${version}-setup.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "portable": {
+      "artifactName": "StudyShot-Relay-Windows-${version}-portable.${ext}"
     }
   }
 }

@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import WebSocket from "ws";
-import type { DeliveryPayload } from "./api.js";
+import type { ClientRelease, DeliveryPayload } from "./api.js";
 import { ApiClient } from "./api.js";
 import { copyImageToClipboard } from "./clipboard.js";
 import type { AppConfig, DeviceConfig } from "./config.js";
@@ -22,6 +22,9 @@ export interface WsClientOptions {
   onDownload?: (filePath: string, imageId: string, deliveryId: string, sourceDeviceName: string) => void;
   onPending?: (count: number) => void;
   onError?: (message: string) => void;
+  onUpdate?: (release: ClientRelease) => void;
+  /** Explicit receive command can opt in even when the saved autoReceive switch is off. */
+  receiveImages?: boolean;
 }
 
 const PING_INTERVAL_MS = 25_000;
@@ -74,7 +77,7 @@ export class WsReceiveClient {
     this.socket.on("open", () => {
       this.reconnectDelayMs = 1000;
       this.log("connected", "WebSocket connected");
-      this.socket?.send(JSON.stringify({ type: "hello" }));
+      this.socket?.send(JSON.stringify({ type: "hello", updateChannel: "linux-cli" }));
       this.startHeartbeat();
     });
 
@@ -120,15 +123,32 @@ export class WsReceiveClient {
     try {
       const msg = JSON.parse(text) as { type: string; [key: string]: unknown };
       if (msg.type === "hello.ack") {
-        void this.checkPending();
+        if (this.shouldReceiveImages()) void this.checkPending();
       } else if (msg.type === "pong") {
         // ignore
       } else if (msg.type === "image.created") {
-        this.handleImageCreated(msg as Record<string, unknown>);
+        if (this.shouldReceiveImages()) this.handleImageCreated(msg as Record<string, unknown>);
+      } else if (msg.type === "app.update.available") {
+        const release = this.parseUpdate((msg as { release?: unknown }).release);
+        if (release) this.options.onUpdate?.(release);
       }
     } catch (err) {
       this.log("error", `Failed to handle message: ${(err as Error).message}`);
     }
+  }
+
+  private shouldReceiveImages(): boolean {
+    return this.options.receiveImages ?? this.options.config.autoReceive;
+  }
+
+  private parseUpdate(value: unknown): ClientRelease | null {
+    if (!value || typeof value !== "object") return null;
+    const release = value as Partial<ClientRelease>;
+    if (
+      release.channel !== "linux-cli" || !release.versionName || !release.fileName ||
+      !release.sha256 || !release.downloadPath || typeof release.fileSize !== "number"
+    ) return null;
+    return release as ClientRelease;
   }
 
   private handleImageCreated(msg: Record<string, unknown>): void {

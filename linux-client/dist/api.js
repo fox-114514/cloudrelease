@@ -60,6 +60,20 @@ export class ApiClient {
         const response = await fetch(apiUrl(this.device.serverBaseUrl, "/api/v1/deliveries/pending"), { headers: this.authHeaders() });
         return parseEnvelope(response);
     }
+    async getUpdate() {
+        const response = await fetch(apiUrl(this.device.serverBaseUrl, "/api/v1/updates/linux-cli"), { headers: this.authHeaders() });
+        const data = await parseEnvelope(response);
+        return data.available ? data.release : undefined;
+    }
+    async downloadUpdatePackage(downloadPath) {
+        const response = await fetch(apiUrl(this.device.serverBaseUrl, downloadPath), {
+            headers: this.authHeaders(),
+        });
+        if (!response.ok || !response.body) {
+            throw new ApiError(response.status, `HTTP_${response.status}`, "Update package download failed");
+        }
+        return response.body;
+    }
     async ackDelivery(deliveryId, status) {
         const response = await fetch(apiUrl(this.device.serverBaseUrl, `/api/v1/deliveries/${deliveryId}/ack`), {
             method: "POST",

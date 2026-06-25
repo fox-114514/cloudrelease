@@ -220,7 +220,7 @@ curl -fsS http://你的服务器:3000/api/v1/healthz
 
 返回的 `version` 必须为 `0.4.1`。Android `0.4.1` 同时修复了 `0.4.0` 将大小写敏感绑定码转换为大写的问题。
 
-### 发布 Android 客户端更新
+### 发布客户端更新
 
 Android 自更新不依赖应用商店。生产 Compose 会把 `backend/releases/` 只读挂载到容器的 `/var/lib/studyshot/releases/`。发布步骤如下：
 
@@ -233,6 +233,15 @@ ANDROID_UPDATE_APK_PATH=/var/lib/studyshot/releases/studyshot-relay.apk
 ANDROID_UPDATE_VERSION_CODE=9
 ANDROID_UPDATE_VERSION_NAME=0.5.1
 ANDROID_UPDATE_RELEASE_NOTES=修复登录提示并加入应用内更新
+WINDOWS_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/StudyShot-Relay-Windows-0.5.1-portable.exe
+WINDOWS_UPDATE_VERSION_NAME=0.5.1
+WINDOWS_UPDATE_RELEASE_NOTES=同步自托管更新并精简包体
+LINUX_DESKTOP_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/studyshot-relay-desktop_0.5.1_amd64.deb
+LINUX_DESKTOP_UPDATE_VERSION_NAME=0.5.1
+LINUX_DESKTOP_UPDATE_RELEASE_NOTES=同步自托管更新
+LINUX_CLI_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/studyshot-relay-linux_0.5.1_amd64.deb
+LINUX_CLI_UPDATE_VERSION_NAME=0.5.1
+LINUX_CLI_UPDATE_RELEASE_NOTES=新增 update 命令和 Web 更新入口
 ```
 
 4. 重新创建后端容器，使发布元数据生效：
@@ -242,7 +251,7 @@ cd backend
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build backend
 ```
 
-重启会断开客户端 WebSocket；Android 前台服务重连后，服务器发送 `app.update.available`。客户端只在服务端 `versionCode` 大于本机时提示。用户确认后，APK 经带设备令牌的接口下载到 `Downloads/StudyShot Relay/`，客户端校验服务端给出的 SHA-256，随后打开 Android 系统安装器。首次安装需要用户在系统页允许 StudyShot Relay“安装未知应用”。Android 系统仍会要求用户确认安装，应用不能绕过该确认。
+重启会断开客户端 WebSocket；重连后客户端声明自己的更新通道，服务器发送 `app.update.available`。用户确认后，安装包经带设备令牌的接口下载到 `Downloads/StudyShot Relay/`，客户端校验 SHA-256 并打开相应安装程序。Android 系统仍会要求用户确认安装。
 
 可用已绑定设备令牌检查发布元数据：
 
@@ -251,7 +260,7 @@ curl -H "Authorization: Bearer DEVICE_TOKEN" \
   https://studyshot.example.com/api/v1/updates/android
 ```
 
-如果 APK 文件不存在，或以上三个发布字段任一为空，接口会返回 `available: false`，不会向客户端推送更新。不要复用或更换签名证书，否则 Android 会拒绝覆盖安装。
+某通道的包路径或版本名为空时，该通道返回 `available: false`。不要更换 Android/Windows 的发布签名证书，否则系统可能拒绝覆盖安装。
 
 ## 8. 停止与重启
 

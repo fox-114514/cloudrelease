@@ -3,7 +3,12 @@ import fp from "fastify-plugin";
 import type * as WebSocket from "ws";
 import { hashToken } from "../lib/crypto.js";
 import { prisma } from "../lib/prisma.js";
-import { getAndroidRelease } from "../services/android-update.js";
+import {
+  defaultUpdateChannel,
+  getClientRelease,
+  isChannelAllowedForPlatform,
+  isUpdateChannel,
+} from "../services/client-update.js";
 
 interface WsClient {
   deviceId: string;
@@ -140,8 +145,11 @@ export const wsPlugin = fp(async (app: FastifyInstance) => {
               serverTime: new Date().toISOString(),
             })
           );
-          if (device.platform === "android") {
-            void getAndroidRelease()
+          const requestedChannel = isUpdateChannel(msg.updateChannel)
+            ? msg.updateChannel
+            : defaultUpdateChannel(device.platform);
+          if (requestedChannel && isChannelAllowedForPlatform(requestedChannel, device.platform)) {
+            void getClientRelease(requestedChannel)
               .then((release) => {
                 if (!release || socket.readyState !== 1) return;
                 socket.send(JSON.stringify({ type: "app.update.available", release }));

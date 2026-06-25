@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PKG_NAME="studyshot-relay-linux"
-VERSION="0.5.0"
+VERSION="$(node -p "require('./package.json').version")"
 ARCH="amd64"
 BUILD_DIR="${ROOT_DIR}/release/deb-build"
 DEB_FILE="${ROOT_DIR}/release/${PKG_NAME}_${VERSION}_${ARCH}.deb"
@@ -23,6 +23,10 @@ mkdir -p "$BUILD_DIR/usr/share/icons/hicolor/scalable/apps"
 
 # Copy application files
 cp -r dist package.json package-lock.json node_modules "$BUILD_DIR/usr/share/${PKG_NAME}/"
+# Development-only type definitions and source maps are not used at runtime.
+rm -rf "$BUILD_DIR/usr/share/${PKG_NAME}/node_modules/typescript"
+rm -rf "$BUILD_DIR/usr/share/${PKG_NAME}/node_modules/@types"
+find "$BUILD_DIR/usr/share/${PKG_NAME}" -type f -name '*.map' -delete
 
 # Create wrapper script
 cat > "$BUILD_DIR/usr/bin/studyshot-relay" <<'EOF'

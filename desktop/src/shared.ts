@@ -6,7 +6,21 @@ export type ConnectionStatus =
   | "stopped"
   | "error";
 
+export const CLIENT_VERSION = "0.5.1";
+
 export type Platform = "windows" | "linux";
+
+export type UpdateChannel = "windows" | "linux-desktop";
+
+export interface AppUpdateInfo {
+  channel: UpdateChannel;
+  versionName: string;
+  releaseNotes: string;
+  fileName: string;
+  fileSize: number;
+  sha256: string;
+  downloadPath: string;
+}
 
 export interface DevicePermissions {
   canAutoUpload: boolean;

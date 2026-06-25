@@ -53,7 +53,7 @@ export class WsReceiveClient {
         this.socket.on("open", () => {
             this.reconnectDelayMs = 1000;
             this.log("connected", "WebSocket connected");
-            this.socket?.send(JSON.stringify({ type: "hello" }));
+            this.socket?.send(JSON.stringify({ type: "hello", updateChannel: "linux-cli" }));
             this.startHeartbeat();
         });
         this.socket.on("message", (data) => {
@@ -95,18 +95,37 @@ export class WsReceiveClient {
         try {
             const msg = JSON.parse(text);
             if (msg.type === "hello.ack") {
-                void this.checkPending();
+                if (this.shouldReceiveImages())
+                    void this.checkPending();
             }
             else if (msg.type === "pong") {
                 // ignore
             }
             else if (msg.type === "image.created") {
-                this.handleImageCreated(msg);
+                if (this.shouldReceiveImages())
+                    this.handleImageCreated(msg);
+            }
+            else if (msg.type === "app.update.available") {
+                const release = this.parseUpdate(msg.release);
+                if (release)
+                    this.options.onUpdate?.(release);
             }
         }
         catch (err) {
             this.log("error", `Failed to handle message: ${err.message}`);
         }
+    }
+    shouldReceiveImages() {
+        return this.options.receiveImages ?? this.options.config.autoReceive;
+    }
+    parseUpdate(value) {
+        if (!value || typeof value !== "object")
+            return null;
+        const release = value;
+        if (release.channel !== "linux-cli" || !release.versionName || !release.fileName ||
+            !release.sha256 || !release.downloadPath || typeof release.fileSize !== "number")
+            return null;
+        return release;
     }
     handleImageCreated(msg) {
         const delivery = this.parseDelivery(msg);

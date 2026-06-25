@@ -125,7 +125,7 @@ sudo apt-get install -f
 
 按以下顺序发布（与 spec §16 一致）：
 
-1. 部署后端 0.5.0，并保留 0.4.x 兼容路径。
+1. 部署后端 0.5.1，并保留 0.4.x 兼容路径。
 2. 在新版本上执行 `npm run audit:multi-user` 做一次只读扫描；可选 `--apply-safe-fixes` 收紧无来源 `selected_devices` 与禁用成员的过期绑定码。
 3. 发布 Android / Electron 新版本。
 4. 监控一段时间后，服务端收紧 `canManualDownload` 跨成员语义（已在 0.5.0 中默认收紧）。
@@ -155,6 +155,6 @@ sudo apt-get install -f
 ## 注意事项
 
 - Windows 版本为单文件 NSIS 便携包，不需要安装。
-- Android 使用测试签名密钥，仅用于测试，正式发布前请替换为自有密钥。
+- Android 发布 APK 必须使用同一签名证书；`versionCode` 必须递增，否则系统会拒绝覆盖安装。
 - Linux 桌面端 `.deb` 和 Linux 客户端 `.deb` 是两个不同的应用，可按需安装。
 - 0.5.0 中**不允许**客户端用 `canManageSpace` 设备为他人授予 `canManageSpace` 或 `canCreateInvite`；上线前请运行只读审计脚本确认存量无意外扩散。

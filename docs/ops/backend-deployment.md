@@ -1,50 +1,39 @@
 # Backend Deployment
 
-文档版本：2026-06-24
+文档版本：2026-06-26
 
-本文说明如何把 StudyShot Relay 后端部署到一台 Linux 服务器。推荐服务器使用 Docker Compose、PostgreSQL 和 Caddy。Caddy 负责 HTTPS 和 WSS，后端只在 Docker 内部监听 `3000`。
+本文说明如何把 StudyShot Relay 后端部署到一台 Linux 服务器。当前版本为 `0.5.1`，推荐使用 Docker Compose、PostgreSQL 和 Caddy。Caddy 负责 HTTPS/WSS，后端容器只在 Compose 内部网络监听 `3000`。
 
-## 本地集成测试
+## 0. 快速部署
 
-```bash
-cd backend
-cp .env.test.example .env.test
-npm run test:db:up
-npm run test:db:migrate
-npm test
-npm run test:db:down
-```
-
-测试数据库使用独立的 `55432` 端口和 tmpfs，不会重置开发或生产数据库。
-
-## 1. 部署目录
-
-建议把后端目录放到服务器：
+在服务器上准备 Docker 和 Docker Compose，然后执行：
 
 ```bash
-/opt/studyshot/backend
+git clone https://github.com/fox-114514/cloudrelease.git
+cd cloudrelease
+./scripts/deploy-backend.sh --domain studyshot.example.com --email admin@example.com
 ```
 
-该目录至少包含：
+脚本会：
 
-- `Dockerfile`
-- `docker-compose.prod.yml`
-- `.env.production`
-- `package.json`
-- `package-lock.json`
-- `prisma/`
-- `src/`
-- `docker/Caddyfile`
+- 生成 `backend/.env.production`，已有该文件时默认复用。
+- 生成随机 PostgreSQL 密码、JWT secret 和初始 owner 密码。
+- 使用 `backend/docker-compose.prod.yml` 启动 PostgreSQL、后端和 Caddy。
+- 等待 `/api/v1/healthz` 健康检查通过。
 
-## 2. DNS
+首次生成的 owner 密码只在终端显示一次，必须立即保存。
 
-创建一个域名，例如：
+没有域名时可以临时使用纯 IP HTTP：
 
-```text
-studyshot.example.com
+```bash
+./scripts/deploy-backend.sh --ip-http 1.2.3.4
 ```
 
-把 DNS A/AAAA 记录指向服务器公网 IP。
+纯 IP HTTP 不加密。公网长期使用会暴露 token、密码和图片内容，只建议临时测试，或配合 Tailscale / ZeroTier / WireGuard 等私有网络。
+
+## 1. 部署模式
+
+### 域名 + HTTPS
 
 客户端服务器地址填写：
 
@@ -52,37 +41,66 @@ studyshot.example.com
 https://studyshot.example.com
 ```
 
-WebSocket 地址由客户端从服务器地址推导：
+WebSocket 地址由客户端自动推导为：
 
 ```text
 wss://studyshot.example.com/api/v1/ws
 ```
 
-## 3. 环境文件
+服务器安全组开放：
 
-在 `backend/` 目录复制示例文件：
+- `80/tcp`：Caddy 申请和续期证书。
+- `443/tcp`：HTTPS 和 WSS。
+
+不要把 PostgreSQL 暴露到公网。
+
+### 纯 IP + HTTP
+
+客户端服务器地址填写：
+
+```text
+http://1.2.3.4:3000
+```
+
+该模式使用 `backend/docker-compose.ip-http.yml`，不启动 Caddy，直接映射后端端口：
+
+```text
+${HTTP_PORT:-3000}:3000
+```
+
+## 2. 环境文件
+
+生产环境文件位于：
+
+```text
+backend/.env.production
+```
+
+可以由部署脚本生成，也可以手动复制：
 
 ```bash
+cd backend
 cp .env.production.example .env.production
 ```
 
-必须修改：
+必须修改或确认：
 
 - `PUBLIC_BASE_URL`
-- `STUDYSHOT_DOMAIN`
-- `ACME_EMAIL`
+- `DEPLOY_MODE`
+- `STUDYSHOT_DOMAIN` 和 `ACME_EMAIL`（HTTPS 模式）
+- `PUBLIC_IP` 和 `HTTP_PORT`（IP HTTP 模式）
 - `POSTGRES_PASSWORD`
 - `DATABASE_URL` 中的数据库密码
 - `JWT_SECRET`
 - `INITIAL_OWNER_LOGIN`
 - `INITIAL_OWNER_PASSWORD`
 
-注意：
+要求：
 
-- `.env.production` 不能提交到代码仓库。
+- `.env.production` 不得提交到 Git。
 - `JWT_SECRET` 至少 32 字节随机字符串。
 - `INITIAL_OWNER_PASSWORD` 至少 8 个字符。
-- 首次启动时会创建初始主用户；如果用户已存在，重启不会覆盖密码。
+- 初始 owner 只在用户不存在时创建；重启不会覆盖已有 owner 密码。
 
 生成随机密钥示例：
 
@@ -90,67 +108,60 @@ cp .env.production.example .env.production
 openssl rand -base64 48
 ```
 
-## 4. 启动
+## 3. 手动启动
 
-推荐使用根目录一键部署脚本：
-
-```bash
-./scripts/deploy-backend.sh --domain studyshot.example.com --email admin@example.com
-```
-
-脚本会生成 `backend/.env.production`，并执行生产 Docker Compose 启动流程。已有 `.env.production` 时，脚本会直接复用该文件；如需重写，添加 `--force-env`。
-
-如果没有域名，可以临时使用纯 IP HTTP 模式：
+HTTPS 模式：
 
 ```bash
-./scripts/deploy-backend.sh --ip-http 1.2.3.4
-```
-
-此模式会使用 `backend/docker-compose.ip-http.yml`，不启动 Caddy，不申请 HTTPS 证书，而是把后端直接映射到公网：
-
-```text
-http://1.2.3.4:3000
-```
-
-注意：纯 IP HTTP 不加密，公网长期使用会暴露 token 和图片内容。更稳妥的做法是仅用于临时测试，或者配合 Tailscale / ZeroTier / WireGuard 等私有网络使用。
-
-也可以在 `backend/` 目录手动执行：
-
-在 `backend/` 目录执行：
-
-```bash
+cd backend
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
 ```
 
-启动顺序：
+IP HTTP 模式：
+
+```bash
+cd backend
+docker compose --env-file .env.production -f docker-compose.ip-http.yml up -d --build
+```
+
+启动流程：
 
 1. PostgreSQL 启动并通过健康检查。
 2. 后端镜像构建。
-3. 后端执行 `prisma migrate deploy`。
+3. 后端容器执行 `npm run db:migrate:deploy`。
 4. 后端启动 HTTP/WebSocket 服务。
-5. Caddy 自动申请 HTTPS 证书并反向代理到后端。
+5. HTTPS 模式下，Caddy 自动申请证书并反向代理到后端。
 
 查看日志：
 
 ```bash
+cd backend
 docker compose --env-file .env.production -f docker-compose.prod.yml logs -f backend
 docker compose --env-file .env.production -f docker-compose.prod.yml logs -f caddy
 ```
 
+IP HTTP 模式没有 `caddy` 服务：
+
+```bash
+docker compose --env-file .env.production -f docker-compose.ip-http.yml logs -f backend
+```
+
+## 4. 验证部署
+
 健康检查：
 
 ```bash
-curl https://studyshot.example.com/api/v1/healthz
+curl -fsS https://studyshot.example.com/api/v1/healthz
 ```
 
-期望返回：
+期望返回类似：
 
 ```json
 {
-  "success": true,
-  "data": {
-    "status": "ok"
-  }
+  "status": "ok",
+  "service": "studyshot-relay-backend",
+  "version": "0.5.1",
+  "timestamp": "2026-06-26T00:00:00.000Z"
 }
 ```
 
@@ -160,48 +171,34 @@ curl https://studyshot.example.com/api/v1/healthz
 https://studyshot.example.com/admin
 ```
 
-纯 IP HTTP 模式对应：
+IP HTTP 模式：
 
 ```text
 http://1.2.3.4:3000/admin
 ```
 
-使用主用户账号登录后，可以创建绑定码、管理设备权限、创建子用户、管理用户组和查看审计日志。
+部署后的基础验收：
 
-## 5. 端口
+1. 用 owner 登录 `/admin`。
+2. 创建绑定码。
+3. 客户端填服务器地址并绑定设备。
+4. 给设备设置用途预设或接收范围。
+5. 在授权上传设备截图，确认接收端几秒内收到。
 
-公网只需要开放：
+## 5. 更新后端
 
-- `80/tcp`：Caddy 申请和续期证书。
-- `443/tcp`：HTTPS/WSS。
-
-不要把 PostgreSQL 端口暴露到公网。
-
-`docker-compose.prod.yml` 中 PostgreSQL 没有 `ports`，只在 Compose 内部网络可访问。
-
-## 6. HTTPS 与 WSS
-
-Caddy 配置文件：
-
-```text
-backend/docker/Caddyfile
-```
-
-当前配置会：
-
-- 为 `STUDYSHOT_DOMAIN` 自动申请证书。
-- 反向代理所有 HTTP API。
-- 自动支持 WebSocket upgrade。
-- 限制请求体最大 32 MB。
-
-如果你把 `MAX_IMAGE_SIZE_MB` 调大，Caddy 的 `request_body max_size` 也要同步调大。
-
-## 7. 更新部署
-
-拉取或上传新代码后：
+拉取新代码后：
 
 ```bash
+git pull
+cd backend
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+```
+
+IP HTTP 模式使用：
+
+```bash
+docker compose --env-file .env.production -f docker-compose.ip-http.yml up -d --build
 ```
 
 后端容器启动时会自动执行：
@@ -210,67 +207,95 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up -d --bui
 npm run db:migrate:deploy
 ```
 
-因此新迁移会在启动前应用。
+升级完成后用 `/api/v1/healthz` 确认 `version` 是当前版本，例如 `0.5.1`。
 
-升级到 `0.4.1` 后可通过健康检查确认实际部署版本：
+## 6. 发布客户端更新
 
-```bash
-curl -fsS http://你的服务器:3000/api/v1/healthz
+0.5.1 支持自托管客户端更新。生产 Compose 会把服务器上的 `backend/releases/` 只读挂载到容器：
+
+```text
+backend/releases/ -> /var/lib/studyshot/releases/
 ```
 
-返回的 `version` 必须为 `0.4.1`。Android `0.4.1` 同时修复了 `0.4.0` 将大小写敏感绑定码转换为大写的问题。
+建议服务器上的发布包也按版本号归档：
 
-### 发布客户端更新
+```text
+backend/releases/
+  0.5.1/
+    StudyShot-Relay-Android-0.5.1.apk
+    StudyShot-Relay-Windows-0.5.1-portable.exe
+    StudyShot-Relay-Desktop-Linux-0.5.1_amd64.deb
+    StudyShot-Relay-Linux-Client-0.5.1_amd64.deb
+```
 
-Android 自更新不依赖应用商店。生产 Compose 会把 `backend/releases/` 只读挂载到容器的 `/var/lib/studyshot/releases/`。发布步骤如下：
-
-1. 使用与已安装版本相同的正式签名证书构建 APK，并确保 `versionCode` 严格递增。
-2. 把 APK 放到服务器的 `backend/releases/studyshot-relay.apk`。
-3. 在 `backend/.env.production` 设置：
+配置示例：
 
 ```dotenv
-ANDROID_UPDATE_APK_PATH=/var/lib/studyshot/releases/studyshot-relay.apk
+ANDROID_UPDATE_APK_PATH=/var/lib/studyshot/releases/0.5.1/StudyShot-Relay-Android-0.5.1.apk
 ANDROID_UPDATE_VERSION_CODE=9
 ANDROID_UPDATE_VERSION_NAME=0.5.1
-ANDROID_UPDATE_RELEASE_NOTES=修复登录提示并加入应用内更新
-WINDOWS_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/StudyShot-Relay-Windows-0.5.1-portable.exe
+ANDROID_UPDATE_RELEASE_NOTES=Android 0.5.1：修复登录提示、补充帮助页并加入自托管更新
+
+WINDOWS_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/0.5.1/StudyShot-Relay-Windows-0.5.1-portable.exe
 WINDOWS_UPDATE_VERSION_NAME=0.5.1
-WINDOWS_UPDATE_RELEASE_NOTES=同步自托管更新并精简包体
-LINUX_DESKTOP_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/studyshot-relay-desktop_0.5.1_amd64.deb
+WINDOWS_UPDATE_RELEASE_NOTES=Windows 0.5.1：新增自托管更新并精简包体
+
+LINUX_DESKTOP_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/0.5.1/StudyShot-Relay-Desktop-Linux-0.5.1_amd64.deb
 LINUX_DESKTOP_UPDATE_VERSION_NAME=0.5.1
-LINUX_DESKTOP_UPDATE_RELEASE_NOTES=同步自托管更新
-LINUX_CLI_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/studyshot-relay-linux_0.5.1_amd64.deb
+LINUX_DESKTOP_UPDATE_RELEASE_NOTES=Linux 桌面端 0.5.1：新增自托管更新
+
+LINUX_CLI_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/0.5.1/StudyShot-Relay-Linux-Client-0.5.1_amd64.deb
 LINUX_CLI_UPDATE_VERSION_NAME=0.5.1
-LINUX_CLI_UPDATE_RELEASE_NOTES=新增 update 命令和 Web 更新入口
+LINUX_CLI_UPDATE_RELEASE_NOTES=Linux CLI/Web 0.5.1：新增 update 命令和 Web 更新入口
 ```
 
-4. 重新创建后端容器，使发布元数据生效：
+注意：
+
+- Android 必须递增 `ANDROID_UPDATE_VERSION_CODE`，并使用与已安装版本兼容的签名证书。
+- Windows 和 Linux 使用语义化 `VERSION_NAME` 比较。
+- 某通道的包路径或版本为空时，该通道返回 `available: false`。
+- 后端会按文件内容计算 SHA-256，并把校验值返回给客户端。
+- 客户端下载后必须校验 SHA-256；不一致时不会打开安装包。
+
+更新发布配置后重建后端容器：
 
 ```bash
 cd backend
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build backend
 ```
 
-重启会断开客户端 WebSocket；重连后客户端声明自己的更新通道，服务器发送 `app.update.available`。用户确认后，安装包经带设备令牌的接口下载到 `Downloads/StudyShot Relay/`，客户端校验 SHA-256 并打开相应安装程序。Android 系统仍会要求用户确认安装。
-
-可用已绑定设备令牌检查发布元数据：
+验证发布元数据需要已绑定设备 token：
 
 ```bash
 curl -H "Authorization: Bearer DEVICE_TOKEN" \
   https://studyshot.example.com/api/v1/updates/android
 ```
 
-某通道的包路径或版本名为空时，该通道返回 `available: false`。不要更换 Android/Windows 的发布签名证书，否则系统可能拒绝覆盖安装。
-
-## 8. 停止与重启
-
-停止：
+桌面和 Linux 通道：
 
 ```bash
+curl -H "Authorization: Bearer DEVICE_TOKEN" \
+  https://studyshot.example.com/api/v1/updates/windows
+
+curl -H "Authorization: Bearer DEVICE_TOKEN" \
+  https://studyshot.example.com/api/v1/updates/linux-desktop
+
+curl -H "Authorization: Bearer DEVICE_TOKEN" \
+  https://studyshot.example.com/api/v1/updates/linux-cli
+```
+
+通道必须和设备平台匹配。Android 设备只能访问 `android`；Windows 设备只能访问 `windows`；Linux 设备可访问 `linux-desktop` 或 `linux-cli`。
+
+## 7. 停止与重启
+
+停止 HTTPS 部署：
+
+```bash
+cd backend
 docker compose --env-file .env.production -f docker-compose.prod.yml down
 ```
 
-重启：
+重启后端：
 
 ```bash
 docker compose --env-file .env.production -f docker-compose.prod.yml restart backend
@@ -282,7 +307,9 @@ docker compose --env-file .env.production -f docker-compose.prod.yml restart bac
 docker compose --env-file .env.production -f docker-compose.prod.yml restart caddy
 ```
 
-## 9. 数据卷
+IP HTTP 模式把 compose 文件换成 `docker-compose.ip-http.yml`。
+
+## 8. 数据卷
 
 生产 compose 使用以下 Docker volumes：
 
@@ -293,7 +320,14 @@ docker compose --env-file .env.production -f docker-compose.prod.yml restart cad
 
 不要随意删除这些 volumes。
 
-## 10. 数据库备份
+实际 volume 名可能带 Compose 项目前缀。确认方式：
+
+```bash
+docker volume ls | grep studyshot
+docker volume ls | grep image-storage
+```
+
+## 9. 数据库和图片备份
 
 创建备份目录：
 
@@ -304,36 +338,39 @@ mkdir -p backups
 备份 PostgreSQL：
 
 ```bash
-docker compose --env-file .env.production -f docker-compose.prod.yml exec -T postgres pg_dump -U studyshot -d studyshot > backups/studyshot-$(date +%F-%H%M%S).sql
+cd backend
+docker compose --env-file .env.production -f docker-compose.prod.yml exec -T postgres \
+  pg_dump -U studyshot -d studyshot > backups/studyshot-$(date +%F-%H%M%S).sql
 ```
 
 备份图片存储：
 
 ```bash
-docker run --rm -v backend_image-storage:/data -v "$PWD/backups:/backups" alpine tar czf /backups/studyshot-images-$(date +%F-%H%M%S).tar.gz -C /data .
+docker run --rm \
+  -v backend_image-storage:/data \
+  -v "$PWD/backups:/backups" \
+  alpine tar czf /backups/studyshot-images-$(date +%F-%H%M%S).tar.gz -C /data .
 ```
 
-实际 volume 名可能带 Compose 项目前缀。用下面命令确认：
+如果 volume 名不是 `backend_image-storage`，先用 `docker volume ls` 查实际名称。
 
-```bash
-docker volume ls | grep image-storage
-```
-
-## 11. 恢复数据库
+## 10. 恢复
 
 恢复前先停止后端，避免写入：
 
 ```bash
+cd backend
 docker compose --env-file .env.production -f docker-compose.prod.yml stop backend
 ```
 
 恢复 SQL：
 
 ```bash
-cat backups/studyshot.sql | docker compose --env-file .env.production -f docker-compose.prod.yml exec -T postgres psql -U studyshot -d studyshot
+cat backups/studyshot.sql | docker compose --env-file .env.production -f docker-compose.prod.yml exec -T postgres \
+  psql -U studyshot -d studyshot
 ```
 
-恢复图片前确认目标 volume 名，然后按需解压。
+恢复图片前确认目标 volume 名，然后按需解压备份包。
 
 恢复后启动后端：
 
@@ -341,20 +378,41 @@ cat backups/studyshot.sql | docker compose --env-file .env.production -f docker-
 docker compose --env-file .env.production -f docker-compose.prod.yml start backend
 ```
 
+## 11. 本地集成测试
+
+本地测试数据库使用独立 `55432` 端口和 tmpfs，不会重置开发或生产数据库：
+
+```bash
+cd backend
+cp .env.test.example .env.test
+npm run test:db:up
+npm run test:db:migrate
+npm test
+npm run test:db:down
+```
+
+如果只跑不依赖数据库的单元测试：
+
+```bash
+npm run test:unit
+```
+
 ## 12. 安全检查
 
-上线前必须确认：
+上线前确认：
 
-- `.env.production` 中没有示例密码。
+- `.env.production` 没有示例密码。
 - `JWT_SECRET` 是随机值。
-- `INITIAL_OWNER_PASSWORD` 已改。
-- 服务器安全组只开放 80 和 443。
+- `INITIAL_OWNER_PASSWORD` 已修改并妥善保存。
+- HTTPS 模式只开放 `80/tcp` 和 `443/tcp`。
 - PostgreSQL 没有映射公网端口。
-- `PUBLIC_BASE_URL` 是 HTTPS。
-- 客户端使用 `https://` 和 `wss://`。
+- `PUBLIC_BASE_URL` 与实际访问地址一致。
+- 正式客户端优先使用 `https://` 和 `wss://`。
+- IP HTTP 模式只用于临时测试或受信私有网络。
+- 发布更新包使用可信签名，Android `versionCode` 递增。
 
 ## 13. 当前限制
 
-- 当前后端镜像包含 Prisma CLI，用于容器启动时执行迁移。镜像体积不是最小，但部署简单。
-- Caddy 请求体限制当前是 32 MB；后端默认最大图片大小是 30 MB。
-- 本项目还没有完整 Web 管理 UI，管理能力主要通过 API 或后续桌面/安卓客户端承载。
+- 后端镜像包含 Prisma CLI，用于容器启动时执行迁移。镜像体积不是最小，但部署简单。
+- Caddy 请求体限制当前是 32 MB；后端默认最大图片大小是 30 MB。如果调整 `MAX_IMAGE_SIZE_MB`，也要同步调整 `backend/docker/Caddyfile`。
+- 自托管更新只分发安装包，不负责绕过系统安装确认。Android、Windows 和 Linux 都仍需要用户确认安装或打开安装器。

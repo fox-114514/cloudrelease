@@ -224,8 +224,9 @@ backend/releases/
   0.5.1/
     StudyShot-Relay-Android-0.5.1.apk
     StudyShot-Relay-Windows-0.5.1-portable.exe
-    StudyShot-Relay-Desktop-Linux-0.5.1_amd64.deb
     StudyShot-Relay-Linux-Client-0.5.1_amd64.deb
+  0.5.2/
+    StudyShot-Relay-Desktop-Linux-0.5.2_amd64.deb
 ```
 
 配置示例：
@@ -240,9 +241,9 @@ WINDOWS_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/0.5.1/StudyShot-Relay-Wi
 WINDOWS_UPDATE_VERSION_NAME=0.5.1
 WINDOWS_UPDATE_RELEASE_NOTES=Windows 0.5.1：新增自托管更新并精简包体
 
-LINUX_DESKTOP_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/0.5.1/StudyShot-Relay-Desktop-Linux-0.5.1_amd64.deb
-LINUX_DESKTOP_UPDATE_VERSION_NAME=0.5.1
-LINUX_DESKTOP_UPDATE_RELEASE_NOTES=Linux 桌面端 0.5.1：新增自托管更新
+LINUX_DESKTOP_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/0.5.2/StudyShot-Relay-Desktop-Linux-0.5.2_amd64.deb
+LINUX_DESKTOP_UPDATE_VERSION_NAME=0.5.2
+LINUX_DESKTOP_UPDATE_RELEASE_NOTES=Linux 桌面端 0.5.2：修复 WebSocket 重连弹错和 HTTPS 下旧 HTTP 警告残留
 
 LINUX_CLI_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/0.5.1/StudyShot-Relay-Linux-Client-0.5.1_amd64.deb
 LINUX_CLI_UPDATE_VERSION_NAME=0.5.1

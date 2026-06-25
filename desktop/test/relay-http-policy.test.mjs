@@ -100,3 +100,16 @@ test("old unconfirmed HTTP config blocks stored device token before fetch", asyn
   await assert.rejects(() => client.getDeviceMe(), /允许不安全 HTTP/);
   assert.equal(fetchCalls, 0);
 });
+
+test("reconnect while socket is still connecting does not throw", () => {
+  const { config } = createConfig({
+    serverBaseUrl: "http://127.0.0.1:9",
+    isBound: true,
+    deviceToken: "token-for-local-test",
+  });
+  const client = new RelayClient(config, history);
+
+  assert.doesNotThrow(() => client.connect());
+  assert.doesNotThrow(() => client.connect());
+  assert.doesNotThrow(() => client.disconnect());
+});

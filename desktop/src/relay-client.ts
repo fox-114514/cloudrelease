@@ -1363,7 +1363,18 @@ export class RelayClient {
       const socket = this.socket;
       this.socket = undefined;
       socket.removeAllListeners();
-      socket.close();
+      socket.on("error", (err) => {
+        logWarn("Suppressed WebSocket close error", { error: String(err) });
+      });
+      try {
+        if (socket.readyState === WebSocket.CONNECTING) {
+          socket.terminate();
+        } else if (socket.readyState === WebSocket.OPEN) {
+          socket.close(1000, "Client reconnecting");
+        }
+      } catch (err) {
+        logWarn("Failed to close WebSocket", { error: String(err) });
+      }
     }
   }
 

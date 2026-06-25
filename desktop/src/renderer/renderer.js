@@ -778,11 +778,11 @@ function renderState(state) {
   }
 
   // R0-2: gate all token-bearing activity until the user explicitly
-  // confirms plaintext HTTP for a migrated 0.5.0 config. The banner is
-  // only shown while httpConfirmationPending is true; confirming flips
-  // allowInsecureHttp which clears the pending flag.
+  // confirms plaintext HTTP for a migrated 0.5.0 config. Guard on both
+  // the pending flag and the computed warning so a stale renderer state
+  // cannot keep this banner visible after switching to HTTPS.
   if (els.httpConfirmationBanner) {
-    els.httpConfirmationBanner.hidden = !settings.httpConfirmationPending;
+    els.httpConfirmationBanner.hidden = !(settings.httpConfirmationPending && settings.insecureHttpWarning);
   }
 
   els.watchDirInput.value = settings.watchDir || "";

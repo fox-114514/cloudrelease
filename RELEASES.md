@@ -1,7 +1,7 @@
 # StudyShot Relay 安装包
 
-版本：Android / 后端 / 桌面端 / Linux 客户端 0.5.1
-生成时间：2026-06-25
+版本：Linux 桌面端 0.5.2；Android / 后端 / Windows / Linux CLI 0.5.1
+生成时间：2026-06-26
 
 ## 可用安装包
 
@@ -9,9 +9,15 @@
 |---|---|---|---|
 | Windows | `releases/0.5.1/StudyShot-Relay-Windows-0.5.1-portable.exe` | ~83 MB | 精简语言资源的单文件便携版，支持服务器更新 |
 | Android | `releases/0.5.1/StudyShot-Relay-Android-0.5.1.apk` | ~12 MB | Release 签名版，身份显示 + 自助绑定 + 用途预设 |
-| Linux (桌面) | `releases/0.5.1/StudyShot-Relay-Desktop-Linux-0.5.1_amd64.deb` | ~89 MB | Electron 桌面端，支持服务器更新 |
-| Linux (AppImage) | `releases/0.5.1/StudyShot-Relay-Desktop-Linux-0.5.1.AppImage` | ~89 MB | 精简语言资源的免安装桌面端 |
+| Linux (桌面) | `releases/0.5.2/StudyShot-Relay-Desktop-Linux-0.5.2_amd64.deb` | ~86 MB | Electron 桌面端热修复，支持服务器更新 |
+| Linux (AppImage) | `releases/0.5.2/StudyShot-Relay-Desktop-Linux-0.5.2.AppImage` | ~85 MB | 精简语言资源的免安装桌面端热修复 |
 | Linux (CLI/Web) | `releases/0.5.1/StudyShot-Relay-Linux-Client-0.5.1_amd64.deb` | ~1.5 MB | 命令行 + Web 管理界面，支持服务器更新 |
+
+## 0.5.2 变更（Linux 桌面端）
+
+- 修复 Electron 主进程在 WebSocket 尚未建立时重建连接，调用 `close()` 抛出 `WebSocket was closed before the connection was established` 并弹出 JavaScript error 的问题。
+- 修复服务器已切换到 HTTPS 后，旧 HTTP 配置确认提示仍残留显示的问题。
+- 版本号升至 `0.5.2`，便于 `.deb` 覆盖安装；Android、后端、Windows 和 Linux CLI/Web 仍为 `0.5.1`。
 
 ## 0.5.1 变更
 
@@ -22,15 +28,15 @@
 - Windows、Linux 桌面端和 Linux CLI/Web 新增独立更新通道、版本检查、WebSocket 通知、用户确认下载、SHA-256 校验和安装包拉起。
 - Windows portable 从约 90.7 MB 降至约 83.1 MB；Electron Linux AppImage 从约 126.1 MB 降至约 88.9 MB；独立 Linux `.deb` 从约 4.8 MB 降至约 1.5 MB。
 
-所有文件按版本号位于项目根目录 `releases/<version>/`。当前版本位于 `releases/0.5.1/`，旧 `0.4.x` 安装包继续保留供回退，`0.4.0` 以下安装包已清理。
+所有文件按版本号位于项目根目录 `releases/<version>/`。当前 Linux 桌面端位于 `releases/0.5.2/`，其余 0.5.1 安装包位于 `releases/0.5.1/`；旧 `0.4.x` 安装包继续保留供回退，`0.4.0` 以下安装包已清理。
 
 ## SHA-256
 
 ```text
+73e890d1a46ed668d0582b7fd06d8350dd4d511369c55f66c6c0bfa66ec138f0  releases/0.5.2/StudyShot-Relay-Desktop-Linux-0.5.2.AppImage
+91f61bdc993d4852c5a864bf7827c940cd314276f11f2b7218d9d8f0459decfb  releases/0.5.2/StudyShot-Relay-Desktop-Linux-0.5.2_amd64.deb
 3211cdd7fa6b217324762b03017abb273b500b0d38d9e05babbfa0ddd86beac1  releases/0.5.1/StudyShot-Relay-Android-0.5.1.apk
 8946a9396d0cd17c061240da93551b5761ff40174492a55ffece99f8751c6cd1  releases/0.5.1/StudyShot-Relay-Windows-0.5.1-portable.exe
-0274ddf321e2214634909b2ab9874879da851a3c17596453b090246da36a533d  releases/0.5.1/StudyShot-Relay-Desktop-Linux-0.5.1.AppImage
-ae3e6521e330d44a28acbfe5920e7c037e92537812009fbe8e2e6472777a53c6  releases/0.5.1/StudyShot-Relay-Desktop-Linux-0.5.1_amd64.deb
 8cacd0b23ff0c10cd095f2288aaf6bd35d8592a11e7e5c32dd23d352e0510b52  releases/0.5.1/StudyShot-Relay-Linux-Client-0.5.1_amd64.deb
 ```
 
@@ -49,7 +55,7 @@ adb install -r releases/0.5.1/StudyShot-Relay-Android-0.5.1.apk
 ### Linux 桌面端 (.deb)
 
 ```bash
-sudo dpkg -i releases/0.5.1/StudyShot-Relay-Desktop-Linux-0.5.1_amd64.deb
+sudo dpkg -i releases/0.5.2/StudyShot-Relay-Desktop-Linux-0.5.2_amd64.deb
 # 如果依赖缺失
 sudo apt-get install -f
 ```

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    FileProvider used to hand the downloaded update APK to the system
+    installer. The download lives under app-private cache so it is never
+    world-readable; only the installer gets a temporary content: URI via
+    FLAG_GRANT_READ_URI_PERMISSION.
+-->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

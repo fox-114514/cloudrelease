@@ -48,7 +48,7 @@ function createWindow(): void {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
     },
   });
 
@@ -163,6 +163,10 @@ async function launchUpdatePackage(packagePath: string): Promise<void> {
     app.quit();
     return;
   }
+  if (process.platform === "linux" && packagePath.toLowerCase().endsWith(".deb")) {
+    await launchDebPackage(packagePath);
+    return;
+  }
   if (packagePath.toLowerCase().endsWith(".appimage")) {
     await chmod(packagePath, 0o755);
     await spawnDetached(packagePath, []);
@@ -174,6 +178,26 @@ async function launchUpdatePackage(packagePath: string): Promise<void> {
   if (error) throw new Error(error);
 }
 
+async function launchDebPackage(packagePath: string): Promise<void> {
+  try {
+    await spawnDetached("pkexec", ["apt", "install", "-y", packagePath]);
+    await showDialog({
+      type: "info",
+      title: "系统安装已启动",
+      message: "请在系统权限提示中确认安装。安装完成后重启 StudyShot Relay。",
+      detail: `如果没有弹出权限提示，可在终端运行：sudo apt install ${quoteShellArg(packagePath)}`,
+    });
+  } catch (err) {
+    logWarn("Failed to launch deb installer via pkexec", { error: String(err) });
+    const error = await shell.openPath(packagePath);
+    if (error) {
+      throw new Error(
+        `${error}\n也可以在终端运行：sudo apt install ${quoteShellArg(packagePath)}`,
+      );
+    }
+  }
+}
+
 function spawnDetached(command: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { detached: true, stdio: "ignore" });
@@ -183,6 +207,10 @@ function spawnDetached(command: string, args: string[]): Promise<void> {
       resolve();
     });
   });
+}
+
+function quoteShellArg(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 async function checkForUpdates(manual = false): Promise<void> {

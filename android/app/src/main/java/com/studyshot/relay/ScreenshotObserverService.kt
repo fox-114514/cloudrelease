@@ -123,8 +123,13 @@ class ScreenshotObserverService : Service() {
 
         val batchStartAt = System.currentTimeMillis()
         val nowSeconds = batchStartAt / 1000
+        // Use the previous checkpoint as the scan lower bound, but DO NOT
+        // advance the checkpoint yet. We only commit once every candidate
+        // in this batch has been handed to the upload queue: if the process
+        // dies mid-batch (OOM kill, OEM background restrictions...) the
+        // next scan restarts from the same `since` so the missed items get
+        // a second chance instead of waiting for the periodic fallback.
         val since = if (lastScanAtSeconds == 0L) nowSeconds - 120 else lastScanAtSeconds - 5
-        lastScanAtSeconds = nowSeconds
 
         val scanner = MediaStoreScanner(contentResolver)
         val candidates = scanner.queryRecentImages(
@@ -136,16 +141,22 @@ class ScreenshotObserverService : Service() {
         Log.d(TAG, "scanRecent: found ${candidates.size} candidate(s)")
         var enqueued = 0
 
-        for (candidate in candidates) {
-            app.uploadRepository.enqueueAutoUpload(
-                uri = candidate.uri,
-                sourceKind = candidate.sourceKind,
-                sourceDisplayName = candidate.relativePath.ifBlank { candidate.displayName },
-                sourceMediaIdHash = candidate.mediaIdHash,
-                wifiOnly = settings.wifiOnly,
-                uploadImmediately = true,
-            )
-            enqueued++
+        try {
+            for (candidate in candidates) {
+                app.uploadRepository.enqueueAutoUpload(
+                    uri = candidate.uri,
+                    sourceKind = candidate.sourceKind,
+                    sourceDisplayName = candidate.relativePath.ifBlank { candidate.displayName },
+                    sourceMediaIdHash = candidate.mediaIdHash,
+                    wifiOnly = settings.wifiOnly,
+                    uploadImmediately = true,
+                )
+                enqueued++
+            }
+        } finally {
+            // Advance only after the batch has been drained. A re-run on the
+            // next MediaStore callback will pick up anything we missed.
+            lastScanAtSeconds = nowSeconds
         }
 
         Log.d(TAG, "scanRecent: batch finished in ${System.currentTimeMillis() - batchStartAt}ms, enqueued=$enqueued")

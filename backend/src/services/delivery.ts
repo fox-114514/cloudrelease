@@ -1,12 +1,10 @@
 import type { Image, Device, DevicePermission, Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 
-type DbClient = Prisma.TransactionClient | typeof prisma;
-
 export async function generateDeliveries(
   image: Image,
   tx?: Prisma.TransactionClient
-): Promise<string[]> {
+): Promise<number> {
   const db = tx ?? prisma;
 
   const targetDevices = await db.device.findMany({
@@ -24,32 +22,52 @@ export async function generateDeliveries(
     include: { permissions: true, user: true },
   });
 
-  const deliveryIds: string[] = [];
+  const selectedTargets = targetDevices.filter(
+    (target) => target.permissions?.autoReceiveScope === "selected_devices"
+  );
+  const selectedRules = selectedTargets.length > 0
+    ? await db.receiveSourceRule.findMany({
+        where: {
+          sourceDeviceId: image.uploadDeviceId,
+          targetDeviceId: { in: selectedTargets.map((target) => target.id) },
+          enabled: true,
+        },
+        select: { targetDeviceId: true },
+      })
+    : [];
+  const selectedTargetIds = new Set(selectedRules.map((rule) => rule.targetDeviceId));
 
-  for (const target of targetDevices) {
-    if (!(await shouldReceiveFrom(db, target, image.uploadDeviceId, image.uploadUserId))) {
-      continue;
-    }
+  const deliveryTargets = targetDevices.filter((target) =>
+    shouldReceiveFrom(target, image.uploadUserId, selectedTargetIds)
+  );
 
-    const delivery = await db.delivery.create({
-      data: {
-        imageId: image.id,
-        targetDeviceId: target.id,
-        status: "pending",
-      },
-    });
-    deliveryIds.push(delivery.id);
+  if (deliveryTargets.length === 0) {
+    return 0;
   }
 
-  return deliveryIds;
+  const created = await db.delivery.createMany({
+    data: deliveryTargets.map((target) => ({
+      imageId: image.id,
+      targetDeviceId: target.id,
+      status: "pending",
+    })),
+    // The schema enforces @@unique([imageId, targetDeviceId]) as a
+    // belt-and-suspenders guard against duplicate deliveries even if a
+    // future retry path re-enters this function for an existing image.
+    // Today there is exactly one caller (POST /images, inside the same
+    // transaction that created the image), so inserts are always fresh;
+    // skipDuplicates only matters once that invariant ever changes.
+    skipDuplicates: true,
+  });
+
+  return created.count;
 }
 
-async function shouldReceiveFrom(
-  db: DbClient,
+function shouldReceiveFrom(
   target: Device & { permissions: DevicePermission | null },
-  sourceDeviceId: string,
-  sourceUserId: string
-): Promise<boolean> {
+  sourceUserId: string,
+  selectedTargetIds: Set<string>
+): boolean {
   const scope = target.permissions?.autoReceiveScope ?? "disabled";
 
   switch (scope) {
@@ -60,17 +78,7 @@ async function shouldReceiveFrom(
     case "same_user_only":
       return target.userId === sourceUserId;
     case "selected_devices":
-      {
-        const rule = await db.receiveSourceRule.findUnique({
-          where: {
-            targetDeviceId_sourceDeviceId: {
-              targetDeviceId: target.id,
-              sourceDeviceId,
-            },
-          },
-        });
-        return rule?.enabled ?? false;
-      }
+      return selectedTargetIds.has(target.id);
     default:
       return false;
   }

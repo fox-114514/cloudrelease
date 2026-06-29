@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!--
+        Default: HTTPS-only. Any cleartext request to a remote host is
+        rejected by the platform with a CLEARTEXT-not-permitted error
+        before it reaches OkHttp. This shrinks the attack surface compared
+        to the previous manifest flag (`usesCleartextTraffic="true"`)
+        which permitted cleartext to any host.
+
+        Local loopback (localhost / 127.0.0.1) keeps cleartext enabled so
+        internal tests, emulators and any future in-process server
+        integration still work. Operators who run their backend on a
+        private LAN via IP HTTP must either switch to HTTPS (recommended;
+        see docs/ops/backend-deployment.md) or extend this file with a
+        `<domain-config cleartextTrafficPermitted="true">` block listing
+        the specific host or IP they trust.
+    -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">::1</domain>
+    </domain-config>
+</network-security-config>

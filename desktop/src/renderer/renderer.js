@@ -111,6 +111,8 @@ const RECEIVE_SCOPES = [
   "selected_devices",
 ];
 
+let httpConfirmationDismissed = false;
+
 const PROFILE_LABELS = {
   manual_only: "只手动分享",
   upload_only: "只上传截图",
@@ -782,7 +784,11 @@ function renderState(state) {
   // the pending flag and the computed warning so a stale renderer state
   // cannot keep this banner visible after switching to HTTPS.
   if (els.httpConfirmationBanner) {
-    els.httpConfirmationBanner.hidden = !(settings.httpConfirmationPending && settings.insecureHttpWarning);
+    const httpConfirmationActive = Boolean(settings.httpConfirmationPending && settings.insecureHttpWarning);
+    if (!httpConfirmationActive) {
+      httpConfirmationDismissed = false;
+    }
+    els.httpConfirmationBanner.hidden = !httpConfirmationActive || httpConfirmationDismissed;
   }
 
   els.watchDirInput.value = settings.watchDir || "";
@@ -1149,6 +1155,7 @@ if (els.httpConfirmContinueBtn) {
 }
 if (els.httpConfirmDismissBtn) {
   els.httpConfirmDismissBtn.addEventListener("click", () => {
+    httpConfirmationDismissed = true;
     if (els.httpConfirmationBanner) els.httpConfirmationBanner.hidden = true;
   });
 }

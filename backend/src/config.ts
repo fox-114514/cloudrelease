@@ -26,6 +26,25 @@ const configSchema = z.object({
   MAX_IMAGE_SIZE_MB: z.coerce.number().int().positive().default(30),
   DEFAULT_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
   CORS_ALLOWED_ORIGINS: z.string().optional(),
+  // Behind Caddy/Nginx/a container bridge, set to a comma-separated list of
+  // trusted proxy IP/CIDR hops (e.g. "127.0.0.1,::1,10.0.0.0/8"). Fastify
+  // passes this straight to the underlying `proxy-addr` resolver which uses
+  // it to derive the real client IP for `request.ip`, rate limiting and
+  // audit. Leaving it empty/false means we trust no hop, so direct
+  // deployments keep their previous behaviour and reverse-proxy
+  // deployments must opt in.
+  TRUST_PROXY: z.preprocess(
+    (value) => {
+      if (value === undefined) return false;
+      if (typeof value !== "string") return value;
+      const trimmed = value.trim();
+      if (trimmed === "") return false;
+      if (trimmed.toLowerCase() === "true") return true;
+      if (trimmed.toLowerCase() === "false") return false;
+      return trimmed.split(",").map((entry) => entry.trim()).filter(Boolean);
+    },
+    z.union([z.boolean(), z.array(z.string().min(1))]),
+  ).default(false),
   ANDROID_UPDATE_APK_PATH: optionalNonEmptyString,
   ANDROID_UPDATE_VERSION_CODE: optionalPositiveInt,
   ANDROID_UPDATE_VERSION_NAME: optionalNonEmptyString,

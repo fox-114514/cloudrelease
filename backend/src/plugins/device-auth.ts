@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import fp from "fastify-plugin";
 import { hashToken } from "../lib/crypto.js";
+import { shouldUpdateLastSeen } from "../lib/last-seen.js";
 import { prisma } from "../lib/prisma.js";
 
 export interface DeviceAuth {
@@ -74,10 +75,13 @@ export const optionalDeviceAuth = fp(async (app: FastifyInstance) => {
       return;
     }
 
-    await prisma.device.update({
-      where: { id: device.id },
-      data: { lastSeenAt: new Date() },
-    });
+    const now = new Date();
+    if (shouldUpdateLastSeen(device.lastSeenAt, now)) {
+      await prisma.device.update({
+        where: { id: device.id },
+        data: { lastSeenAt: now },
+      });
+    }
 
     request.device = {
       deviceId: device.id,

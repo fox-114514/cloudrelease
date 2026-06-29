@@ -7,7 +7,7 @@ import { config } from "./config.js";
 import { errorHandler } from "./errors.js";
 import { optionalDeviceAuth } from "./plugins/device-auth.js";
 import { optionalUserAuth } from "./plugins/auth.js";
-import { wsPlugin } from "./plugins/ws.js";
+import { wsPlugin, WS_MAX_PAYLOAD_BYTES } from "./plugins/ws.js";
 import { adminRoutes } from "./routes/admin.js";
 import { authRoutes } from "./routes/auth.js";
 import { bindCodeRoutes } from "./routes/bind-codes.js";
@@ -23,6 +23,7 @@ export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
   const app = Fastify({
     logger: false,
     bodyLimit: config.MAX_IMAGE_SIZE_MB * 1024 * 1024,
+    trustProxy: config.TRUST_PROXY,
   });
 
   app.setErrorHandler(errorHandler);
@@ -46,7 +47,9 @@ export async function buildApp(): Promise<ReturnType<typeof Fastify>> {
       files: 1,
     },
   });
-  await app.register(websocket);
+  await app.register(websocket, {
+    options: { maxPayload: WS_MAX_PAYLOAD_BYTES },
+  });
 
   await app.register(webAdminRoutes);
   await app.register(healthRoutes, { prefix: "/api/v1" });

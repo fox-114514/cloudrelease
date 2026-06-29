@@ -1,17 +1,47 @@
 # StudyShot Relay 安装包
 
-版本：Android / Linux 桌面端 0.5.2；后端 / Windows / Linux CLI 0.5.1
-生成时间：2026-06-26
+版本：Windows / Linux 桌面端 0.5.7；Android 0.5.2；后端 / Linux CLI 0.5.1
+生成时间：2026-06-29
 
 ## 可用安装包
 
 | 平台 | 文件名 | 大小 | 说明 |
 |---|---|---|---|
-| Windows | `releases/0.5.1/StudyShot-Relay-Windows-0.5.1-portable.exe` | ~83 MB | 精简语言资源的单文件便携版，支持服务器更新 |
+| Windows | `releases/0.5.7/StudyShot-Relay-Windows-0.5.7-portable.exe` | ~80 MB | 精简语言资源的单文件便携版，修复分屏窄窗口导航 |
 | Android | `releases/0.5.2/StudyShot-Relay-Android-0.5.2.apk` | ~12 MB | Release 签名版，修复创建绑定码页面错位 |
-| Linux (桌面) | `releases/0.5.2/StudyShot-Relay-Desktop-Linux-0.5.2_amd64.deb` | ~86 MB | Electron 桌面端热修复，支持服务器更新 |
-| Linux (AppImage) | `releases/0.5.2/StudyShot-Relay-Desktop-Linux-0.5.2.AppImage` | ~85 MB | 精简语言资源的免安装桌面端热修复 |
+| Linux (桌面) | `releases/0.5.7/StudyShot-Relay-Desktop-Linux-0.5.7_amd64.deb` | ~86 MB | Electron 桌面端热修复，支持服务器更新 |
+| Linux (AppImage) | `releases/0.5.7/StudyShot-Relay-Desktop-Linux-0.5.7.AppImage` | ~85 MB | 精简语言资源的免安装桌面端热修复 |
 | Linux (CLI/Web) | `releases/0.5.1/StudyShot-Relay-Linux-Client-0.5.1_amd64.deb` | ~1.5 MB | 命令行 + Web 管理界面，支持服务器更新 |
+
+## 0.5.7 变更（Windows / Linux 桌面端）
+
+- 修复分屏或窄窗口下，顶部导航所在 grid 隐式行被拉高，导致当前标签背景变成竖向白色胶囊的问题。
+- 窄屏导航现在明确使用 `auto + 1fr` 两行布局，导航项固定为正常按钮高度，内容区继续独立滚动。
+- Windows portable 和 Linux 桌面端版本号升至 `0.5.7`；Android 仍为 `0.5.2`，后端和 Linux CLI/Web 仍为 `0.5.1`。
+
+## 0.5.6 变更（Windows / Linux 桌面端）
+
+- 全屏或宽屏窗口下，右侧内容列在内容区内居中显示，避免内容贴左造成大面积单侧留白。
+- 右侧内容列最大宽度调整为 `1040px`，普通窗口宽度下仍自适应。
+- Windows portable 和 Linux 桌面端版本号升至 `0.5.6`；Android 仍为 `0.5.2`，后端和 Linux CLI/Web 仍为 `0.5.1`。
+
+## 0.5.5 变更（Windows / Linux 桌面端）
+
+- 修复 CSS `.banner { display: flex; }` 覆盖 `[hidden]` 默认隐藏规则，导致旧明文 HTTP 提示框在 HTTPS 配置下仍显示的问题。
+- 新增全局 `[hidden] { display: none !important; }`，确保所有被 JS 标记隐藏的提示、错误和状态块都能真正隐藏。
+- Windows portable 和 Linux 桌面端版本号升至 `0.5.5`；Android 仍为 `0.5.2`，后端和 Linux CLI/Web 仍为 `0.5.1`。
+
+## 0.5.4 变更（Windows / Linux 桌面端）
+
+- Linux 桌面端自托管更新下载 `.deb` 后，优先通过 `pkexec apt install -y <package>` 调起系统包管理器升级，避免本地图形应用中心只显示“已安装”而不升级。
+- 若 `pkexec` 不可用，会回退到打开安装包，并在错误信息中给出终端安装命令。
+- Windows portable 和 Linux 桌面端版本号升至 `0.5.4`；Android 仍为 `0.5.2`，后端和 Linux CLI/Web 仍为 `0.5.1`。
+
+## 0.5.3 变更（Windows / Linux 桌面端）
+
+- 修复桌面端左侧导航会跟随鼠标滚轮滚动的问题；现在只有右侧内容区滚动。
+- “暂不连接”会在本次应用会话内隐藏旧明文 HTTP 确认提示，避免状态刷新后反复出现；仍继续阻止携带 token 的请求。
+- Windows portable 和 Linux 桌面端版本号升至 `0.5.3`；Android 仍为 `0.5.2`，后端和 Linux CLI/Web 仍为 `0.5.1`。
 
 ## 0.5.2 变更（Android / Linux 桌面端）
 
@@ -30,15 +60,18 @@
 - Windows、Linux 桌面端和 Linux CLI/Web 新增独立更新通道、版本检查、WebSocket 通知、用户确认下载、SHA-256 校验和安装包拉起。
 - Windows portable 从约 90.7 MB 降至约 83.1 MB；Electron Linux AppImage 从约 126.1 MB 降至约 88.9 MB；独立 Linux `.deb` 从约 4.8 MB 降至约 1.5 MB。
 
-所有文件按版本号位于项目根目录 `releases/<version>/`。当前 Android 和 Linux 桌面端位于 `releases/0.5.2/`，其余 0.5.1 安装包位于 `releases/0.5.1/`；旧 `0.4.x` 安装包继续保留供回退，`0.4.0` 以下安装包已清理。
+所有文件按版本号位于项目根目录 `releases/<version>/`。当前 Windows 和 Linux 桌面端位于 `releases/0.5.7/`，Android 位于 `releases/0.5.2/`，其余 0.5.1 安装包位于 `releases/0.5.1/`；旧 `0.4.x` 安装包继续保留供回退，`0.4.0` 以下安装包已清理。
 
 ## SHA-256
 
 ```text
+fd5e12b84a17193bc14259e95ea2ea0ec7a2ec482a0b26345692679c04326bbb  releases/0.5.7/StudyShot-Relay-Desktop-Linux-0.5.7.AppImage
+97d68f2058f5d7e9aa83a9d8cc4803710d975135e1e1c840811044a4185fb906  releases/0.5.7/StudyShot-Relay-Desktop-Linux-0.5.7_amd64.deb
+84f4d54741ddb9fdc9a854cf56e57235d1d156d9da4e986a48cb28257f54ff9a  releases/0.5.7/StudyShot-Relay-Windows-0.5.7-portable.exe
+4096423a160817cdb05cda7b3c9e070e821c5090f421f84fb55521b7bce6808f  releases/0.5.6/StudyShot-Relay-Desktop-Linux-0.5.6.AppImage
+a53c4e0ac055f97adb4964b3a6ffd77e0b61c5b22c70c4df0e7e3f6c0006801a  releases/0.5.6/StudyShot-Relay-Desktop-Linux-0.5.6_amd64.deb
+921afb3c7fa8783a2aaffc4504ac8958785a92540d5c7e0171df88d1ee5325f2  releases/0.5.6/StudyShot-Relay-Windows-0.5.6-portable.exe
 8ae10bf38975e944da8216ca104a4efe8581861b76286117237d5561a933df74  releases/0.5.2/StudyShot-Relay-Android-0.5.2.apk
-73e890d1a46ed668d0582b7fd06d8350dd4d511369c55f66c6c0bfa66ec138f0  releases/0.5.2/StudyShot-Relay-Desktop-Linux-0.5.2.AppImage
-91f61bdc993d4852c5a864bf7827c940cd314276f11f2b7218d9d8f0459decfb  releases/0.5.2/StudyShot-Relay-Desktop-Linux-0.5.2_amd64.deb
-8946a9396d0cd17c061240da93551b5761ff40174492a55ffece99f8751c6cd1  releases/0.5.1/StudyShot-Relay-Windows-0.5.1-portable.exe
 8cacd0b23ff0c10cd095f2288aaf6bd35d8592a11e7e5c32dd23d352e0510b52  releases/0.5.1/StudyShot-Relay-Linux-Client-0.5.1_amd64.deb
 ```
 
@@ -46,7 +79,7 @@
 
 ### Windows
 
-双击 `releases/0.5.1/StudyShot-Relay-Windows-0.5.1-portable.exe` 直接运行。
+双击 `releases/0.5.7/StudyShot-Relay-Windows-0.5.7-portable.exe` 直接运行。
 
 ### Android
 
@@ -57,7 +90,7 @@ adb install -r releases/0.5.2/StudyShot-Relay-Android-0.5.2.apk
 ### Linux 桌面端 (.deb)
 
 ```bash
-sudo dpkg -i releases/0.5.2/StudyShot-Relay-Desktop-Linux-0.5.2_amd64.deb
+sudo apt install ./releases/0.5.7/StudyShot-Relay-Desktop-Linux-0.5.7_amd64.deb
 # 如果依赖缺失
 sudo apt-get install -f
 ```

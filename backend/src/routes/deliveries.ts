@@ -6,8 +6,8 @@ import { prisma } from "../lib/prisma.js";
 
 const ackBodySchema = z.object({
   status: z.enum(["downloaded", "failed", "skipped"]),
-  errorMessage: z.string().optional(),
-  localPathHint: z.string().optional(),
+  errorMessage: z.string().max(1000).optional(),
+  localPathHint: z.string().max(500).optional(),
 });
 
 export async function deliveryRoutes(app: FastifyInstance): Promise<void> {

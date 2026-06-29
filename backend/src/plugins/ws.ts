@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 import type * as WebSocket from "ws";
 import { hashToken } from "../lib/crypto.js";
+import { shouldUpdateLastSeen } from "../lib/last-seen.js";
 import { prisma } from "../lib/prisma.js";
 import {
   defaultUpdateChannel,
@@ -17,11 +18,37 @@ interface WsClient {
   // Updated on hello/ping (and ignored if the type is something else). The
   // heartbeat sweeper uses this to decide which sockets are stale.
   lastClientActivityAt: number;
+  // Bounded ring of message timestamps for per-socket rate limiting. A
+  // client that bursts past MAX_MESSAGES_PER_WINDOW inside the rolling
+  // window gets disconnected with 1008 so a real misbehaviour can't be
+  // hidden by a slow drain.
+  messageTimestamps: number[];
 }
 
 const connections = new Map<string, WsClient>();
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const HEARTBEAT_TIMEOUT_MS = 90_000;
+
+// ws.Server option: any inbound frame whose payload exceeds this is
+// rejected by the underlying parser before it can reach the message
+// handler, so a hostile or buggy client can't hold a long-poll socket
+// open while streaming a multi-megabyte blob. The current protocol only
+// exchanges tiny hello/ping JSON, so 8 KiB is generous.
+export const WS_MAX_PAYLOAD_BYTES = 8 * 1024;
+
+// Rolling per-socket message budget. The heartbeat contract expects one
+// ping per 25-30 s, so 30 messages / 30 s tolerates bursty reconnect
+// probes without leaving headroom for a tight flood loop.
+const WS_MAX_MESSAGES_PER_WINDOW = 30;
+const WS_WINDOW_MS = 30_000;
+
+function isRateLimited(client: WsClient, now: number): boolean {
+  const cutoff = now - WS_WINDOW_MS;
+  const recent = client.messageTimestamps.filter((ts) => ts > cutoff);
+  recent.push(now);
+  client.messageTimestamps = recent;
+  return recent.length > WS_MAX_MESSAGES_PER_WINDOW;
+}
 
 export function notifyDevicesForImage(imageId: string): void {
   // Fire-and-forget notification; failures are handled by pending deliveries fallback.
@@ -126,15 +153,32 @@ export const wsPlugin = fp(async (app: FastifyInstance) => {
       deviceId: device.id,
       socket,
       lastClientActivityAt: Date.now(),
+      messageTimestamps: [],
     };
     connections.set(device.id, client);
 
-    await prisma.device.update({
-      where: { id: device.id },
-      data: { lastSeenAt: new Date() },
-    });
+    // HTTP auth uses the same helper so a connection burst (each connect
+    // used to write lastSeenAt) doesn't produce extra DB writes while the
+    // device is flapping between networks.
+    if (shouldUpdateLastSeen(device.lastSeenAt)) {
+      await prisma.device.update({
+        where: { id: device.id },
+        data: { lastSeenAt: new Date() },
+      });
+    }
 
     socket.on("message", (raw: Buffer) => {
+      // Per-frame size is bounded by ws.MaxPayload, but reaffirm here so
+      // the behaviour is obvious inside the handler and stays correct if
+      // someone raises the limit later without re-reading this path.
+      if (raw.length > WS_MAX_PAYLOAD_BYTES) {
+        socket.close(1009, "Payload too large");
+        return;
+      }
+      if (isRateLimited(client, Date.now())) {
+        socket.close(1008, "Rate limited");
+        return;
+      }
       try {
         const msg = JSON.parse(raw.toString());
         if (msg.type === "hello") {

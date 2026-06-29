@@ -1,5 +1,12 @@
+import { randomBytes } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 
+// Inline `<script>` is intentional: the management UI ships as a single
+// HTML response so operators don't need a separate static-asset front-end
+// build. The CSP below pins `script-src 'nonce-<random>'`, with the nonce
+// rotated per response, so an XSS that lands inside user-supplied HTML
+// cannot inject a new script tag of its own. The token itself lives in
+// sessionStorage, not localStorage, so closing the tab invalidates it.
 const ADMIN_HTML = String.raw`<!doctype html>
 <html lang="zh-CN">
   <head>
@@ -525,7 +532,7 @@ const ADMIN_HTML = String.raw`<!doctype html>
       </section>
     </main>
 
-    <script>
+    <script nonce="__ADMIN_NONCE__">
       const ROLE_LABELS = { owner: "空间管理员", child: "成员" };
       const ROLE_BADGE_CLASS = { owner: "pill admin", child: "pill" };
       const PROFILE_LABELS = {
@@ -567,8 +574,8 @@ const ADMIN_HTML = String.raw`<!doctype html>
       };
 
       const state = {
-        token: localStorage.getItem("studyshot_admin_token") || "",
-        user: JSON.parse(localStorage.getItem("studyshot_admin_user") || "null"),
+        token: sessionStorage.getItem("studyshot_admin_token") || "",
+        user: JSON.parse(sessionStorage.getItem("studyshot_admin_user") || "null"),
         users: [],
         devices: [],
         groups: [],
@@ -686,8 +693,8 @@ const ADMIN_HTML = String.raw`<!doctype html>
         });
         state.token = data.accessToken;
         state.user = data.user;
-        localStorage.setItem("studyshot_admin_token", state.token);
-        localStorage.setItem("studyshot_admin_user", JSON.stringify(state.user));
+        sessionStorage.setItem("studyshot_admin_token", state.token);
+        sessionStorage.setItem("studyshot_admin_user", JSON.stringify(state.user));
         $("passwordInput").value = "";
         setSession();
         await refreshAll();
@@ -709,8 +716,8 @@ const ADMIN_HTML = String.raw`<!doctype html>
           URL.revokeObjectURL(state.previewBlobUrls[id]);
           delete state.previewBlobUrls[id];
         });
-        localStorage.removeItem("studyshot_admin_token");
-        localStorage.removeItem("studyshot_admin_user");
+        sessionStorage.removeItem("studyshot_admin_token");
+        sessionStorage.removeItem("studyshot_admin_user");
         setSession();
         showMessage("已退出", "ok");
       }
@@ -1520,13 +1527,30 @@ const ADMIN_HTML = String.raw`<!doctype html>
 </html>`;
 
 export async function webAdminRoutes(app: FastifyInstance): Promise<void> {
-  const handler = async (_request: unknown, reply: { header: (name: string, value: string) => unknown; send: (payload: string) => unknown }) => {
+  const buildPage = (): { csp: string; body: string } => {
+    const nonce = randomBytes(16).toString("base64");
+    const csp =
+      "default-src 'self'; connect-src 'self'; " +
+      "img-src 'self' data: blob:; " +
+      "style-src 'self' 'unsafe-inline'; " +
+      `script-src 'self' 'nonce-${nonce}'; ` +
+      "object-src 'none'; base-uri 'self'; frame-ancestors 'none';";
+    return { csp, body: ADMIN_HTML.replaceAll("__ADMIN_NONCE__", nonce) };
+  };
+
+  const handler = async (
+    _request: unknown,
+    reply: {
+      header: (name: string, value: string) => unknown;
+      send: (payload: string) => unknown;
+    },
+  ) => {
+    const { csp, body } = buildPage();
     reply.header("Content-Type", "text/html; charset=utf-8");
-    reply.header(
-      "Content-Security-Policy",
-      "default-src 'self'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data: blob:"
-    );
-    return reply.send(ADMIN_HTML);
+    reply.header("Content-Security-Policy", csp);
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("Referrer-Policy", "no-referrer");
+    return reply.send(body);
   };
 
   app.get("/admin", handler);

@@ -33,18 +33,18 @@ function getManageContext(request: FastifyRequest): {
 }
 
 const createChildUserSchema = z.object({
-  login: z.string().min(1),
+  login: z.string().trim().min(1).max(190),
   password: z.string().min(8),
-  displayName: z.string().min(1).optional(),
+  displayName: z.string().trim().min(1).max(100).optional(),
 });
 
 const updateUserSchema = z.object({
-  displayName: z.string().min(1).optional(),
+  displayName: z.string().trim().min(1).max(100).optional(),
   disabled: z.boolean().optional(),
 });
 
 const createGroupSchema = z.object({
-  name: z.string().min(1).max(100),
+  name: z.string().trim().min(1).max(100),
 });
 
 const addGroupMemberSchema = z.object({

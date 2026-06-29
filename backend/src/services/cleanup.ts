@@ -34,6 +34,10 @@ export async function cleanupOnce(now = new Date()): Promise<void> {
           where: { deletedAt: { lt: cutoff, not: null } },
           select: { id: true, storageKey: true },
           orderBy: { deletedAt: "asc" },
+          // Bound each pass so a backlog of soft-deleted rows can't turn into
+          // a single multi-hour transaction. The hourly timer will keep
+          // draining the queue across cycles until it catches up.
+          take: 500,
         }),
       deleteStoredImage,
       hardDeleteImage: async (imageId) => {

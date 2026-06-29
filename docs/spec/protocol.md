@@ -122,6 +122,8 @@
 
 - 桌面端和安卓端只有在需要管理空间、创建绑定码、配置权限时才需要用户登录。
 - 普通自动上传/自动接收使用设备 token，不使用用户 token。
+- `login` 最长 190 字符；`password` 最长 1024 字符。
+- Web 管理页和 Linux Web UI 的管理 JWT 只保存在浏览器会话级存储中；关闭标签页/浏览器后需要重新登录管理会话。
 
 ## 5. 绑定码
 
@@ -153,6 +155,7 @@
 约束：
 
 - `expiresInSeconds` 必须为正整数且 `≤ 3600`，默认 `600`。
+- `deviceNameHint` 最长 100 字符。
 - `purpose` 当前仅消费 `bind_device`，`invite_child_user` 暂时只是占位枚举，注册时被拒。
 
 成功响应：
@@ -251,6 +254,8 @@
 字段约束：
 
 - `platform` 只能是 `android`、`windows`、`linux`。
+- `bindCode` 最长 256 字符；服务端保留大小写并忽略首尾空白。
+- `deviceName` 最长 100 字符；`osVersion` 最长 120 字符；`appVersion` 最长 80 字符。
 - `clientGeneratedDeviceId` 可选；如果传入，必须是 UUID。
 - `profile`（V2 新增）可选：`manual_only` / `upload_only` / `receive_own` / `sync_own`。
   - owner 目标不传时保持旧默认；child 目标不传时默认 `receive_own`（`autoReceiveScope=same_user_only`）。
@@ -627,8 +632,8 @@ Content-Type：`multipart/form-data`
 
 - `sha256`：必填，客户端计算的文件 sha256，64 位十六进制。
 - `sourceKind`：可选，`screenshot`、`manual_share`、`selected_album`、`unknown`，默认 `unknown`。
-- `sourceDisplayName`：可选，来源显示名，例如 `Screenshots`。
-- `sourceMediaIdHash`：可选，安卓 MediaStore ID 的本地 hash，不要上传裸 ID。
+- `sourceDisplayName`：可选，来源显示名，例如 `Screenshots`，最长 255 字符。
+- `sourceMediaIdHash`：可选，安卓 MediaStore ID 的本地 hash，不要上传裸 ID，最长 128 字符。
 - `capturedAt`：可选，ISO 8601 字符串；当前后端只校验格式，未持久化。
 - `originImageId`：可选，UUID。自动上传时如果图片来自服务端下载，应传该字段；当前后端会拒绝，避免循环。
 
@@ -895,6 +900,7 @@ Content-Type：`multipart/form-data`
 - `skipped`
 
 当前后端会保存 `status` 和 `errorMessage`；`localPathHint` 目前只作为客户端兼容字段，不持久化。
+`errorMessage` 最长 1000 字符，`localPathHint` 最长 500 字符。
 
 成功响应：
 
@@ -1042,6 +1048,9 @@ Authorization: Bearer <device-token>
 - 使用用户 JWT 会被关闭。
 - 同一设备建立新连接时，旧连接会被关闭。
 - 设备撤销后，服务端会关闭连接。
+- 单帧最大 payload 8 KiB。超过 `1009 Payload too large` 关闭连接。当前协议只交换 hello/ping JSON，8 KiB 远超正常需求。
+- 单 socket 滚动 30 秒窗口内最多 30 条入站消息。超出 `1008 Rate limited` 关闭连接。
+- 连接建立时只在距上次 `lastSeenAt` ≥ 60 秒的情况下写库一次；连接风暴不会触发额外 DB 写。
 
 ### 客户端消息
 
@@ -1132,9 +1141,9 @@ Authorization: Bearer <device-token>
   "type": "app.update.available",
   "release": {
     "channel": "windows",
-    "versionName": "0.5.1",
+    "versionName": "0.5.7",
     "releaseNotes": "修复问题并改善更新流程",
-    "fileName": "StudyShot-Relay-Windows-0.5.1-portable.exe",
+    "fileName": "StudyShot-Relay-Windows-0.5.7-portable.exe",
     "fileSize": 83067176,
     "sha256": "64-hex",
     "downloadPath": "/api/v1/updates/windows/package"
@@ -1151,7 +1160,7 @@ Android 以 `versionCode` 比较；Windows 与 Linux 使用语义化 `versionNam
 - `GET /api/v1/updates/{channel}`：返回桌面/CLI 通道发布信息。
 - `GET /api/v1/updates/{channel}/package`：下载对应 `.exe`、`.deb` 或 `.AppImage`。
 
-所有客户端必须校验下载文件 SHA-256；不一致时删除文件且不得打开。Windows 启动 `.exe`，Linux 使用桌面默认安装器打开 `.deb`，AppImage 则设置执行权限后启动。
+所有客户端必须校验下载文件 SHA-256；不一致时删除文件且不得打开。Windows 启动 `.exe`；Linux 桌面 `.deb` 优先通过系统包管理器安装（例如 `pkexec apt install -y <package>`），避免本地图形应用中心只显示“已安装”而不升级；AppImage 则设置执行权限后启动。
 
 ## 15. 桌面客户端最小接收流程
 

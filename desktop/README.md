@@ -36,7 +36,10 @@ Electron + TypeScript desktop receiver for Windows and Linux.
 - Update device permissions.
 - Revoke devices.
 - Receive authenticated update notifications for the Windows or Linux desktop channel.
-- Download updates to the system Downloads directory, verify SHA-256, and open the installer/package.
+- Download updates to the system Downloads directory, verify SHA-256, and launch the installer/package; Linux `.deb` updates use `pkexec apt install` instead of relying on the desktop app center.
+- Keep the left navigation fixed while only the right content pane scrolls.
+- Center the main content column inside the right pane on wide or full-screen windows.
+- Gate migrated unconfirmed plaintext HTTP configs with a confirmation banner; "Continue" persists the opt-in, while "Do not connect" hides the banner for the current app session without sending token-bearing requests.
 
 ## Commands
 

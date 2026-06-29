@@ -483,7 +483,7 @@
 
   <script>
     const $ = id => document.getElementById(id);
-    let adminJwt = localStorage.getItem('ssr_admin_jwt') || '';
+    let adminJwt = sessionStorage.getItem('ssr_admin_jwt') || '';
     let eventSource;
     let currentConfig;
     let latestUpdate;
@@ -771,7 +771,7 @@
         const data = await res.json();
         if (!res.ok || !data.success) throw new Error(data.error?.message || '登录失败');
         adminJwt = data.data.accessToken;
-        localStorage.setItem('ssr_admin_jwt', adminJwt);
+        sessionStorage.setItem('ssr_admin_jwt', adminJwt);
         showMessage('登录成功', 'success');
       } catch (err) {
         showMessage(err.message, 'error');
@@ -1213,31 +1213,16 @@
       if (e.target === $('imageModal')) closeImagePreview();
     });
 
-    // Auto-load images on first tab visit. Lazy load avoids paying the
-    // admin API call cost before the user actually opens the tab.
-    document.querySelectorAll('.tab').forEach(tab => {
-      tab.addEventListener('click', () => {
-        if (tab.dataset.tab === 'images' && !imgState.loaded) {
-          imgState.loaded = true;
-          loadImages(true);
-        }
-      });
-    });
-
-    // Tabs
+    // Tabs. A single handler both switches the visible panel and lazily
+    // loads the images tab on first visit. The previous version had two
+    // separate `.tab forEach` bindings that each re-registered the lazy
+    // load, resulting in loadImages(true) being invoked twice per click.
     document.querySelectorAll('.tab').forEach(tab => {
       tab.addEventListener('click', () => {
         document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
         document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
         tab.classList.add('active');
         $(tab.dataset.tab).classList.add('active');
-      });
-    });
-    // Remove the duplicate handler above; the lazy-load on 'images' tab is
-    // handled by the second handler below. (The double binding was harmless
-    // but wasteful.)
-    document.querySelectorAll('.tab').forEach(tab => {
-      tab.addEventListener('click', () => {
         if (tab.dataset.tab === 'images' && !imgState.loaded) {
           imgState.loaded = true;
           loadImages(true);
@@ -1253,7 +1238,7 @@
     $('btnAdminLogin').addEventListener('click', adminLogin);
     $('btnAdminLogout').addEventListener('click', () => {
       adminJwt = '';
-      localStorage.removeItem('ssr_admin_jwt');
+      sessionStorage.removeItem('ssr_admin_jwt');
       showMessage('已退出', 'success');
     });
     $('btnOpenAdmin').addEventListener('click', openAdmin);

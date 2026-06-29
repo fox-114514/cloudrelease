@@ -1,19 +1,15 @@
 package com.studyshot.relay.update
 
-import android.app.DownloadManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.provider.Settings
 import androidx.core.app.NotificationCompat
-import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import com.studyshot.relay.BuildConfig
 import com.studyshot.relay.MainActivity
 import com.studyshot.relay.data.SecureSettings
@@ -25,8 +21,13 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.Request
 import org.json.JSONObject
+import java.io.File
+import java.io.IOException
 import java.security.MessageDigest
 
 class AndroidUpdateManager(
@@ -63,68 +64,24 @@ class AndroidUpdateManager(
         _availableUpdate.value = null
     }
 
-    fun enqueueDownload(release: AndroidUpdateInfo): Long {
+    /**
+     * Starts an app-private APK download using the same OkHttp client that
+     * backs [StudyShotApiClient]. The download lands in `cacheDir/updates/`
+     * so other apps cannot read it; the previous DownloadManager path put
+     * the file in the public Downloads folder and handed the device bearer
+     * token to the system DownloadManager.
+     */
+    fun enqueueDownload(release: AndroidUpdateInfo) {
         val settings = secureSettings.settings.value
         val token = secureSettings.getDeviceToken() ?: error("设备尚未绑定")
         check(settings.isServerTransportAllowed()) { "服务器连接被安全策略阻止" }
-        check(Build.VERSION.SDK_INT >= 29 || ContextCompat.checkSelfPermission(
-            context,
-            android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
-        ) == PackageManager.PERMISSION_GRANTED) { "请先授予存储权限，才能写入 Downloads" }
 
-        val url = StudyShotApiClient.resolveUrl(settings.serverBaseUrl, release.downloadPath)
-        val downloadManager = context.getSystemService(DownloadManager::class.java)
-        preferences.getLong(KEY_DOWNLOAD_ID, -1L).takeIf { it >= 0 }?.let { downloadManager.remove(it) }
-        val request = DownloadManager.Request(Uri.parse(url))
-            .setTitle("StudyShot Relay ${release.versionName}")
-            .setDescription("正在下载应用更新")
-            .setMimeType(APK_MIME)
-            .addRequestHeader("Authorization", "Bearer $token")
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setDestinationInExternalPublicDir(
-                Environment.DIRECTORY_DOWNLOADS,
-                "StudyShot Relay/${release.fileName}",
-            )
-
-        val id = downloadManager.enqueue(request)
-        preferences.edit()
-            .putLong(KEY_DOWNLOAD_ID, id)
-            .putString(KEY_SHA256, release.sha256)
-            .putString(KEY_FILE_NAME, release.fileName)
-            .apply()
+        // Drop any previous in-flight job. Cancelled via the per-job guard
+        // inside [downloadToCache]; we don't need a finer-grained handle
+        // because the manager only supports one concurrent update.
+        preferences.edit().putLong(KEY_DOWNLOAD_STARTED_AT, System.currentTimeMillis()).apply()
         _availableUpdate.value = null
-        return id
-    }
-
-    fun onDownloadComplete(downloadId: Long) {
-        if (downloadId != preferences.getLong(KEY_DOWNLOAD_ID, -1L)) return
-        scope.launch {
-            val manager = context.getSystemService(DownloadManager::class.java)
-            val cursor = manager.query(DownloadManager.Query().setFilterById(downloadId)) ?: return@launch
-            val status = cursor.use {
-                if (!it.moveToFirst()) return@launch
-                it.getInt(it.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
-            }
-            if (status != DownloadManager.STATUS_SUCCESSFUL) return@launch
-            val uri = manager.getUriForDownloadedFile(downloadId) ?: return@launch
-            val expected = preferences.getString(KEY_SHA256, null) ?: return@launch
-            val actual = context.contentResolver.openInputStream(uri)?.use { input ->
-                val digest = MessageDigest.getInstance("SHA-256")
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    digest.update(buffer, 0, count)
-                }
-                digest.digest().joinToString("") { "%02x".format(it) }
-            }
-            if (!expected.equals(actual, ignoreCase = true)) {
-                manager.remove(downloadId)
-                showInstallNotification("更新包校验失败，请重新下载", null)
-                return@launch
-            }
-            openInstaller(uri)
-        }
+        scope.launch { runDownload(release, token) }
     }
 
     fun canInstallPackages(): Boolean = Build.VERSION.SDK_INT < 26 ||
@@ -134,6 +91,94 @@ class AndroidUpdateManager(
         Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
         Uri.parse("package:${context.packageName}"),
     )
+
+    private suspend fun runDownload(release: AndroidUpdateInfo, token: String) {
+        val url = StudyShotApiClient.resolveUrl(secureSettings.settings.value.serverBaseUrl, release.downloadPath)
+        val targetDir = File(context.cacheDir, "updates").apply { mkdirs() }
+        val target = File(targetDir, release.fileName)
+        // A leftover file with the same name (previous failed download) would
+        // otherwise be appended to or partially overwritten in a confusing way.
+        target.delete()
+        val notificationId = UPDATE_NOTIFICATION_ID
+
+        try {
+            showProgressNotification(notificationId, release, percent = 0, indeterminate = true)
+            val actual = withContext(Dispatchers.IO) {
+                downloadAndHash(url, token, target) { percent ->
+                    showProgressNotification(
+                        notificationId, release,
+                        percent = percent, indeterminate = false,
+                    )
+                }
+            }
+            if (!scope.isActive) {
+                // Job cancelled while in flight. Don't surface an installer;
+                // leave the partial file for the next cleanup pass to remove.
+                return
+            }
+            if (!release.sha256.equals(actual, ignoreCase = true)) {
+                target.delete()
+                showInstallNotification(SHA_MISMATCH_TEXT, null)
+                return
+            }
+            preferences.edit().putLong(KEY_DOWNLOAD_FINISHED_AT, System.currentTimeMillis()).apply()
+            showInstallNotification(DOWNLOADED_TEXT, fileProviderUri(target))
+            openInstaller(fileProviderUri(target))
+        } catch (err: Throwable) {
+            target.delete()
+            showInstallNotification("更新下载失败：${err.message ?: err::class.simpleName}", null)
+        } finally {
+            context.getSystemService(NotificationManager::class.java)
+                .cancel(notificationId)
+        }
+    }
+
+    /**
+     * Streams the response body to [target] while computing SHA-256 in the
+     * same pass, so the APK never has to be fully buffered in memory. The
+     * caller's [onProgress] receives 0..100 for the foreground notification.
+     */
+    private fun downloadAndHash(
+        url: String,
+        token: String,
+        target: File,
+        onProgress: (Int) -> Unit,
+    ): String = apiClient.rawClient().newCall(
+        Request.Builder().url(url).header("Authorization", "Bearer $token").get().build(),
+    ).execute().use { response ->
+        if (!response.isSuccessful) {
+            throw IOException("HTTP ${response.code}")
+        }
+        val body = response.body ?: throw IOException("Empty response body")
+        val total = body.contentLength()
+        val digest = MessageDigest.getInstance("SHA-256")
+        target.outputStream().use { output ->
+            body.byteStream().use { input ->
+                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                var read: Int
+                var copied = 0L
+                var lastPercent = -1
+                while (true) {
+                    read = input.read(buffer)
+                    if (read <= 0) break
+                    output.write(buffer, 0, read)
+                    digest.update(buffer, 0, read)
+                    copied += read
+                    if (total > 0) {
+                        val percent = ((copied * 100) / total).toInt().coerceIn(0, 100)
+                        if (percent != lastPercent) {
+                            lastPercent = percent
+                            onProgress(percent)
+                        }
+                    }
+                }
+            }
+        }
+        digest.digest().joinToString("") { "%02x".format(it) }
+    }
+
+    private fun fileProviderUri(file: File): Uri =
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
 
     private fun acceptRelease(release: AndroidUpdateInfo?, notify: Boolean) {
         if (release == null || release.versionCode <= BuildConfig.VERSION_CODE) return
@@ -159,6 +204,26 @@ class AndroidUpdateManager(
             .setAutoCancel(true)
             .build()
         context.getSystemService(NotificationManager::class.java).notify(UPDATE_NOTIFICATION_ID, notification)
+    }
+
+    private fun showProgressNotification(
+        notificationId: Int,
+        release: AndroidUpdateInfo,
+        percent: Int,
+        indeterminate: Boolean,
+    ) {
+        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle("正在下载 StudyShot Relay ${release.versionName}")
+            .setOngoing(true)
+            .setOnlyAlertOnce(true)
+        if (indeterminate) {
+            builder.setProgress(0, 0, true)
+        } else {
+            builder.setProgress(100, percent, false)
+        }
+        context.getSystemService(NotificationManager::class.java)
+            .notify(notificationId, builder.build())
     }
 
     private fun openInstaller(uri: Uri) {
@@ -201,22 +266,14 @@ class AndroidUpdateManager(
 
     companion object {
         private const val PREFERENCES = "android_update"
-        private const val KEY_DOWNLOAD_ID = "download_id"
-        private const val KEY_SHA256 = "sha256"
-        private const val KEY_FILE_NAME = "file_name"
+        private const val KEY_DOWNLOAD_STARTED_AT = "download_started_at"
+        private const val KEY_DOWNLOAD_FINISHED_AT = "download_finished_at"
         private const val KEY_IGNORED_VERSION = "ignored_version"
         private const val CHANNEL_ID = "studyshot_updates"
         private const val UPDATE_NOTIFICATION_ID = 2101
         private const val INSTALL_NOTIFICATION_ID = 2102
         private const val APK_MIME = "application/vnd.android.package-archive"
-    }
-}
-
-class UpdateDownloadReceiver : BroadcastReceiver() {
-    override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != DownloadManager.ACTION_DOWNLOAD_COMPLETE) return
-        val id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L)
-        (context.applicationContext as com.studyshot.relay.StudyShotApp)
-            .updateManager.onDownloadComplete(id)
+        private const val SHA_MISMATCH_TEXT = "更新包 SHA-256 校验失败，请重试"
+        private const val DOWNLOADED_TEXT = "更新已下载，点按继续安装"
     }
 }

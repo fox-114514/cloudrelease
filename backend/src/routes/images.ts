@@ -26,8 +26,8 @@ import {
 const uploadImageSchema = z.object({
   sha256: z.string().length(64),
   sourceKind: z.enum(["screenshot", "manual_share", "selected_album", "unknown"]).default("unknown"),
-  sourceDisplayName: z.string().optional(),
-  sourceMediaIdHash: z.string().optional(),
+  sourceDisplayName: z.string().max(255).optional(),
+  sourceMediaIdHash: z.string().max(128).optional(),
   capturedAt: z.string().datetime().optional(),
   originImageId: z.string().uuid().optional(),
 });

@@ -94,6 +94,23 @@ cp .env.production.example .env.production
 - `JWT_SECRET`
 - `INITIAL_OWNER_LOGIN`
 - `INITIAL_OWNER_PASSWORD`
+- `TRUST_PROXY`：HTTPS 模式默认 `127.0.0.1,::1`（信任 Caddy 这一跳），IP HTTP 模式留空
+
+## 2.1 反向代理与 `TRUST_PROXY`
+
+后端运行在 Caddy/Nginx/容器桥等反向代理后面时，Fastify 默认会把代理 IP 当作客户端 IP，导致：
+
+- 所有请求被视为同一 IP，限流被代理 IP 共享。
+- `request.ip`、审计日志和设备定位都拿到代理而非真实客户端。
+
+`TRUST_PROXY` 接受 CSV 字符串（CIDR/IP/`loopback`/`linklocal`/`uniquelocal`），示例：
+
+```dotenv
+TRUST_PROXY=127.0.0.1,::1
+TRUST_PROXY=127.0.0.1,::1,10.0.0.0/8
+```
+
+直连部署（IP HTTP 模式）留空即可，等价于"不信任任何 hop"。仅信任受控代理；不要把客户端网络段写进这里，否则客户端可以伪造 `X-Forwarded-For` 越权。
 
 要求：
 
@@ -222,11 +239,12 @@ backend/releases/ -> /var/lib/studyshot/releases/
 ```text
 backend/releases/
   0.5.1/
-    StudyShot-Relay-Windows-0.5.1-portable.exe
     StudyShot-Relay-Linux-Client-0.5.1_amd64.deb
   0.5.2/
     StudyShot-Relay-Android-0.5.2.apk
-    StudyShot-Relay-Desktop-Linux-0.5.2_amd64.deb
+  0.5.7/
+    StudyShot-Relay-Windows-0.5.7-portable.exe
+    StudyShot-Relay-Desktop-Linux-0.5.7_amd64.deb
 ```
 
 配置示例：
@@ -237,13 +255,13 @@ ANDROID_UPDATE_VERSION_CODE=10
 ANDROID_UPDATE_VERSION_NAME=0.5.2
 ANDROID_UPDATE_RELEASE_NOTES=Android 0.5.2：修复创建绑定码页面结果卡片错位
 
-WINDOWS_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/0.5.1/StudyShot-Relay-Windows-0.5.1-portable.exe
-WINDOWS_UPDATE_VERSION_NAME=0.5.1
-WINDOWS_UPDATE_RELEASE_NOTES=Windows 0.5.1：新增自托管更新并精简包体
+WINDOWS_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/0.5.7/StudyShot-Relay-Windows-0.5.7-portable.exe
+WINDOWS_UPDATE_VERSION_NAME=0.5.7
+WINDOWS_UPDATE_RELEASE_NOTES=Windows 0.5.7：修复分屏窄窗口下顶部导航选中态被拉伸的问题
 
-LINUX_DESKTOP_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/0.5.2/StudyShot-Relay-Desktop-Linux-0.5.2_amd64.deb
-LINUX_DESKTOP_UPDATE_VERSION_NAME=0.5.2
-LINUX_DESKTOP_UPDATE_RELEASE_NOTES=Linux 桌面端 0.5.2：修复 WebSocket 重连弹错和 HTTPS 下旧 HTTP 警告残留
+LINUX_DESKTOP_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/0.5.7/StudyShot-Relay-Desktop-Linux-0.5.7_amd64.deb
+LINUX_DESKTOP_UPDATE_VERSION_NAME=0.5.7
+LINUX_DESKTOP_UPDATE_RELEASE_NOTES=Linux 桌面端 0.5.7：修复分屏窄窗口下顶部导航选中态被拉伸的问题
 
 LINUX_CLI_UPDATE_PACKAGE_PATH=/var/lib/studyshot/releases/0.5.1/StudyShot-Relay-Linux-Client-0.5.1_amd64.deb
 LINUX_CLI_UPDATE_VERSION_NAME=0.5.1
@@ -392,10 +410,22 @@ npm test
 npm run test:db:down
 ```
 
+或者使用一键组合脚本（等价于上面四步，但任一步失败都会停止）：
+
+```bash
+npm run test:full
+```
+
 如果只跑不依赖数据库的单元测试：
 
 ```bash
 npm run test:unit
+```
+
+发布前建议运行依赖审计（仅 production 依赖，high 及以上级别）：
+
+```bash
+npm run audit:deps
 ```
 
 ## 12. 安全检查
@@ -416,4 +446,4 @@ npm run test:unit
 
 - 后端镜像包含 Prisma CLI，用于容器启动时执行迁移。镜像体积不是最小，但部署简单。
 - Caddy 请求体限制当前是 32 MB；后端默认最大图片大小是 30 MB。如果调整 `MAX_IMAGE_SIZE_MB`，也要同步调整 `backend/docker/Caddyfile`。
-- 自托管更新只分发安装包，不负责绕过系统安装确认。Android、Windows 和 Linux 都仍需要用户确认安装或打开安装器。
+- 自托管更新只分发安装包，不负责绕过系统安装确认。Android、Windows 和 Linux 都仍需要用户确认安装；Linux 桌面端 `.deb` 建议使用 `sudo apt install ./包名.deb` 或客户端内置的 `pkexec apt install` 更新路径，不依赖应用中心双击升级。

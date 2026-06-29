@@ -11,7 +11,7 @@ const DEFAULT_BIND_CODE_TTL_SECONDS = 600;
 const createBindCodeSchema = z.object({
   purpose: z.enum(["bind_device", "invite_child_user"]).default("bind_device"),
   userId: z.string().uuid().optional(),
-  deviceNameHint: z.string().max(100).optional(),
+  deviceNameHint: z.string().trim().max(100).optional(),
   expiresInSeconds: z
     .number()
     .int()
@@ -21,7 +21,7 @@ const createBindCodeSchema = z.object({
 });
 
 const previewBindCodeSchema = z.object({
-  bindCode: z.string().min(1),
+  bindCode: z.string().trim().min(1).max(256),
 });
 
 /**

@@ -8,8 +8,8 @@ import { logger } from "../logger.js";
 import { prisma } from "../lib/prisma.js";
 
 const loginBodySchema = z.object({
-  login: z.string().min(1),
-  password: z.string().min(1),
+  login: z.string().trim().min(1).max(190),
+  password: z.string().min(1).max(1024),
 });
 
 // A dummy bcrypt hash of a random value, precomputed at module load. When the

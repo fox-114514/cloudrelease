@@ -176,11 +176,32 @@ class UploadRepository(
         val dir = java.io.File(context.cacheDir, "manual-uploads")
         dir.mkdirs()
         val target = java.io.File(dir, "$taskId.upload")
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            target.outputStream().use { output ->
-                input.copyTo(output)
-            }
-        } ?: error("Unable to open selected image")
+        // Copying a hostile or pathological share intent used to be able to
+        // grow `cacheDir` unboundedly while we waited for the worker to
+        // hash and read the file. Bound the copy up front: anything past
+        // MAX_CACHE_FILE_BYTES is rejected, the partial file is deleted,
+        // and the share intent simply fails rather than filling disk.
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                target.outputStream().use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    var total = 0L
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read <= 0) break
+                        total += read
+                        if (total > MAX_CACHE_FILE_BYTES) {
+                            target.delete()
+                            error("所选图片超过 ${MAX_CACHE_FILE_BYTES / (1024 * 1024)} MB，无法缓存")
+                        }
+                        output.write(buffer, 0, read)
+                    }
+                }
+            } ?: error("Unable to open selected image")
+        } catch (t: Throwable) {
+            target.delete()
+            throw t
+        }
         return Uri.fromFile(target)
     }
 
@@ -188,5 +209,10 @@ class UploadRepository(
         private const val POWER_SAVE_SCAN_WORK_NAME = "studyshot-power-save-scan"
         private const val REALTIME_FALLBACK_DELAY_MS = 30_000L
         private const val TAG = "UploadRepository"
+        // Mirror the backend MAX_IMAGE_SIZE_MB default. Anything larger is
+        // rejected before copyToUploadCache can fill disk; the worker would
+        // reject it anyway after hashing.
+        private const val MAX_CACHE_FILE_BYTES: Long = 30L * 1024 * 1024
+        private const val DEFAULT_BUFFER_SIZE = 8 * 1024
     }
 }

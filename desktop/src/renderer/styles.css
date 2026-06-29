@@ -98,10 +98,15 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
   padding: 0;
+  height: 100%;
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-sans);
@@ -115,6 +120,7 @@ body {
   min-width: 780px;
   min-height: 600px;
   font-feature-settings: "cv11", "ss01";
+  overflow: hidden;
 }
 
 button,
@@ -144,7 +150,8 @@ a:hover {
 .app {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;
+  min-height: 600px;
 }
 
 .topbar {
@@ -341,6 +348,7 @@ a:hover {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  overflow: hidden;
 }
 
 .nav-item {
@@ -385,12 +393,19 @@ a:hover {
 .content {
   background: var(--bg);
   overflow: auto;
-  padding: 28px 32px 40px;
+  padding: 28px clamp(20px, 4vw, 48px) 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
 .view {
   display: none;
-  max-width: 920px;
+  width: min(100%, 1040px);
+}
+
+.content > .banner {
+  width: min(100%, 1040px);
 }
 
 .view.active {
@@ -1115,19 +1130,29 @@ a:hover {
   }
   .layout {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
   .side {
     flex-direction: row;
+    align-items: center;
     border-right: 0;
     border-bottom: 1px solid var(--border);
     overflow-x: auto;
+    overflow-y: hidden;
     padding: 8px;
   }
   .nav-item.active::before {
     display: none;
   }
   .nav-item {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    height: 34px;
     white-space: nowrap;
+  }
+  .content {
+    min-height: 0;
   }
   .metrics,
   .form-grid,

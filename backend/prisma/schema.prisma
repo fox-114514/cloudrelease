@@ -202,6 +202,7 @@ model Delivery {
   image        Image   @relation(fields: [imageId], references: [id], onDelete: Cascade)
   targetDevice Device  @relation("TargetDevice", fields: [targetDeviceId], references: [id], onDelete: Cascade)
 
+  @@unique([imageId, targetDeviceId])
   @@index([targetDeviceId, status])
   @@index([imageId])
   @@map("deliveries")

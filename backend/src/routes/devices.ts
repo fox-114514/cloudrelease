@@ -21,17 +21,17 @@ import {
 } from "../services/device-profiles.js";
 
 const registerDeviceSchema = z.object({
-  bindCode: z.string().trim().min(1),
-  deviceName: z.string().min(1).max(100),
+  bindCode: z.string().trim().min(1).max(256),
+  deviceName: z.string().trim().min(1).max(100),
   platform: z.enum(["android", "windows", "linux"]),
-  osVersion: z.string().default(""),
-  appVersion: z.string().default(""),
+  osVersion: z.string().max(120).default(""),
+  appVersion: z.string().max(80).default(""),
   clientGeneratedDeviceId: z.string().uuid().optional(),
   profile: z.enum(SELECTABLE_DEVICE_PROFILES).optional(),
 });
 
 const updateDeviceNameSchema = z.object({
-  name: z.string().min(1).max(100),
+  name: z.string().trim().min(1).max(100),
 });
 
 const deviceProfileSchema = z.object({

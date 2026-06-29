@@ -1,6 +1,6 @@
 {
   "name": "studyshot-relay-desktop",
-  "version": "0.5.2",
+  "version": "0.5.7",
   "description": "StudyShot Relay desktop receiver",
   "main": "dist/main.js",
   "author": "StudyShot <relay@studyshot.local>",
@@ -11,6 +11,7 @@
     "build": "npm run verify:render && tsc && node scripts/copy-renderer.mjs",
     "build:icons": "node scripts/build-icons.mjs",
     "test": "npm run build && node --test test/*.test.mjs",
+    "audit:deps": "npm audit --omit=dev --audit-level=high",
     "typecheck": "tsc --noEmit",
     "start": "npm run build && electron .",
     "dev": "npm run build && electron .",
